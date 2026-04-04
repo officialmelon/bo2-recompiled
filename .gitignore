@@ -1,3 +1,7 @@
-generated/*
-assets/*
-out/
+*/generated/*
+*/out/*
+*/assets/*
+
+!*/generated/.gitkeep
+!*/out/.gitkeep
+!*/assets/.gitkeep
