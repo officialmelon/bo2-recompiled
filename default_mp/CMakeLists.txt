@@ -1,11 +1,11 @@
 
-# bo2_recompiled - ReXGlue Recompiled Project
+# default_mp - ReXGlue Recompiled Project
 #
 # This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 # SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
-project(bo2_recompiled LANGUAGES CXX)
+project(default_mp LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,14 +13,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(generated/rexglue.cmake)
 
 # Sources
-set(BO2RECOMPILED_SOURCES
+set(DEFAULTMP_SOURCES
     src/main.cpp
+    src/stubs.cpp
 )
 
 if(WIN32)
-    add_executable(bo2_recompiled WIN32 ${BO2RECOMPILED_SOURCES})
+    add_executable(default_mp WIN32 ${DEFAULTMP_SOURCES})
 else()
-    add_executable(bo2_recompiled ${BO2RECOMPILED_SOURCES})
+    add_executable(default_mp ${DEFAULTMP_SOURCES})
 endif()
 
-rexglue_setup_target(bo2_recompiled)
+rexglue_setup_target(default_mp)
