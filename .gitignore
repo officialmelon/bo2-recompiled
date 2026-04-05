@@ -5,6 +5,7 @@ assets/*
 */assets/*
 
 *.vs
+*.claude
 
 !*/generated/.gitkeep
 !*/out/.gitkeep

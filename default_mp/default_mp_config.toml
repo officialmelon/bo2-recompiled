@@ -19,3 +19,5 @@ longjmp_address = 0x827D9790
 # Unhandled exception at 0x0000000000000000
 0x826c4428={}
 0x826bf2f0={}
+0x826c5818={}
+0x826cacb8={}

@@ -11,7 +11,6 @@
 #include <rex/kernel/xam/module.h>
 #include <windows.h>
 #include <filesystem>
-#include <rex/logging.h>
 #include <rex/cvar.h>
 
 class DefaultMpApp : public rex::ReXApp {
@@ -28,8 +27,8 @@ class DefaultMpApp : public rex::ReXApp {
     xex_image = "game:/default_mp.xex";
   }
 
-  void OnPreSetup(rex::RuntimeConfig& config) override {
-    rex::cvar::SetFlagByName("log_level", "trace");
+  void OnConfigurePaths(rex::PathConfig& paths) override {
+    paths.update_data_root = paths.game_data_root;
   }
 
   // Override virtual hooks for customization:

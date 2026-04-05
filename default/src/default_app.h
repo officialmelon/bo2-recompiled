@@ -38,7 +38,7 @@ class DefaultApp : public rex::ReXApp {
 
     if (loader.launch_path.empty()) return;
 
-    //TODO: resolve path from parent, not this messy method :P
+    // feels messy
 
     if (loader.launch_path.find("default_mp") != std::string::npos) {
       WCHAR buf[MAX_PATH];
