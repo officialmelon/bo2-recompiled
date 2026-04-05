@@ -12,7 +12,10 @@ out_directory_path = "generated"
 setjmp_address  = 0x827D8600
 longjmp_address = 0x827D9790
 
+[functions]
 # target not in any function
-[functions."0x82425F18"]
-name = "sub_0x82425F18"
-end = 0x82425F20
+0x82425F18={name = "sub_0x82425F18", end = 0x82425F20}
+
+# Unhandled exception at 0x0000000000000000
+0x826c4428={}
+0x826bf2f0={}

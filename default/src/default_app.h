@@ -8,8 +8,10 @@
 
 #include <rex/rex_app.h>
 #include <rex/cvar.h>
+#include <rex/system/kernel_state.h>
+#include <rex/kernel/xam/module.h>
 #include <windows.h>
-#include <cstdio>
+#include <filesystem>
 
 class DefaultApp : public rex::ReXApp {
  public:
@@ -22,22 +24,35 @@ class DefaultApp : public rex::ReXApp {
   }
 
   void OnConfigurePaths(rex::PathConfig& paths) override {
-    // game needs to resolve files from update
     paths.update_data_root = paths.game_data_root;
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
-    // PERF: WAIT_REG_MEM with vsync=true sleeps (wait/256) ms per failed check.
-    // BO2 uses wait=0x6400 (25600) for its CPU-GPU frame sync packets -> 100ms
-    // sleep per iteration -> ~3 FPS. Setting vsync=false switches WAIT_REG_MEM
-    // to MaybeYield() and fires the vblank interrupt every 1ms instead of
-    // 16.67ms, letting the game run at full speed.
     rex::cvar::SetFlagByName("vsync", "false");
-
-    // PERF: BO2 uses thread priorities to ensure its render/worker threads
-    // get scheduled correctly. With all threads at equal Windows priority
-    // the scheduler can starve important threads.
     rex::cvar::SetFlagByName("ignore_thread_priorities", "false");
+  }
+
+  void OnShutdown() override {
+    auto xam = runtime()->kernel_state()->GetKernelModule<rex::kernel::xam::XamModule>("xam.xex");
+    auto& loader = xam->loader_data();
+
+    if (loader.launch_path.empty()) return;
+
+    //TODO: resolve path from parent, not this messy method :P
+
+    if (loader.launch_path.find("default_mp") != std::string::npos) {
+      WCHAR buf[MAX_PATH];
+      GetModuleFileNameW(nullptr, buf, MAX_PATH);
+      std::filesystem::path exe(buf);
+      auto config = exe.parent_path().filename();
+      auto mp = exe.parent_path() / "default_mp.exe";
+
+      STARTUPINFOW si = {};
+      si.cb = sizeof(si);
+      PROCESS_INFORMATION pi = {};
+      CreateProcessW(mp.wstring().c_str(), nullptr, nullptr, nullptr,
+                     FALSE, 0, nullptr, nullptr, &si, &pi);
+    }
   }
 
   // Override virtual hooks for customization:
