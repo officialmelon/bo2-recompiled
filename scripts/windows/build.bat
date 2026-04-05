@@ -8,7 +8,7 @@ REM If no args, build default only
 if "%~1"=="" (
     echo Building default...
     cd /d "%ROOT%\default"
-    cmake --build --preset win-amd64-debug
+    cmake --build --preset win-amd64-relwithdebinfo
     goto :end
 )
 
@@ -19,23 +19,23 @@ if "%~1"=="" goto :end
 if /I "%~1"=="default" (
     echo Building default...
     cd /d "%ROOT%\default"
-    cmake --build --preset win-amd64-debug
+    cmake --build --preset win-amd64-relwithdebinfo
 )
 
 if /I "%~1"=="mp" (
     echo Building default_mp...
     cd /d "%ROOT%\default_mp"
-    cmake --build --preset win-amd64-debug
+    cmake --build --preset win-amd64-relwithdebinfo
 )
 
 if /I "%~1"=="both" (
     echo Building both...
     
     cd /d "%ROOT%\default"
-    cmake --build --preset win-amd64-debug
+    cmake --build --preset win-amd64-relwithdebinfo
 
     cd /d "%ROOT%\default_mp"
-    cmake --build --preset win-amd64-debug
+    cmake --build --preset win-amd64-relwithdebinfo
 )
 
 shift
