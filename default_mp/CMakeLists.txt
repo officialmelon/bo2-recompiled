@@ -16,6 +16,7 @@ include(generated/rexglue.cmake)
 set(DEFAULTMP_SOURCES
     src/main.cpp
     src/stubs.cpp
+    src/xam.cpp
 )
 
 if(WIN32)

@@ -8,6 +8,7 @@ assets/*
 *.vs
 *.claude
 *.vscode
+*.log
 
 !*/generated/.gitkeep
 !*/out/.gitkeep
