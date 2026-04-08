@@ -1,21 +1,22 @@
-
-// default_mp - ReXGlue Recompiled Project
-//
-// This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
-// Customize your app by overriding virtual hooks from rex::ReXApp.
-
 #pragma once
 
 #include <rex/rex_app.h>
 #include <rex/system/kernel_state.h>
 #include <rex/kernel/xam/module.h>
+#include <rex/cvar.h>
+#include <rex/memory/utils.h>
 #include <windows.h>
 #include <filesystem>
-#include <rex/cvar.h>
+#include <algorithm>
+
+REXCVAR_DECLARE(std::string, mode);
 
 class DefaultMpApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
+
+  static constexpr uint32_t kBootModeFlagsAddr = 0x83663530;
+  static constexpr uint32_t kBootModeZombiesBit = 1u << 4;
 
   static std::unique_ptr<rex::ui::WindowedApp> Create(
       rex::ui::WindowedAppContext& ctx) {
@@ -31,11 +32,38 @@ class DefaultMpApp : public rex::ReXApp {
     paths.update_data_root = paths.game_data_root;
   }
 
-  // Override virtual hooks for customization:
-  // void OnPreSetup(rex::RuntimeConfig& config) override {}
-  // void OnLoadXexImage(std::string& xex_image) override {}
-  // void OnPostSetup() override {}
-  // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
-  // void OnShutdown() override {}
-  // void OnConfigurePaths(rex::PathConfig& paths) override {}
+  void OnPreLaunchModule() override {
+    if (REXCVAR_GET(mode) != "zombies") {
+      return;
+    }
+
+    auto* flags = runtime()->memory()->TranslateVirtual(kBootModeFlagsAddr);
+    auto value = rex::memory::load_and_swap<uint32_t>(flags);
+    value |= kBootModeZombiesBit;
+    rex::memory::store_and_swap<uint32_t>(flags, value);
+  }
+
+  void OnShutdown() override {
+    auto xam = runtime()->kernel_state()->GetKernelModule<rex::kernel::xam::XamModule>("xam.xex");
+    auto& loader = xam->loader_data();
+
+    if (loader.launch_path.empty()) return;
+    if (loader.launch_path.find("default_mp") == std::string::npos) return;
+
+    auto* flags = runtime()->memory()->TranslateVirtual(kBootModeFlagsAddr);
+    auto value = rex::memory::load_and_swap<uint32_t>(flags);
+    bool is_zm = (value & kBootModeZombiesBit) != 0;
+
+    WCHAR buf[MAX_PATH];
+    GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    auto mp = std::filesystem::path(buf).parent_path() / "default_mp.exe";
+
+    std::wstring cmdline = mp.wstring();
+    if (is_zm) cmdline += L" --mode=zombies";
+
+    STARTUPINFOW si = { .cb = sizeof(si) };
+    PROCESS_INFORMATION pi = {};
+    CreateProcessW(mp.wstring().c_str(), cmdline.data(),
+                   nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
+  }
 };

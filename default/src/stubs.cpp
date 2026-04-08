@@ -73,27 +73,3 @@ GUEST_FUNCTION_STUB(_XamShowFriendRequestUI);
 GUEST_FUNCTION_STUB(_XamShowAchievementsUI);
 GUEST_FUNCTION_STUB(_XamContentInstall);
 GUEST_FUNCTION_STUB_FAIL(_NetDll_XNetReplaceKey);
-
-extern "C" PPC_FUNC(_XamLoaderSetLaunchData) {
-    PPC_FUNC_PROLOGUE();
-    REXLOG_CAT_WARN(rex::log::Kernel, "SetLaunchData(ptr=0x%08X, size=%u)\n", ctx.r3.u32, ctx.r4.u32);
-    ctx.r3.u64 = 0;
-}
-
-extern "C" PPC_FUNC(_XamLoaderGetLaunchData) {
-    PPC_FUNC_PROLOGUE();
-    REXLOG_CAT_WARN(rex::log::Kernel, "GetLaunchData(buf=0x%08X, size=%u)\n", ctx.r3.u32, ctx.r4.u32);
-    ctx.r3.u64 = 0x80004005;
-}
-
-extern "C" PPC_FUNC(_XamLoaderLaunchTitle) {
-    PPC_FUNC_PROLOGUE();
-    REXLOG_CAT_WARN(rex::log::Kernel, "LaunchTitle(title_id=0x%08X, flags=0x%08X)\n", ctx.r3.u32, ctx.r4.u32);
-    ctx.r3.u64 = 0;
-}
-
-extern "C" PPC_FUNC(_XamLoaderTerminateTitle) {
-    PPC_FUNC_PROLOGUE();
-    REXLOG_CAT_WARN(rex::log::Kernel, "TerminateTitle()\n");
-    ctx.r3.u64 = 0;
-}

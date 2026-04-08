@@ -1,13 +1,17 @@
 #include <rex/ppc/context.h>
 #include <rex/runtime.h>
+#include <rex/ppc.h>
 #include "generated/default_mp_init.h"
- 
+#include <rex/cvar.h>
+
+REXCVAR_DEFINE_STRING(mode, "", "Game", "Game mode to launch (mp, zombies)");
+
 #define GUEST_FUNCTION_STUB(func_name) \
 extern "C" PPC_FUNC(func_name) { \
     PPC_FUNC_PROLOGUE(); \
     ctx.r3.u64 = 0; \
 }
- 
+
 #define GUEST_FUNCTION_STUB_FAIL(func_name) \
 extern "C" PPC_FUNC(func_name) { \
     PPC_FUNC_PROLOGUE(); \
@@ -20,3 +24,4 @@ GUEST_FUNCTION_STUB_FAIL(__imp__XUsbcamDestroy);
 GUEST_FUNCTION_STUB_FAIL(__imp__XUsbcamSetConfig);
 GUEST_FUNCTION_STUB_FAIL(__imp__XUsbcamSetCaptureMode);
 GUEST_FUNCTION_STUB_FAIL(__imp__XUsbcamReadFrame);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetQosGetListenStats);

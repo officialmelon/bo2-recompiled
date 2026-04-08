@@ -21,3 +21,6 @@ longjmp_address = 0x827D9790
 0x826bf2f0={}
 0x826c5818={}
 0x826cacb8={}
+0x8221af28={}
+# same exception, but inside actual MP menu
+0x821c47c8={}

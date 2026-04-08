@@ -38,22 +38,29 @@ class DefaultApp : public rex::ReXApp {
 
     if (loader.launch_path.empty()) return;
 
-    // feels messy
-
-    if (loader.launch_path.find("default_mp") != std::string::npos) {
-      WCHAR buf[MAX_PATH];
-      GetModuleFileNameW(nullptr, buf, MAX_PATH);
-      std::filesystem::path exe(buf);
-      auto config = exe.parent_path().filename();
-      auto mp = exe.parent_path() / "default_mp.exe";
-
-      STARTUPINFOW si = {};
-      si.cb = sizeof(si);
-      PROCESS_INFORMATION pi = {};
-      CreateProcessW(mp.wstring().c_str(), nullptr, nullptr, nullptr,
-                     FALSE, 0, nullptr, nullptr, &si, &pi);
+    // detect ZM by non-zero byte after first DWORD in launch data
+    bool is_zm = false;
+    if (loader.launch_data_present && loader.launch_data.size() > 4) {
+        is_zm = std::any_of(loader.launch_data.begin() + 4,
+                            loader.launch_data.end(),
+                            [](uint8_t b) { return b != 0; });
     }
-  }
+
+    bool is_mp = !is_zm && loader.launch_path.find("default_mp") != std::string::npos;
+    if (!is_mp && !is_zm) return;
+
+    WCHAR buf[MAX_PATH];
+    GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    auto mp = std::filesystem::path(buf).parent_path() / "default_mp.exe";
+
+    std::wstring cmdline = mp.wstring();
+    if (is_zm) cmdline += L" --mode=zombies";
+
+    STARTUPINFOW si = { .cb = sizeof(si) };
+    PROCESS_INFORMATION pi = {};
+    CreateProcessW(mp.wstring().c_str(), cmdline.data(),
+                   nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
+}
 
   // Override virtual hooks for customization:
   // void OnLoadXexImage(std::string& xex_image) override {}
