@@ -37,6 +37,9 @@ class DefaultApp : public rex::ReXApp {
     auto& loader = xam->loader_data();
 
     if (loader.launch_path.empty()) return;
+    bool is_default = loader.launch_path.find("default.xex") != std::string::npos;
+    bool is_default_mp = loader.launch_path.find("default_mp.xex") != std::string::npos;
+    if (!is_default && !is_default_mp) return;
 
     // detect ZM by non-zero byte after first DWORD in launch data
     bool is_zm = false;
@@ -46,19 +49,17 @@ class DefaultApp : public rex::ReXApp {
                             [](uint8_t b) { return b != 0; });
     }
 
-    bool is_mp = !is_zm && loader.launch_path.find("default_mp") != std::string::npos;
-    if (!is_mp && !is_zm) return;
-
     WCHAR buf[MAX_PATH];
     GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    auto mp = std::filesystem::path(buf).parent_path() / "default_mp.exe";
+    auto exe_dir = std::filesystem::path(buf).parent_path();
+    auto exe = exe_dir / (is_default_mp ? "default_mp.exe" : "default.exe");
 
-    std::wstring cmdline = mp.wstring();
-    if (is_zm) cmdline += L" --mode=zombies";
+    std::wstring cmdline = exe.wstring();
+    if (is_default_mp && is_zm) cmdline += L" --mode=zombies";
 
     STARTUPINFOW si = { .cb = sizeof(si) };
     PROCESS_INFORMATION pi = {};
-    CreateProcessW(mp.wstring().c_str(), cmdline.data(),
+    CreateProcessW(exe.wstring().c_str(), cmdline.data(),
                    nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
 }
 

@@ -9,7 +9,7 @@ if "%~1"=="" set ARGS=default
 if not "%~1"=="" set ARGS=%*
 
 for %%A in (%ARGS%) do (
-    if /I "%%A"=="default" (
+    if /I "%%A"=="sp" (
         echo Running codegen for default...
         cd /d "%ROOT%\default"
         rexglue codegen default_config.toml

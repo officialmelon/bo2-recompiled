@@ -51,27 +51,35 @@ class DefaultMpApp : public rex::ReXApp {
     rex::memory::store_and_swap<uint32_t>(flags, value);
   }
 
+  // launch mp/zm/sp based on launch_data & xex name.
   void OnShutdown() override {
     auto xam = runtime()->kernel_state()->GetKernelModule<rex::kernel::xam::XamModule>("xam.xex");
     auto& loader = xam->loader_data();
 
     if (loader.launch_path.empty()) return;
-    if (loader.launch_path.find("default_mp") == std::string::npos) return;
+    bool is_default = loader.launch_path.find("default.xex") != std::string::npos;
+    bool is_default_mp = loader.launch_path.find("default_mp.xex") != std::string::npos;
+    if (!is_default && !is_default_mp) return;
 
-    auto* flags = runtime()->memory()->TranslateVirtual(kBootModeFlagsAddr);
-    auto value = rex::memory::load_and_swap<uint32_t>(flags);
-    bool is_zm = (value & kBootModeZombiesBit) != 0;
+    // are we booting zombies?
+    bool is_zm = false;
+    // base off the launch_data
+    if (loader.launch_data_present && loader.launch_data.size() > 4) {
+      is_zm = std::any_of(loader.launch_data.begin() + 4, loader.launch_data.end(),
+                          [](uint8_t b) { return b != 0; });
+    }
 
     WCHAR buf[MAX_PATH];
     GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    auto mp = std::filesystem::path(buf).parent_path() / "default_mp.exe";
+    auto exe_dir = std::filesystem::path(buf).parent_path();
+    auto exe = exe_dir / (is_default_mp ? "default_mp.exe" : "default.exe");
 
-    std::wstring cmdline = mp.wstring();
-    if (is_zm) cmdline += L" --mode=zombies";
+    std::wstring cmdline = exe.wstring();
+    if (is_default_mp && is_zm) cmdline += L" --mode=zombies";
 
     STARTUPINFOW si = { .cb = sizeof(si) };
     PROCESS_INFORMATION pi = {};
-    CreateProcessW(mp.wstring().c_str(), cmdline.data(),
+    CreateProcessW(exe.wstring().c_str(), cmdline.data(),
                    nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
   }
 };
