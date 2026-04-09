@@ -38,7 +38,6 @@ bo2/
 Reference ISO used for this setup:
 
 - File: `Call of Duty - Black Ops II (World).iso`
-- Example path: `D:\reglue\others\Rom\Call of Duty - Black Ops II (World).iso`
 - SHA-1: `A5F56AD3EC9FE2F1D45A92FB141FD046ED9D5C13`
 
 Use your own dump and verify the hash if you want to match the same source image.
