@@ -84,8 +84,8 @@ The normal flow is:
 
 | Platform | Status | Support |
 | :--- | :---: | :---: |
-| **Windows** | ![Tested](https://shields.io) | Supported |
-| **Linux** | ![Untested](https://shields.io) | Supported |
+| **Windows** | Tested | Supported |
+| **Linux** | Untested | Supported |
 
 ## Windows
 
