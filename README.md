@@ -85,7 +85,7 @@ The normal flow is:
 | Platform | Status | Support |
 | :--- | :---: | :---: |
 | **Windows** | Tested | Supported |
-| **Linux** | Untested | Supported |
+| **Linux** | Untested | Unsupported (temporarily) |
 
 ## Windows
 
