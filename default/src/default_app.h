@@ -21,9 +21,11 @@
 #include "../../common/native_input.h"
 #include "../../common/project_paths.h"
 #include "../../common/android_launcher.h"
+#include "../../src/native_renderer/NativeRenderer.h"
 
 namespace bo2 {
 void InstallDefaultNativeInput(rex::Runtime* runtime);
+void InstallDefaultNativeRenderer(rex::Runtime* runtime);
 void InstallDefaultXamOverrides(rex::Runtime* runtime);
 }
 
@@ -66,6 +68,7 @@ class DefaultApp : public rex::ReXApp {
   void OnPostSetup() override {
     bo2::InstallDefaultXamOverrides(runtime());
     bo2::InstallDefaultNativeInput(runtime());
+    bo2::InstallDefaultNativeRenderer(runtime());
   }
 
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
@@ -80,6 +83,7 @@ class DefaultApp : public rex::ReXApp {
 
   void OnShutdown() override {
     native_input_.Detach();
+    bo2::native::NativeRenderer::Instance().Shutdown();
     TryLaunchRequestedTitle();
   }
 

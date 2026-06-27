@@ -16,6 +16,7 @@
 #include "../../common/native_input.h"
 #include "../../common/project_paths.h"
 #include "../../common/android_launcher.h"
+#include "../../src/native_renderer/NativeRenderer.h"
 
 REXCVAR_DECLARE(std::string, mode);
 
@@ -25,6 +26,7 @@ void InstallXamOverrides(rex::Runtime* runtime);
 
 namespace bo2 {
 void InstallDefaultMpNativeInput(rex::Runtime* runtime);
+void InstallDefaultMpNativeRenderer(rex::Runtime* runtime);
 }
 
 class DefaultMpApp : public rex::ReXApp {
@@ -51,6 +53,7 @@ class DefaultMpApp : public rex::ReXApp {
   void OnPostSetup() override {
     default_mp::InstallXamOverrides(runtime());
     bo2::InstallDefaultMpNativeInput(runtime());
+    bo2::InstallDefaultMpNativeRenderer(runtime());
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
@@ -113,6 +116,7 @@ class DefaultMpApp : public rex::ReXApp {
   // launch mp/zm/sp based on launch_data & xex name.
   void OnShutdown() override {
     native_input_.Detach();
+    bo2::native::NativeRenderer::Instance().Shutdown();
     TryLaunchRequestedTitle();
   }
 

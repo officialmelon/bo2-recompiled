@@ -13,12 +13,26 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(generated/rexglue.cmake)
 
 # Sources
+set(NATIVE_RENDERER_SOURCES
+    ../src/native_renderer/NativeRenderer.cpp
+    ../src/native_renderer/DebugRenderLog.cpp
+    ../src/native_renderer/RenderResourceManager.cpp
+    ../src/native_renderer/ShaderManager.cpp
+    ../src/native_renderer/TextureManager.cpp
+    ../src/native_renderer/BufferManager.cpp
+    ../src/native_renderer/HostDetour.cpp
+    ../src/native_renderer/backend_null/NullRendererBackend.cpp
+    ../src/native_renderer/shader_translation/ShaderTranslation.cpp
+)
+
 set(DEFAULT_SOURCES
     src/main.cpp
+    src/native_renderer_hooks.cpp
     src/native_input.cpp
     src/stubs.cpp
     src/xam.cpp
     ../common/android_launcher.cpp
+    ${NATIVE_RENDERER_SOURCES}
 )
 
 if(WIN32)
