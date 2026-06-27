@@ -9,6 +9,7 @@ Last updated: 2026-06-28
 - Native renderer scaffolding now lives under `src/native_renderer/`.
 - `default` and `default_mp` both build the scaffold and install renderer hooks from their app-specific source trees.
 - The native renderer now snapshots the ReXGlue-written present command buffer after `VdSwap` and logs the `PM4_XE_SWAP` packet through the backend interface.
+- Generated-code packet scans identified medium-confidence `PM4_DRAW_INDX_2` and `PM4_IM_LOAD_IMMEDIATE` XEX hook candidates in `docs/native_renderer_function_map.md`.
 - Runtime renderer selection is controlled by the ReXGlue cvar `native_renderer_mode`.
 
 ## Renderer modes
@@ -77,7 +78,7 @@ The Windows presets are present in JSON but disabled by CMake's host-system cond
 
 ## Next highest-impact targets
 
-1. Map the XEX function that corresponds to Windows `R_DrawIndexedPrimitive` and log indexed draw arguments before the GPU packet path.
-2. Expand command-buffer snapshotting from the present packet to draw/setup packets, especially `PM4_DRAW_INDX`, `PM4_SET_CONSTANT`, `PM4_SET_SHADER_CONSTANTS`, and `PM4_IM_LOAD`.
+1. Add a guarded runtime logger around one `PM4_DRAW_INDX_2` candidate, starting with `default` `sub_82582A30` / `default_mp` `sub_82117D20` or `default` `sub_8258CF68` / `default_mp` `sub_8212EB40`.
+2. Compare the logged draw payload to Windows `R_DrawIndexedPrimitive` inputs: index count, primitive type, source select, base index, and index-buffer address.
 3. Map shader/material load functions from Windows `Material_LoadPass*` to XEX asset loading, then connect hashes from `shader_work/shaders/index.json` to runtime material passes.
 4. Replace the null backend with the first real backend implementation, probably D3D12 on Windows because ReXGlue already emits D3D12 pipeline cache artifacts.

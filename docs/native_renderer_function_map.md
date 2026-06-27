@@ -30,3 +30,15 @@ Generated-code references are from `default/generated` and `default_mp/generated
 - Full XEX equivalents for `R_IssueRenderCommands`, `RB_BeginFrame`, `RB_EndFrame`, `R_DrawIndexedPrimitive`, and `Material_LoadPass*` are still unproven.
 - The loaded XEX has no useful renderer/material/shader strings for direct string-anchor matching.
 - Current strongest XEX anchors are generated import call sites, Ghidra xrefs around Xbox video functions, and the ReXGlue-written `PM4_XE_SWAP` packet captured after `VdSwap`.
+
+## Generated PM4 Packet Candidates
+
+These are not yet proven Windows-to-XEX function equivalents, but they are strong runtime hook candidates because generated XEX code constructs known Xenos Type-3 packet headers. Packet words are built as `0xC0000000 | ((count - 1) << 16) | (opcode << 8)`.
+
+| Candidate | Packet evidence | Confidence | Notes |
+|---|---|---|---|
+| `default` `sub_825828D8`; `default_mp` `sub_82117BC8` | Generated code builds a Type-3 packet with low bits `0x3600`, matching `PM4_DRAW_INDX_2`. | Medium | Likely an auto-index draw helper. Needs runtime argument logging before replacing or forwarding. |
+| `default` `sub_82582A30` at `loc_82582C84`; `default_mp` `sub_82117D20` at `loc_82117F74` | Generated code writes `lis -16384` then `ori 0x3600`, followed by initiator payload stores. | Medium | Good first draw hook candidate near the command-buffer helpers used by present setup. |
+| `default` `sub_8258A5E8` at `loc_8258A6BC`; `default_mp` `sub_8212E280` at `loc_8212E9CC` | Generated code writes `PM4_DRAW_INDX_2`, then `0x00030088`-style initiator data and several zero/index payload dwords. | Medium | Looks like a clear packetized draw emit path, but call-site role is not yet mapped to a named Windows renderer function. |
+| `default` `sub_8258CF68` at `loc_8258CF98`; `default_mp` `sub_8212EB40` at `loc_8212F030` | Generated code writes `PM4_DRAW_INDX_2` and computes part of the payload from runtime values. | Medium | Candidate for a variable-count draw helper. Compare with Windows `R_DrawIndexedPrimitive` once runtime arguments are logged. |
+| `default` `sub_8258CCE8`; `default_mp` `sub_8212D478` | Generated code constructs `0x2B00`, matching `PM4_IM_LOAD_IMMEDIATE`; Ghidra also finds `ori ... 0x2b00` at SP addresses including `0x8257D3A8`, `0x82589A20`, `0x82594474`, and `0x82597E68`. | Medium for shader-load packet emission | Likely shader microcode upload/setup path. This should be paired with `shader_work` hashes before native shader replacement. |
