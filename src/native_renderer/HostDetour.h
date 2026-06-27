@@ -5,5 +5,7 @@
 namespace bo2::native {
 
 bool InstallHostDetour(PPCFunc* target, PPCFunc* replacement, const char* name);
+PPCFunc* InstallGeneratedFunctionDetour(PPCFunc* target, PPCFunc* replacement,
+                                        const char* name);
 
 }  // namespace bo2::native

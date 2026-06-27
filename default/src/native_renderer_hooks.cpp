@@ -22,6 +22,8 @@ constexpr uint32_t kImpVdSetSystemCommandBufferGpuIdentifierAddress = 0x826EAF4C
 constexpr uint32_t kImpVdSwap = 0x826EAF9C;
 constexpr uint32_t kDrawPacketCandidate = 0x82582A30;
 
+PPCFunc* original_draw_packet_candidate;
+
 REX_HOOK_RAW(default_native_vd_set_system_command_buffer_gpu_identifier_address) {
   bo2::native::NativeRenderer::Instance().OnSystemCommandBufferGpuIdentifierAddress(
       ctx.r3.u32);
@@ -44,7 +46,11 @@ REX_HOOK_RAW(default_native_vd_swap) {
 REX_HOOK_RAW(default_native_draw_packet_candidate) {
   bo2::native::NativeRenderer::Instance().OnDrawPacketCandidate(
       "sub_82582A30", kDrawPacketCandidate, ctx);
-  sub_82582A30(ctx, base);
+  if (original_draw_packet_candidate) {
+    original_draw_packet_candidate(ctx, base);
+  } else {
+    sub_82582A30(ctx, base);
+  }
 }
 
 }  // namespace
@@ -64,6 +70,8 @@ void InstallDefaultNativeRenderer(rex::Runtime* runtime) {
   runtime->function_dispatcher()->SetFunction(kImpVdSwap, &default_native_vd_swap);
   runtime->function_dispatcher()->SetFunction(kDrawPacketCandidate,
                                                &default_native_draw_packet_candidate);
+  original_draw_packet_candidate = native::InstallGeneratedFunctionDetour(
+      &sub_82582A30, &default_native_draw_packet_candidate, "sub_82582A30");
 
   native::InstallHostDetour(
       &__imp__VdSetSystemCommandBufferGpuIdentifierAddress,
