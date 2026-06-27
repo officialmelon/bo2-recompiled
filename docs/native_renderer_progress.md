@@ -10,6 +10,7 @@ Last updated: 2026-06-28
 - `default` and `default_mp` both build the scaffold and install renderer hooks from their app-specific source trees.
 - The native renderer now snapshots the ReXGlue-written present command buffer after `VdSwap` and logs the `PM4_XE_SWAP` packet through the backend interface.
 - Generated-code packet scans identified medium-confidence `PM4_DRAW_INDX_2` and `PM4_IM_LOAD_IMMEDIATE` XEX hook candidates in `docs/native_renderer_function_map.md`.
+- Dispatcher-level draw-candidate loggers are installed for `default` `sub_82582A30` and `default_mp` `sub_82117D20`; they log guest registers and then call the original generated function.
 - Runtime renderer selection is controlled by the ReXGlue cvar `native_renderer_mode`.
 
 ## Renderer modes
@@ -68,17 +69,19 @@ The Windows presets are present in JSON but disabled by CMake's host-system cond
 - `native_renderer_mode=emulated` keeps the existing renderer path untouched.
 - `native_renderer_mode=native` and `native_renderer_mode=native_null` initialize a backend-neutral renderer facade and install hooks for the Xbox present imports.
 - The null/debug backend receives frame begin, `VdSwap`, `PM4_XE_SWAP` present-packet, and frame end events.
+- The null/debug backend can receive sampled draw-candidate register logs when execution reaches the installed dispatcher entries.
 
 ## What does not work yet
 
 - There is not yet a real Vulkan/D3D12/Metal/deko3d backend.
 - Draw calls, render target changes, shader bindings, texture bindings, and buffer uploads are not translated yet.
+- The draw-candidate hooks are dispatcher-level only. Direct generated calls to `sub_82582A30` / `sub_82117D20` will not be intercepted until a safe generated-function trampoline or lower-level generated-call hook is added.
 - The XEX equivalents for the core material and draw functions are not fully mapped.
 - Shader replacement exists only as a documented pipeline direction; no native shader override table is bound into the renderer yet.
 
 ## Next highest-impact targets
 
-1. Add a guarded runtime logger around one `PM4_DRAW_INDX_2` candidate, starting with `default` `sub_82582A30` / `default_mp` `sub_82117D20` or `default` `sub_8258CF68` / `default_mp` `sub_8212EB40`.
+1. Add a safe trampoline or generated-call interception path for `default` `sub_82582A30` / `default_mp` `sub_82117D20`, then confirm the draw-candidate logger fires during real frames.
 2. Compare the logged draw payload to Windows `R_DrawIndexedPrimitive` inputs: index count, primitive type, source select, base index, and index-buffer address.
 3. Map shader/material load functions from Windows `Material_LoadPass*` to XEX asset loading, then connect hashes from `shader_work/shaders/index.json` to runtime material passes.
 4. Replace the null backend with the first real backend implementation, probably D3D12 on Windows because ReXGlue already emits D3D12 pipeline cache artifacts.

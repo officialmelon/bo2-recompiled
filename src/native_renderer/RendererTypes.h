@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace bo2::native {
 
@@ -53,6 +54,20 @@ struct CommandBufferSnapshot {
   uint32_t frontbuffer_physical = 0;
   uint32_t width = 0;
   uint32_t height = 0;
+};
+
+struct DrawPacketCandidateInfo {
+  uint64_t event_index = 0;
+  uint32_t function_address = 0;
+  std::string_view function_name;
+  uint64_t link_register = 0;
+  uint32_t r3 = 0;
+  uint32_t r4 = 0;
+  uint32_t r5 = 0;
+  uint32_t r6 = 0;
+  uint32_t r7 = 0;
+  uint32_t r8 = 0;
+  uint32_t r31 = 0;
 };
 
 const char* ToString(RendererMode mode);

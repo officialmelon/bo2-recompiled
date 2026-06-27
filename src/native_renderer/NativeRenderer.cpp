@@ -167,6 +167,27 @@ void NativeRenderer::OnVdSwapEnd(const VdSwapInfo& swap, bool command_buffer_wri
   }
 }
 
+void NativeRenderer::OnDrawPacketCandidate(std::string_view function_name,
+                                           uint32_t function_address, PPCContext& ctx) {
+  if (!EnsureBackend()) {
+    return;
+  }
+
+  DrawPacketCandidateInfo draw{};
+  draw.event_index = ++draw_candidate_count_;
+  draw.function_address = function_address;
+  draw.function_name = function_name;
+  draw.link_register = ctx.lr;
+  draw.r3 = ctx.r3.u32;
+  draw.r4 = ctx.r4.u32;
+  draw.r5 = ctx.r5.u32;
+  draw.r6 = ctx.r6.u32;
+  draw.r7 = ctx.r7.u32;
+  draw.r8 = ctx.r8.u32;
+  draw.r31 = ctx.r31.u32;
+  backend_->SubmitDrawPacketCandidate(draw);
+}
+
 void NativeRenderer::Shutdown() {
   if (backend_) {
     backend_->Shutdown();

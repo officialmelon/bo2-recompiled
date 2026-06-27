@@ -56,6 +56,20 @@ void NullRendererBackend::SubmitCommandBufferSnapshot(
       snapshot.dwords[2], snapshot.dwords[3]);
 }
 
+void NullRendererBackend::SubmitDrawPacketCandidate(
+    const DrawPacketCandidateInfo& draw) {
+  if (!verbose_ || !ShouldLogHighFrequencyEvent(draw.event_index)) {
+    return;
+  }
+
+  REXLOG_INFO(
+      "BO2 native renderer draw candidate #{} {}({:#010x}) lr={:#010x} "
+      "r3={:#010x} r4={:#010x} r5={:#010x} r6={:#010x} r7={:#010x} r8={:#010x}",
+      draw.event_index, draw.function_name, draw.function_address,
+      static_cast<uint32_t>(draw.link_register), draw.r3, draw.r4, draw.r5, draw.r6,
+      draw.r7, draw.r8);
+}
+
 void NullRendererBackend::EndFrame(uint64_t frame_index) {
   if (verbose_ && ShouldLogHighFrequencyEvent(frame_index)) {
     REXLOG_INFO("BO2 native renderer frame {} end", frame_index);

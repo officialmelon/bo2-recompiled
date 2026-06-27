@@ -20,6 +20,7 @@ namespace {
 
 constexpr uint32_t kImpVdSetSystemCommandBufferGpuIdentifierAddress = 0x827FBA14;
 constexpr uint32_t kImpVdSwap = 0x827FBB94;
+constexpr uint32_t kDrawPacketCandidate = 0x82117D20;
 
 REX_HOOK_RAW(default_mp_native_vd_set_system_command_buffer_gpu_identifier_address) {
   bo2::native::NativeRenderer::Instance().OnSystemCommandBufferGpuIdentifierAddress(
@@ -40,6 +41,12 @@ REX_HOOK_RAW(default_mp_native_vd_swap) {
   }
 }
 
+REX_HOOK_RAW(default_mp_native_draw_packet_candidate) {
+  bo2::native::NativeRenderer::Instance().OnDrawPacketCandidate(
+      "sub_82117D20", kDrawPacketCandidate, ctx);
+  sub_82117D20(ctx, base);
+}
+
 }  // namespace
 
 namespace bo2 {
@@ -55,6 +62,8 @@ void InstallDefaultMpNativeRenderer(rex::Runtime* runtime) {
       kImpVdSetSystemCommandBufferGpuIdentifierAddress,
       &default_mp_native_vd_set_system_command_buffer_gpu_identifier_address);
   runtime->function_dispatcher()->SetFunction(kImpVdSwap, &default_mp_native_vd_swap);
+  runtime->function_dispatcher()->SetFunction(kDrawPacketCandidate,
+                                               &default_mp_native_draw_packet_candidate);
 
   native::InstallHostDetour(
       &__imp__VdSetSystemCommandBufferGpuIdentifierAddress,
