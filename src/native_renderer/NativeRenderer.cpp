@@ -167,13 +167,13 @@ void NativeRenderer::OnVdSwapEnd(const VdSwapInfo& swap, bool command_buffer_wri
   }
 }
 
-void NativeRenderer::OnDrawPacketCandidate(std::string_view function_name,
-                                           uint32_t function_address, PPCContext& ctx) {
+DrawPacketCandidateInfo NativeRenderer::OnDrawPacketCandidateBegin(
+    std::string_view function_name, uint32_t function_address, PPCContext& ctx) {
+  DrawPacketCandidateInfo draw{};
   if (!EnsureBackend()) {
-    return;
+    return draw;
   }
 
-  DrawPacketCandidateInfo draw{};
   draw.event_index = ++draw_candidate_count_;
   draw.function_address = function_address;
   draw.function_name = function_name;
@@ -185,6 +185,19 @@ void NativeRenderer::OnDrawPacketCandidate(std::string_view function_name,
   draw.r7 = ctx.r7.u32;
   draw.r8 = ctx.r8.u32;
   draw.r31 = ctx.r31.u32;
+  draw.command_buffer_object = ctx.r3.u32;
+  if (draw.command_buffer_object) {
+    draw.write_begin = ReadGuestU32(draw.command_buffer_object + 48);
+    draw.write_limit = ReadGuestU32(draw.command_buffer_object + 56);
+  }
+  return draw;
+}
+
+void NativeRenderer::OnDrawPacketCandidateEnd(DrawPacketCandidateInfo& draw) {
+  if (!draw.event_index || !EnsureBackend()) {
+    return;
+  }
+  CaptureDrawPacketWrites(draw);
   backend_->SubmitDrawPacketCandidate(draw);
 }
 
@@ -273,6 +286,47 @@ CommandBufferSnapshot NativeRenderer::CaptureCommandBufferSnapshot(
   }
 
   return snapshot;
+}
+
+void NativeRenderer::CaptureDrawPacketWrites(DrawPacketCandidateInfo& draw) const {
+  if (!draw.command_buffer_object || !draw.write_begin) {
+    return;
+  }
+
+  draw.write_end = ReadGuestU32(draw.command_buffer_object + 48);
+  if (draw.write_end <= draw.write_begin) {
+    return;
+  }
+
+  const uint32_t byte_count = draw.write_end - draw.write_begin;
+  uint32_t dword_count = byte_count / 4;
+  if (dword_count > DrawPacketCandidateInfo::kMaxDwords) {
+    dword_count = DrawPacketCandidateInfo::kMaxDwords;
+    draw.truncated = true;
+  }
+  draw.dword_count = dword_count;
+
+  for (uint32_t i = 0; i < dword_count; ++i) {
+    draw.dwords[i] = ReadGuestU32(draw.write_begin + 4 + i * 4);
+  }
+
+  for (uint32_t i = 0; i + 1 < draw.dword_count; ++i) {
+    const uint32_t packet = draw.dwords[i];
+    if (!IsType3Packet(packet, rex::graphics::xenos::PM4_DRAW_INDX_2)) {
+      continue;
+    }
+
+    const uint32_t initiator = draw.dwords[i + 1];
+    draw.has_draw_indx_2 = true;
+    draw.draw_packet_dword_offset = i;
+    draw.draw_packet = packet;
+    draw.draw_initiator = initiator;
+    draw.index_count = initiator >> 16;
+    draw.primitive_type = initiator & 0x3F;
+    draw.source_select = (initiator >> 6) & 0x3;
+    draw.index_32bit = ((initiator >> 11) & 0x1) != 0;
+    break;
+  }
 }
 
 }  // namespace bo2::native

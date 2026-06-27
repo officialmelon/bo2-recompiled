@@ -10,7 +10,7 @@ Last updated: 2026-06-28
 - `default` and `default_mp` both build the scaffold and install renderer hooks from their app-specific source trees.
 - The native renderer now snapshots the ReXGlue-written present command buffer after `VdSwap` and logs the `PM4_XE_SWAP` packet through the backend interface.
 - Generated-code packet scans identified medium-confidence `PM4_DRAW_INDX_2` and `PM4_IM_LOAD_IMMEDIATE` XEX hook candidates in `docs/native_renderer_function_map.md`.
-- Draw-candidate loggers are installed for `default` `sub_82582A30` and `default_mp` `sub_82117D20`; they log guest registers and then call the original generated function. On Windows hosts, a generated-function trampoline is attempted so direct generated calls can be intercepted after an expected-prologue check. Other hosts keep the dispatcher fallback.
+- Draw-candidate loggers are installed for `default` `sub_82582A30` and `default_mp` `sub_82117D20`; they snapshot command-buffer writes, parse `PM4_DRAW_INDX_2` payloads, and then call the original generated function. On Windows hosts, a generated-function trampoline is attempted so direct generated calls can be intercepted after an expected-prologue check. Other hosts keep the dispatcher fallback.
 - Runtime renderer selection is controlled by the ReXGlue cvar `native_renderer_mode`.
 
 ## Renderer modes
@@ -69,12 +69,13 @@ The Windows presets are present in JSON but disabled by CMake's host-system cond
 - `native_renderer_mode=emulated` keeps the existing renderer path untouched.
 - `native_renderer_mode=native` and `native_renderer_mode=native_null` initialize a backend-neutral renderer facade and install hooks for the Xbox present imports.
 - The null/debug backend receives frame begin, `VdSwap`, `PM4_XE_SWAP` present-packet, and frame end events.
-- The null/debug backend can receive sampled draw-candidate register logs when execution reaches the installed dispatcher entries or a successfully installed generated-function trampoline.
+- The null/debug backend can receive sampled draw-candidate logs with command-buffer object, write range, packet offset, index count, primitive type, source select, and index-size flag when execution reaches the installed dispatcher entries or a successfully installed generated-function trampoline.
 
 ## What does not work yet
 
 - There is not yet a real Vulkan/D3D12/Metal/deko3d backend.
-- Draw calls, render target changes, shader bindings, texture bindings, and buffer uploads are not translated yet.
+- Draw calls, render target changes, shader bindings, texture bindings, and buffer uploads are not translated into a real backend yet.
+- The selected draw-candidate hook can parse `PM4_DRAW_INDX_2`, but it only logs the packet and does not submit a real native draw command.
 - The draw-candidate direct-call trampoline is currently Windows-host only. Android builds still need an ARM64-safe generated-function detour or generated-call rewrite before direct generated calls to `sub_82582A30` / `sub_82117D20` are guaranteed to be intercepted.
 - The XEX equivalents for the core material and draw functions are not fully mapped.
 - Shader replacement exists only as a documented pipeline direction; no native shader override table is bound into the renderer yet.
@@ -82,6 +83,6 @@ The Windows presets are present in JSON but disabled by CMake's host-system cond
 ## Next highest-impact targets
 
 1. Add an Android-safe generated-call interception path for `default` `sub_82582A30` / `default_mp` `sub_82117D20`, or run a Windows host build to confirm the new trampoline fires during real frames.
-2. Compare the logged draw payload to Windows `R_DrawIndexedPrimitive` inputs: index count, primitive type, source select, base index, and index-buffer address.
+2. Convert parsed `PM4_DRAW_INDX_2` packets into backend-neutral draw commands and compare them to Windows `R_DrawIndexedPrimitive` inputs: index count, primitive type, source select, base index, and index-buffer address.
 3. Map shader/material load functions from Windows `Material_LoadPass*` to XEX asset loading, then connect hashes from `shader_work/shaders/index.json` to runtime material passes.
 4. Replace the null backend with the first real backend implementation, probably D3D12 on Windows because ReXGlue already emits D3D12 pipeline cache artifacts.

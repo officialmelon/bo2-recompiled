@@ -57,6 +57,8 @@ struct CommandBufferSnapshot {
 };
 
 struct DrawPacketCandidateInfo {
+  static constexpr std::size_t kMaxDwords = 128;
+
   uint64_t event_index = 0;
   uint32_t function_address = 0;
   std::string_view function_name;
@@ -68,6 +70,21 @@ struct DrawPacketCandidateInfo {
   uint32_t r7 = 0;
   uint32_t r8 = 0;
   uint32_t r31 = 0;
+  uint32_t command_buffer_object = 0;
+  uint32_t write_begin = 0;
+  uint32_t write_end = 0;
+  uint32_t write_limit = 0;
+  uint32_t dword_count = 0;
+  std::array<uint32_t, kMaxDwords> dwords{};
+  bool truncated = false;
+  bool has_draw_indx_2 = false;
+  uint32_t draw_packet_dword_offset = 0;
+  uint32_t draw_packet = 0;
+  uint32_t draw_initiator = 0;
+  uint32_t index_count = 0;
+  uint32_t primitive_type = 0;
+  uint32_t source_select = 0;
+  bool index_32bit = false;
 };
 
 const char* ToString(RendererMode mode);

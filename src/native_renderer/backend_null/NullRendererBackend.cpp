@@ -62,12 +62,26 @@ void NullRendererBackend::SubmitDrawPacketCandidate(
     return;
   }
 
+  if (draw.has_draw_indx_2) {
+    REXLOG_INFO(
+        "BO2 native renderer draw candidate #{} {}({:#010x}) "
+        "cmd_obj={:#010x} writes={:#010x}->{:#010x} dwords={} "
+        "PM4_DRAW_INDX_2@{} indices={} prim={} src={} index32={}",
+        draw.event_index, draw.function_name, draw.function_address,
+        draw.command_buffer_object, draw.write_begin, draw.write_end, draw.dword_count,
+        draw.draw_packet_dword_offset, draw.index_count, draw.primitive_type,
+        draw.source_select, draw.index_32bit);
+    return;
+  }
+
   REXLOG_INFO(
       "BO2 native renderer draw candidate #{} {}({:#010x}) lr={:#010x} "
-      "r3={:#010x} r4={:#010x} r5={:#010x} r6={:#010x} r7={:#010x} r8={:#010x}",
+      "r3={:#010x} r4={:#010x} r5={:#010x} r6={:#010x} r7={:#010x} r8={:#010x} "
+      "cmd_obj={:#010x} writes={:#010x}->{:#010x} dwords={} truncated={}",
       draw.event_index, draw.function_name, draw.function_address,
       static_cast<uint32_t>(draw.link_register), draw.r3, draw.r4, draw.r5, draw.r6,
-      draw.r7, draw.r8);
+      draw.r7, draw.r8, draw.command_buffer_object, draw.write_begin, draw.write_end,
+      draw.dword_count, draw.truncated);
 }
 
 void NullRendererBackend::EndFrame(uint64_t frame_index) {

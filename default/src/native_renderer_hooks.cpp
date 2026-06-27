@@ -44,13 +44,15 @@ REX_HOOK_RAW(default_native_vd_swap) {
 }
 
 REX_HOOK_RAW(default_native_draw_packet_candidate) {
-  bo2::native::NativeRenderer::Instance().OnDrawPacketCandidate(
-      "sub_82582A30", kDrawPacketCandidate, ctx);
+  auto& renderer = bo2::native::NativeRenderer::Instance();
+  auto draw = renderer.OnDrawPacketCandidateBegin("sub_82582A30",
+                                                  kDrawPacketCandidate, ctx);
   if (original_draw_packet_candidate) {
     original_draw_packet_candidate(ctx, base);
   } else {
     sub_82582A30(ctx, base);
   }
+  renderer.OnDrawPacketCandidateEnd(draw);
 }
 
 }  // namespace
