@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -24,6 +26,7 @@ struct RendererConfig {
 };
 
 struct VdSwapInfo {
+  uint64_t frame_index = 0;
   uint32_t command_buffer = 0;
   uint32_t fetch_constant = 0;
   uint32_t writeback = 0;
@@ -34,6 +37,22 @@ struct VdSwapInfo {
   uint32_t color_space_ptr = 0;
   uint32_t width_ptr = 0;
   uint32_t height_ptr = 0;
+};
+
+struct CommandBufferSnapshot {
+  static constexpr std::size_t kMaxDwords = 16;
+
+  uint64_t frame_index = 0;
+  uint32_t command_buffer = 0;
+  uint32_t dword_count = 0;
+  std::array<uint32_t, kMaxDwords> dwords{};
+  bool has_xe_swap = false;
+  uint32_t xe_swap_dword_offset = 0;
+  uint32_t xe_swap_packet = 0;
+  uint32_t swap_signature = 0;
+  uint32_t frontbuffer_physical = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
 };
 
 const char* ToString(RendererMode mode);

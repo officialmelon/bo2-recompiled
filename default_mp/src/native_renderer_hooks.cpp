@@ -31,9 +31,12 @@ REX_HOOK_RAW(default_mp_native_vd_set_system_command_buffer_gpu_identifier_addre
 
 REX_HOOK_RAW(default_mp_native_vd_swap) {
   auto& renderer = bo2::native::NativeRenderer::Instance();
-  renderer.OnVdSwap(ctx, base);
+  const auto swap = renderer.OnVdSwapBegin(ctx, base);
   if (!renderer.ShouldSuppressEmulatedPresent()) {
     rex::ppc::HostToGuestFunction<rex::kernel::xboxkrnl::VdSwap_entry>(ctx, base);
+    renderer.OnVdSwapEnd(swap, true);
+  } else {
+    renderer.OnVdSwapEnd(swap, false);
   }
 }
 

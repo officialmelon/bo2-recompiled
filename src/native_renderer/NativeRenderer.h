@@ -26,7 +26,8 @@ class NativeRenderer {
   const RendererConfig& config() const { return config_; }
 
   void OnSystemCommandBufferGpuIdentifierAddress(uint32_t address);
-  void OnVdSwap(PPCContext& ctx, uint8_t* base);
+  VdSwapInfo OnVdSwapBegin(PPCContext& ctx, uint8_t* base);
+  void OnVdSwapEnd(const VdSwapInfo& swap, bool command_buffer_written);
   void Shutdown();
 
  private:
@@ -34,6 +35,7 @@ class NativeRenderer {
 
   bool EnsureBackend();
   VdSwapInfo CaptureVdSwap(PPCContext& ctx, uint8_t* base) const;
+  CommandBufferSnapshot CaptureCommandBufferSnapshot(const VdSwapInfo& swap) const;
 
   RendererConfig config_;
   std::unique_ptr<RendererBackend> backend_;

@@ -8,6 +8,7 @@ Last updated: 2026-06-28
 - Existing source/config/script work was checkpointed first in commit `87f8cb2`.
 - Native renderer scaffolding now lives under `src/native_renderer/`.
 - `default` and `default_mp` both build the scaffold and install renderer hooks from their app-specific source trees.
+- The native renderer now snapshots the ReXGlue-written present command buffer after `VdSwap` and logs the `PM4_XE_SWAP` packet through the backend interface.
 - Runtime renderer selection is controlled by the ReXGlue cvar `native_renderer_mode`.
 
 ## Renderer modes
@@ -46,7 +47,7 @@ The first real rendering path intercepted is the Xbox video present path:
 - `default`: import `__imp__VdSwap` at `0x826EAF9C`, command-buffer GPU identifier import at `0x826EAF4C`.
 - `default_mp`: import `__imp__VdSwap` at `0x827FBB94`, command-buffer GPU identifier import at `0x827FBA14`.
 
-The hook records the `VdSwap` arguments, submits them to the backend-neutral renderer, and forwards to ReXGlue unless `native_renderer_mode=native_null`.
+The hook records the `VdSwap` arguments, submits them to the backend-neutral renderer, forwards to ReXGlue unless `native_renderer_mode=native_null`, then snapshots the first 16 dwords of the 64-dword present command buffer that ReXGlue writes. The null backend detects `PM4_XE_SWAP`, logs the packet dword offset, physical frontbuffer address, and presented dimensions.
 The host import detour is currently implemented for Windows hosts only. Android builds still compile this path, but direct generated import calls continue through the ReXGlue SDK until an Android-safe host detour or lower-level generated-call interception is added.
 
 ## Build verification
@@ -65,7 +66,7 @@ The Windows presets are present in JSON but disabled by CMake's host-system cond
 - The project builds with native renderer code linked into both app targets.
 - `native_renderer_mode=emulated` keeps the existing renderer path untouched.
 - `native_renderer_mode=native` and `native_renderer_mode=native_null` initialize a backend-neutral renderer facade and install hooks for the Xbox present imports.
-- The null/debug backend receives frame begin, `VdSwap`, and frame end events.
+- The null/debug backend receives frame begin, `VdSwap`, `PM4_XE_SWAP` present-packet, and frame end events.
 
 ## What does not work yet
 
@@ -76,7 +77,7 @@ The Windows presets are present in JSON but disabled by CMake's host-system cond
 
 ## Next highest-impact targets
 
-1. Add a runtime trace hook for the XEX function that writes PM4 packets after `VdSwap`, starting from `default` generated `sub_8257E590` and `default_mp` generated `sub_821211A0`.
-2. Map the XEX function that corresponds to Windows `R_DrawIndexedPrimitive` and log indexed draw arguments before the GPU packet path.
+1. Map the XEX function that corresponds to Windows `R_DrawIndexedPrimitive` and log indexed draw arguments before the GPU packet path.
+2. Expand command-buffer snapshotting from the present packet to draw/setup packets, especially `PM4_DRAW_INDX`, `PM4_SET_CONSTANT`, `PM4_SET_SHADER_CONSTANTS`, and `PM4_IM_LOAD`.
 3. Map shader/material load functions from Windows `Material_LoadPass*` to XEX asset loading, then connect hashes from `shader_work/shaders/index.json` to runtime material passes.
 4. Replace the null backend with the first real backend implementation, probably D3D12 on Windows because ReXGlue already emits D3D12 pipeline cache artifacts.

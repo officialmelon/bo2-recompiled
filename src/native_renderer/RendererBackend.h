@@ -15,6 +15,8 @@ class RendererBackend {
   virtual void Shutdown() = 0;
   virtual void BeginFrame(uint64_t frame_index) = 0;
   virtual void SubmitVdSwap(uint64_t frame_index, const VdSwapInfo& swap) = 0;
+  virtual void SubmitCommandBufferSnapshot(
+      uint64_t frame_index, const CommandBufferSnapshot& snapshot) = 0;
   virtual void EndFrame(uint64_t frame_index) = 0;
   virtual std::string_view LastError() const = 0;
 };

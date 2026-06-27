@@ -2,11 +2,15 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <string>
 
 #include <rex/cvar.h>
+#include <rex/graphics/xenos.h>
 #include <rex/logging.h>
+#include <rex/memory/utils.h>
 #include <rex/ppc/function.h>
+#include <rex/system/kernel_state.h>
 
 #include "DebugRenderLog.h"
 #include "RendererBackend.h"
@@ -40,9 +44,22 @@ RendererBackendKind BackendForMode(RendererMode mode) {
   return RendererBackendKind::None;
 }
 
-uint32_t ReadGuestArg(PPCContext& ctx, uint8_t* base, size_t arg) {
+uint32_t ReadGuestArg(PPCContext& ctx, uint8_t* base, std::size_t arg) {
   return static_cast<uint32_t>(
       rex::ppc::ArgTranslator::GetIntegerArgumentValue(ctx, base, arg));
+}
+
+uint32_t ReadGuestU32(uint32_t address) {
+  if (!address) {
+    return 0;
+  }
+  const auto* ptr = REX_KERNEL_MEMORY()->TranslateVirtual<const uint32_t*>(address);
+  return rex::memory::load_and_swap<uint32_t>(ptr);
+}
+
+bool IsType3Packet(uint32_t packet, rex::graphics::xenos::Type3Opcode opcode) {
+  return ((packet >> 30) == 3) &&
+         (((packet >> 8) & 0x7F) == static_cast<uint32_t>(opcode));
 }
 
 }  // namespace
@@ -120,20 +137,33 @@ void NativeRenderer::OnSystemCommandBufferGpuIdentifierAddress(uint32_t address)
   }
 }
 
-void NativeRenderer::OnVdSwap(PPCContext& ctx, uint8_t* base) {
+VdSwapInfo NativeRenderer::OnVdSwapBegin(PPCContext& ctx, uint8_t* base) {
+  VdSwapInfo swap = CaptureVdSwap(ctx, base);
   if (!EnsureBackend()) {
-    return;
+    return swap;
   }
 
   const uint64_t frame_index = ++vd_swap_count_;
-  const VdSwapInfo swap = CaptureVdSwap(ctx, base);
+  swap.frame_index = frame_index;
   backend_->BeginFrame(frame_index);
   backend_->SubmitVdSwap(frame_index, swap);
-  backend_->EndFrame(frame_index);
+  return swap;
+}
 
-  if (ShouldSuppressEmulatedPresent() && ShouldLogHighFrequencyEvent(frame_index)) {
+void NativeRenderer::OnVdSwapEnd(const VdSwapInfo& swap, bool command_buffer_written) {
+  if (!swap.frame_index || !EnsureBackend()) {
+    return;
+  }
+
+  if (command_buffer_written) {
+    backend_->SubmitCommandBufferSnapshot(
+        swap.frame_index, CaptureCommandBufferSnapshot(swap));
+  }
+  backend_->EndFrame(swap.frame_index);
+
+  if (!command_buffer_written && ShouldLogHighFrequencyEvent(swap.frame_index)) {
     REXLOG_WARN("BO2 native renderer native_null suppressed emulated VdSwap frame={}",
-                frame_index);
+                swap.frame_index);
   }
 }
 
@@ -182,6 +212,46 @@ VdSwapInfo NativeRenderer::CaptureVdSwap(PPCContext& ctx, uint8_t* base) const {
   swap.width_ptr = ReadGuestArg(ctx, base, 8);
   swap.height_ptr = ReadGuestArg(ctx, base, 9);
   return swap;
+}
+
+CommandBufferSnapshot NativeRenderer::CaptureCommandBufferSnapshot(
+    const VdSwapInfo& swap) const {
+  CommandBufferSnapshot snapshot{};
+  snapshot.frame_index = swap.frame_index;
+  snapshot.command_buffer = swap.command_buffer;
+  snapshot.dword_count = CommandBufferSnapshot::kMaxDwords;
+
+  if (!swap.command_buffer) {
+    return snapshot;
+  }
+
+  for (std::size_t i = 0; i < snapshot.dwords.size(); ++i) {
+    snapshot.dwords[i] = ReadGuestU32(swap.command_buffer + static_cast<uint32_t>(i * 4));
+  }
+
+  for (std::size_t i = 0; i + 4 < snapshot.dwords.size(); ++i) {
+    const uint32_t packet = snapshot.dwords[i];
+    if (!IsType3Packet(packet, rex::graphics::xenos::PM4_XE_SWAP)) {
+      continue;
+    }
+
+    snapshot.has_xe_swap = true;
+    snapshot.xe_swap_dword_offset = static_cast<uint32_t>(i);
+    snapshot.xe_swap_packet = packet;
+    snapshot.swap_signature = snapshot.dwords[i + 1];
+    snapshot.frontbuffer_physical = snapshot.dwords[i + 2];
+    snapshot.width = snapshot.dwords[i + 3];
+    snapshot.height = snapshot.dwords[i + 4];
+
+    if (snapshot.swap_signature != rex::graphics::xenos::kSwapSignature) {
+      REXLOG_WARN(
+          "BO2 native renderer unexpected swap signature frame={} signature={:#010x}",
+          snapshot.frame_index, snapshot.swap_signature);
+    }
+    break;
+  }
+
+  return snapshot;
 }
 
 }  // namespace bo2::native
