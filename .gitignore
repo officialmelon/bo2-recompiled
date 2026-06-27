@@ -9,6 +9,8 @@ assets/*
 *.claude
 *.vscode
 *.log
+node_modules/
+shader_cache/
 
 !*/generated/.gitkeep
 !*/out/.gitkeep

@@ -1,0 +1,14 @@
+[project]
+sdk_version = "0.8.0.0"
+name = "default_mp"
+
+[entrypoint]
+file_path = "../assets/default_mp.xex"
+out_directory_path = "generated"
+includes = [
+  "default_mp_config.toml",
+]
+
+setjmp_address  = 0x827D8600
+longjmp_address = 0x827D9790
+

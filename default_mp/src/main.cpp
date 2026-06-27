@@ -3,7 +3,6 @@
 //
 // This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 
-#include "generated/default_mp_config.h"
 #include "generated/default_mp_init.h"
 
 #include "default_mp_app.h"

@@ -1,0 +1,14 @@
+[project]
+sdk_version = "0.8.0.0"
+name = "default"
+
+[entrypoint]
+file_path = "../assets/default.xex"
+out_directory_path = "generated"
+includes = [
+  "default_config.toml",
+]
+
+setjmp_address  = 0x826CA660
+longjmp_address = 0x826CAAF0
+

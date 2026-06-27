@@ -7,14 +7,14 @@
 REXCVAR_DEFINE_STRING(mode, "", "Game", "Game mode to launch (mp, zombies)");
 
 #define GUEST_FUNCTION_STUB(func_name) \
-extern "C" PPC_FUNC(func_name) { \
-    PPC_FUNC_PROLOGUE(); \
+extern "C" REX_FUNC(func_name) { \
+    REX_FUNC_PROLOGUE(); \
     ctx.r3.u64 = 0; \
 }
 
 #define GUEST_FUNCTION_STUB_FAIL(func_name) \
-extern "C" PPC_FUNC(func_name) { \
-    PPC_FUNC_PROLOGUE(); \
+extern "C" REX_FUNC(func_name) { \
+    REX_FUNC_PROLOGUE(); \
     ctx.r3.u64 = 0x80004005; \
 }
 

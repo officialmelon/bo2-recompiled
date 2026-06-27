@@ -15,12 +15,16 @@ include(generated/rexglue.cmake)
 # Sources
 set(DEFAULTMP_SOURCES
     src/main.cpp
+    src/native_input.cpp
     src/stubs.cpp
     src/xam.cpp
+    ../common/android_launcher.cpp
 )
 
 if(WIN32)
     add_executable(default_mp WIN32 ${DEFAULTMP_SOURCES})
+elseif(ANDROID)
+    add_library(default_mp SHARED ${DEFAULTMP_SOURCES})
 else()
     add_executable(default_mp ${DEFAULTMP_SOURCES})
 endif()

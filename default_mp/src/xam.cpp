@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <rex/runtime.h>
+#include <rex/hook.h>
 #include <rex/kernel/xboxkrnl/error.h>
 #include <rex/ppc/function.h>
 #include <rex/string.h>
@@ -15,6 +16,8 @@
 #include <rex/system/xsocket.h>
 #include <rex/system/xthread.h>
 #include <rex/system/xtypes.h>
+
+#include "generated/default_mp_init.h"
 
 #if REX_PLATFORM_WIN32
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
@@ -135,9 +138,9 @@ bool HandleXgiMessage(uint32_t message, uint32_t buffer_ptr, uint32_t buffer_len
         auto* info = memory->TranslateVirtual(session_info_ptr);
         memory::store_and_swap<uint32_t>(info + 0x00, 0xAB1234CD);
         memory::store_and_swap<uint32_t>(info + 0x04, 0xEF5678AB);
-        memory::store_and_swap<uint32_t>(info + 0x08, 0xC0A80164);
-        memory::store_and_swap<uint32_t>(info + 0x0C, 0);
-        memory::store_and_swap<uint16_t>(info + 0x10, 0);
+        memory::store_and_swap<uint32_t>(info + 0x08, 0x7F000001);
+        memory::store_and_swap<uint32_t>(info + 0x0C, 0x7F000001);
+        memory::store_and_swap<uint16_t>(info + 0x10, 3074);
         std::memset(info + 0x12, 0xCC, 6);
         std::memset(info + 0x18, 0, 20);
         std::memset(info + 0x2C, 0xAB, 16);
@@ -211,8 +214,7 @@ X_HRESULT StartIoRequestWithOverrides(uint32_t app, uint32_t message, uint32_t o
   return result;
 }
 
-ppc_u32_result_t XamUserCheckPrivilegeOverride(ppc_u32_t user_index, ppc_u32_t mask,
-                                               ppc_pu32_t out_value) {
+u32 XamUserCheckPrivilegeOverride(u32 user_index, u32 mask, mapped_u32 out_value) {
   (void)mask;
   if (user_index != 0xFF) {
     if (user_index >= 4) {
@@ -229,29 +231,27 @@ ppc_u32_result_t XamUserCheckPrivilegeOverride(ppc_u32_t user_index, ppc_u32_t m
   return X_ERROR_SUCCESS;
 }
 
-ppc_u32_result_t XMsgInProcessCallOverride(ppc_u32_t app, ppc_u32_t message, ppc_u32_t arg1,
-                                           ppc_u32_t arg2) {
+u32 XMsgInProcessCallOverride(u32 app, u32 message, u32 arg1, u32 arg2) {
   return DispatchWithOverrides(app, message, arg1, arg2);
 }
 
-ppc_u32_result_t XMsgStartIORequestExOverride(ppc_u32_t app, ppc_u32_t message,
-                                              ppc_ptr_t<XAM_OVERLAPPED> overlapped_ptr,
-                                              ppc_u32_t buffer_ptr, ppc_u32_t buffer_length,
-                                              ppc_ptr_t<XMSGSTARTIOREQUEST_UNKNOWNARG> unknown_ptr) {
+u32 XMsgStartIORequestExOverride(u32 app, u32 message,
+                                 ppc_ptr_t<XAM_OVERLAPPED> overlapped_ptr,
+                                 u32 buffer_ptr, u32 buffer_length,
+                                 ppc_ptr_t<XMSGSTARTIOREQUEST_UNKNOWNARG> unknown_ptr) {
   (void)unknown_ptr;
   return StartIoRequestWithOverrides(app, message, overlapped_ptr.guest_address(), buffer_ptr,
                                      buffer_length);
 }
 
-ppc_u32_result_t XMsgStartIORequestOverride(ppc_u32_t app, ppc_u32_t message,
-                                            ppc_ptr_t<XAM_OVERLAPPED> overlapped_ptr,
-                                            ppc_u32_t buffer_ptr, ppc_u32_t buffer_length) {
+u32 XMsgStartIORequestOverride(u32 app, u32 message,
+                               ppc_ptr_t<XAM_OVERLAPPED> overlapped_ptr,
+                               u32 buffer_ptr, u32 buffer_length) {
   return StartIoRequestWithOverrides(app, message, overlapped_ptr.guest_address(), buffer_ptr,
                                      buffer_length);
 }
 
-ppc_u32_result_t XMsgCancelIORequestOverride(ppc_ptr_t<XAM_OVERLAPPED> overlapped_ptr,
-                                             ppc_u32_t wait) {
+u32 XMsgCancelIORequestOverride(ppc_ptr_t<XAM_OVERLAPPED> overlapped_ptr, u32 wait) {
   X_HANDLE event_handle = XOverlappedGetEvent(overlapped_ptr);
   if (event_handle && wait) {
     auto ev = REX_KERNEL_OBJECTS()->LookupObject<XEvent>(event_handle);
@@ -262,16 +262,15 @@ ppc_u32_result_t XMsgCancelIORequestOverride(ppc_ptr_t<XAM_OVERLAPPED> overlappe
   return 0;
 }
 
-ppc_u32_result_t XMsgCompleteIORequestOverride(ppc_ptr_t<XAM_OVERLAPPED> overlapped_ptr,
-                                               ppc_u32_t result, ppc_u32_t extended_error,
-                                               ppc_u32_t length) {
+u32 XMsgCompleteIORequestOverride(ppc_ptr_t<XAM_OVERLAPPED> overlapped_ptr, u32 result,
+                                  u32 extended_error, u32 length) {
   REX_KERNEL_STATE()->CompleteOverlappedImmediateEx(overlapped_ptr.guest_address(), result,
                                                     extended_error, length);
   return X_ERROR_SUCCESS;
 }
 
-ppc_u32_result_t XamGetOverlappedResultOverride(ppc_ptr_t<XAM_OVERLAPPED> overlapped_ptr,
-                                                ppc_pu32_t length_ptr, ppc_u32_t unknown) {
+u32 XamGetOverlappedResultOverride(ppc_ptr_t<XAM_OVERLAPPED> overlapped_ptr,
+                                   mapped_u32 length_ptr, u32 unknown) {
   (void)unknown;
   uint32_t result = 0;
   if (overlapped_ptr->result != X_ERROR_IO_PENDING) {
@@ -293,18 +292,18 @@ ppc_u32_result_t XamGetOverlappedResultOverride(ppc_ptr_t<XAM_OVERLAPPED> overla
   return result;
 }
 
-ppc_u32_result_t NetDllXNetGetTitleXnAddrOverride(ppc_u32_t caller, ppc_ptr_t<XNADDR> addr_ptr) {
+u32 NetDllXNetGetTitleXnAddrOverride(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
   (void)caller;
-  addr_ptr->ina = 0xC0A80164;
-  addr_ptr->ina_online = 0;
-  addr_ptr->port_online = 0;
+  addr_ptr->ina = 0x7F000001;
+  addr_ptr->ina_online = 0x7F000001;
+  addr_ptr->port_online = 3074;
   std::memset(addr_ptr->ab_enet, 0xCC, sizeof(addr_ptr->ab_enet));
   std::memset(addr_ptr->ab_online, 0, sizeof(addr_ptr->ab_online));
-  return kXNetGetXnAddrEthernet | kXNetGetXnAddrStatic;
+  return kXNetGetXnAddrEthernet | kXNetGetXnAddrStatic | 0x00000080;
 }
 
-ppc_u32_result_t NetDllXNetXnAddrToMachineIdOverride(ppc_u32_t caller, ppc_ptr_t<XNADDR> addr_ptr,
-                                                     ppc_pu32_t id_ptr) {
+u32 NetDllXNetXnAddrToMachineIdOverride(u32 caller, ppc_ptr_t<XNADDR> addr_ptr,
+                                        mapped_u32 id_ptr) {
   (void)caller;
   (void)addr_ptr;
   if (id_ptr) {
@@ -313,15 +312,15 @@ ppc_u32_result_t NetDllXNetXnAddrToMachineIdOverride(ppc_u32_t caller, ppc_ptr_t
   return 0;
 }
 
-void NetDllXNetInAddrToStringOverride(ppc_u32_t caller, ppc_u32_t in_addr_val,
-                                      ppc_pchar_t string_out, ppc_u32_t string_size) {
+void NetDllXNetInAddrToStringOverride(u32 caller, u32 in_addr_val, mapped_string string_out,
+                                     u32 string_size) {
   (void)caller;
   (void)in_addr_val;
   rex::string::rex_strcpy(string_out, string_size, "127.0.0.1");
 }
 
-ppc_u32_result_t NetDllXNetXnAddrToInAddrOverride(ppc_u32_t caller, ppc_ptr_t<XNADDR> xn_addr,
-                                                  ppc_pvoid_t xid, ppc_pvoid_t in_addr) {
+u32 NetDllXNetXnAddrToInAddrOverride(u32 caller, ppc_ptr_t<XNADDR> xn_addr, mapped_void xid,
+                                     mapped_void in_addr) {
   (void)caller;
   (void)xid;
   if (in_addr && xn_addr) {
@@ -331,23 +330,23 @@ ppc_u32_result_t NetDllXNetXnAddrToInAddrOverride(ppc_u32_t caller, ppc_ptr_t<XN
   return 0;
 }
 
-ppc_u32_result_t NetDllXNetInAddrToXnAddrOverride(ppc_u32_t caller, ppc_pvoid_t in_addr,
-                                                  ppc_ptr_t<XNADDR> xn_addr, ppc_pvoid_t xid) {
+u32 NetDllXNetInAddrToXnAddrOverride(u32 caller, mapped_void in_addr,
+                                     ppc_ptr_t<XNADDR> xn_addr, mapped_void xid) {
   (void)caller;
   (void)xid;
   if (xn_addr && in_addr) {
     auto* src = REX_KERNEL_MEMORY()->TranslateVirtual(in_addr.guest_address());
     xn_addr->ina = memory::load<uint32_t>(src);
-    xn_addr->ina_online = 0;
-    xn_addr->port_online = 0;
+    xn_addr->ina_online = 0x7F000001;
+    xn_addr->port_online = 3074;
     std::memset(xn_addr->ab_enet, 0xCC, sizeof(xn_addr->ab_enet));
     std::memset(xn_addr->ab_online, 0, sizeof(xn_addr->ab_online));
   }
   return 0;
 }
 
-ppc_u32_result_t NetDllXNetQosServiceLookupOverride(ppc_u32_t caller, ppc_u32_t flags,
-                                                    ppc_u32_t event_handle, ppc_pu32_t pqos) {
+u32 NetDllXNetQosServiceLookupOverride(u32 caller, u32 flags, u32 event_handle,
+                                       mapped_u32 pqos) {
   (void)caller;
   (void)flags;
   if (pqos) {
@@ -367,8 +366,8 @@ ppc_u32_result_t NetDllXNetQosServiceLookupOverride(ppc_u32_t caller, ppc_u32_t 
   return 0;
 }
 
-ppc_u32_result_t NetDllXNetQosListenOverride(ppc_u32_t caller, ppc_pvoid_t id, ppc_pvoid_t data,
-                                             ppc_u32_t data_size, ppc_u32_t r7, ppc_u32_t flags) {
+u32 NetDllXNetQosListenOverride(u32 caller, mapped_void id, mapped_void data, u32 data_size,
+                                u32 r7, u32 flags) {
   (void)caller;
   (void)id;
   (void)data;
@@ -378,15 +377,14 @@ ppc_u32_result_t NetDllXNetQosListenOverride(ppc_u32_t caller, ppc_pvoid_t id, p
   return 0;
 }
 
-ppc_u32_result_t NetDllXNetGetEthernetLinkStatusOverride(ppc_u32_t caller) {
+u32 NetDllXNetGetEthernetLinkStatusOverride(u32 caller) {
   (void)caller;
   return kXNetEthernetLinkActive | kXNetEthernetLink100Mbps | kXNetEthernetLinkFullDuplex;
 }
 
-ppc_u32_result_t NetDllRecvFromOverride(ppc_u32_t caller, ppc_u32_t socket_handle,
-                                        ppc_pvoid_t buf_ptr, ppc_u32_t buf_len, ppc_u32_t flags,
-                                        ppc_ptr_t<XSOCKADDR_IN> from_ptr,
-                                        ppc_pu32_t fromlen_ptr) {
+u32 NetDllRecvFromOverride(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len,
+                           u32 flags, ppc_ptr_t<XSOCKADDR_IN> from_ptr,
+                           mapped_u32 fromlen_ptr) {
   (void)caller;
   auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
   if (!socket) {
@@ -425,9 +423,8 @@ ppc_u32_result_t NetDllRecvFromOverride(ppc_u32_t caller, ppc_u32_t socket_handl
   return static_cast<uint32_t>(ret);
 }
 
-ppc_u32_result_t NetDllSendToOverride(ppc_u32_t caller, ppc_u32_t socket_handle,
-                                      ppc_pvoid_t buf_ptr, ppc_u32_t buf_len, ppc_u32_t flags,
-                                      ppc_ptr_t<XSOCKADDR_IN> to_ptr, ppc_u32_t to_len) {
+u32 NetDllSendToOverride(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len,
+                         u32 flags, ppc_ptr_t<XSOCKADDR_IN> to_ptr, u32 to_len) {
   (void)caller;
   auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
   if (!socket) {
@@ -450,9 +447,8 @@ ppc_u32_result_t NetDllSendToOverride(ppc_u32_t caller, ppc_u32_t socket_handle,
   return static_cast<uint32_t>(ret);
 }
 
-void InstallHostDetour(const char* name, PPCFunc* replacement) {
+void InstallHostDetour(PPCFunc* target, PPCFunc* replacement) {
 #if REX_PLATFORM_WIN32
-  auto* target = rex::FindPPCFuncByName(name);
   assert_not_null(target);
 
   constexpr size_t kPatchSize = 12;
@@ -473,29 +469,28 @@ void InstallHostDetour(const char* name, PPCFunc* replacement) {
   DWORD unused_protect = 0;
   VirtualProtect(patch, kPatchSize, old_protect, &unused_protect);
 #else
-  (void)name;
+  (void)target;
   (void)replacement;
-  assert_always();
 #endif
 }
 
-PPC_HOOK(default_mp__XamUserCheckPrivilege, XamUserCheckPrivilegeOverride)
-PPC_HOOK(default_mp__XMsgInProcessCall, XMsgInProcessCallOverride)
-PPC_HOOK(default_mp__XMsgStartIORequestEx, XMsgStartIORequestExOverride)
-PPC_HOOK(default_mp__XMsgStartIORequest, XMsgStartIORequestOverride)
-PPC_HOOK(default_mp__XMsgCancelIORequest, XMsgCancelIORequestOverride)
-PPC_HOOK(default_mp__XMsgCompleteIORequest, XMsgCompleteIORequestOverride)
-PPC_HOOK(default_mp__XamGetOverlappedResult, XamGetOverlappedResultOverride)
-PPC_HOOK(default_mp__NetDllXNetGetTitleXnAddr, NetDllXNetGetTitleXnAddrOverride)
-PPC_HOOK(default_mp__NetDllXNetXnAddrToMachineId, NetDllXNetXnAddrToMachineIdOverride)
-PPC_HOOK(default_mp__NetDllXNetInAddrToString, NetDllXNetInAddrToStringOverride)
-PPC_HOOK(default_mp__NetDllXNetXnAddrToInAddr, NetDllXNetXnAddrToInAddrOverride)
-PPC_HOOK(default_mp__NetDllXNetInAddrToXnAddr, NetDllXNetInAddrToXnAddrOverride)
-PPC_HOOK(default_mp__NetDllXNetQosServiceLookup, NetDllXNetQosServiceLookupOverride)
-PPC_HOOK(default_mp__NetDllXNetQosListen, NetDllXNetQosListenOverride)
-PPC_HOOK(default_mp__NetDllXNetGetEthernetLinkStatus, NetDllXNetGetEthernetLinkStatusOverride)
-PPC_HOOK(default_mp__NetDllRecvFrom, NetDllRecvFromOverride)
-PPC_HOOK(default_mp__NetDllSendTo, NetDllSendToOverride)
+REX_HOOK(default_mp__XamUserCheckPrivilege, XamUserCheckPrivilegeOverride)
+REX_HOOK(default_mp__XMsgInProcessCall, XMsgInProcessCallOverride)
+REX_HOOK(default_mp__XMsgStartIORequestEx, XMsgStartIORequestExOverride)
+REX_HOOK(default_mp__XMsgStartIORequest, XMsgStartIORequestOverride)
+REX_HOOK(default_mp__XMsgCancelIORequest, XMsgCancelIORequestOverride)
+REX_HOOK(default_mp__XMsgCompleteIORequest, XMsgCompleteIORequestOverride)
+REX_HOOK(default_mp__XamGetOverlappedResult, XamGetOverlappedResultOverride)
+REX_HOOK(default_mp__NetDllXNetGetTitleXnAddr, NetDllXNetGetTitleXnAddrOverride)
+REX_HOOK(default_mp__NetDllXNetXnAddrToMachineId, NetDllXNetXnAddrToMachineIdOverride)
+REX_HOOK(default_mp__NetDllXNetInAddrToString, NetDllXNetInAddrToStringOverride)
+REX_HOOK(default_mp__NetDllXNetXnAddrToInAddr, NetDllXNetXnAddrToInAddrOverride)
+REX_HOOK(default_mp__NetDllXNetInAddrToXnAddr, NetDllXNetInAddrToXnAddrOverride)
+REX_HOOK(default_mp__NetDllXNetQosServiceLookup, NetDllXNetQosServiceLookupOverride)
+REX_HOOK(default_mp__NetDllXNetQosListen, NetDllXNetQosListenOverride)
+REX_HOOK(default_mp__NetDllXNetGetEthernetLinkStatus, NetDllXNetGetEthernetLinkStatusOverride)
+REX_HOOK(default_mp__NetDllRecvFrom, NetDllRecvFromOverride)
+REX_HOOK(default_mp__NetDllSendTo, NetDllSendToOverride)
 
 }  // namespace
 
@@ -520,25 +515,25 @@ void default_mp::InstallXamOverrides(rex::Runtime* runtime) {
   dispatcher->SetFunction(kImpNetRecvFrom, &default_mp__NetDllRecvFrom);
   dispatcher->SetFunction(kImpNetSendTo, &default_mp__NetDllSendTo);
 
-  InstallHostDetour("__imp__XamUserCheckPrivilege", &default_mp__XamUserCheckPrivilege);
-  InstallHostDetour("__imp__XMsgInProcessCall", &default_mp__XMsgInProcessCall);
-  InstallHostDetour("__imp__XMsgStartIORequestEx", &default_mp__XMsgStartIORequestEx);
-  InstallHostDetour("__imp__XMsgStartIORequest", &default_mp__XMsgStartIORequest);
-  InstallHostDetour("__imp__XMsgCancelIORequest", &default_mp__XMsgCancelIORequest);
-  InstallHostDetour("__imp__XMsgCompleteIORequest", &default_mp__XMsgCompleteIORequest);
-  InstallHostDetour("__imp__XamGetOverlappedResult", &default_mp__XamGetOverlappedResult);
+  InstallHostDetour(&__imp__XamUserCheckPrivilege, &default_mp__XamUserCheckPrivilege);
+  InstallHostDetour(&__imp__XMsgInProcessCall, &default_mp__XMsgInProcessCall);
+  InstallHostDetour(&__imp__XMsgStartIORequestEx, &default_mp__XMsgStartIORequestEx);
+  InstallHostDetour(&__imp__XMsgStartIORequest, &default_mp__XMsgStartIORequest);
+  InstallHostDetour(&__imp__XMsgCancelIORequest, &default_mp__XMsgCancelIORequest);
+  InstallHostDetour(&__imp__XMsgCompleteIORequest, &default_mp__XMsgCompleteIORequest);
+  InstallHostDetour(&__imp__XamGetOverlappedResult, &default_mp__XamGetOverlappedResult);
 
-  InstallHostDetour("__imp__NetDll_XNetGetTitleXnAddr", &default_mp__NetDllXNetGetTitleXnAddr);
-  InstallHostDetour("__imp__NetDll_XNetXnAddrToMachineId",
+  InstallHostDetour(&__imp__NetDll_XNetGetTitleXnAddr, &default_mp__NetDllXNetGetTitleXnAddr);
+  InstallHostDetour(&__imp__NetDll_XNetXnAddrToMachineId,
                     &default_mp__NetDllXNetXnAddrToMachineId);
-  InstallHostDetour("__imp__NetDll_XNetInAddrToString", &default_mp__NetDllXNetInAddrToString);
-  InstallHostDetour("__imp__NetDll_XNetXnAddrToInAddr", &default_mp__NetDllXNetXnAddrToInAddr);
-  InstallHostDetour("__imp__NetDll_XNetInAddrToXnAddr", &default_mp__NetDllXNetInAddrToXnAddr);
-  InstallHostDetour("__imp__NetDll_XNetQosServiceLookup",
+  InstallHostDetour(&__imp__NetDll_XNetInAddrToString, &default_mp__NetDllXNetInAddrToString);
+  InstallHostDetour(&__imp__NetDll_XNetXnAddrToInAddr, &default_mp__NetDllXNetXnAddrToInAddr);
+  InstallHostDetour(&__imp__NetDll_XNetInAddrToXnAddr, &default_mp__NetDllXNetInAddrToXnAddr);
+  InstallHostDetour(&__imp__NetDll_XNetQosServiceLookup,
                     &default_mp__NetDllXNetQosServiceLookup);
-  InstallHostDetour("__imp__NetDll_XNetQosListen", &default_mp__NetDllXNetQosListen);
-  InstallHostDetour("__imp__NetDll_XNetGetEthernetLinkStatus",
+  InstallHostDetour(&__imp__NetDll_XNetQosListen, &default_mp__NetDllXNetQosListen);
+  InstallHostDetour(&__imp__NetDll_XNetGetEthernetLinkStatus,
                     &default_mp__NetDllXNetGetEthernetLinkStatus);
-  InstallHostDetour("__imp__NetDll_recvfrom", &default_mp__NetDllRecvFrom);
-  InstallHostDetour("__imp__NetDll_sendto", &default_mp__NetDllSendTo);
+  InstallHostDetour(&__imp__NetDll_recvfrom, &default_mp__NetDllRecvFrom);
+  InstallHostDetour(&__imp__NetDll_sendto, &default_mp__NetDllSendTo);
 }
