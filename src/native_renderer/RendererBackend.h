@@ -2,6 +2,7 @@
 
 #include <string_view>
 
+#include "RenderCommand.h"
 #include "RendererTypes.h"
 
 namespace bo2::native {
@@ -18,6 +19,7 @@ class RendererBackend {
   virtual void SubmitCommandBufferSnapshot(
       uint64_t frame_index, const CommandBufferSnapshot& snapshot) = 0;
   virtual void SubmitDrawPacketCandidate(const DrawPacketCandidateInfo& draw) = 0;
+  virtual void SubmitRenderCommand(const RenderCommand& command) = 0;
   virtual void EndFrame(uint64_t frame_index) = 0;
   virtual std::string_view LastError() const = 0;
 };

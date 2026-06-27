@@ -199,6 +199,18 @@ void NativeRenderer::OnDrawPacketCandidateEnd(DrawPacketCandidateInfo& draw) {
   }
   CaptureDrawPacketWrites(draw);
   backend_->SubmitDrawPacketCandidate(draw);
+
+  if (draw.has_draw_indx_2) {
+    RenderCommand command{};
+    command.type = RenderCommandType::DrawIndexed;
+    command.sequence = draw.event_index;
+    command.guest_address = draw.write_begin + 4 + draw.draw_packet_dword_offset * 4;
+    command.arg0 = draw.index_count;
+    command.arg1 = draw.primitive_type;
+    command.arg2 = draw.source_select;
+    command.arg3 = draw.index_32bit ? 1 : 0;
+    backend_->SubmitRenderCommand(command);
+  }
 }
 
 void NativeRenderer::Shutdown() {

@@ -84,6 +84,26 @@ void NullRendererBackend::SubmitDrawPacketCandidate(
       draw.dword_count, draw.truncated);
 }
 
+void NullRendererBackend::SubmitRenderCommand(const RenderCommand& command) {
+  if (!verbose_ || !ShouldLogHighFrequencyEvent(command.sequence)) {
+    return;
+  }
+
+  switch (command.type) {
+    case RenderCommandType::DrawIndexed:
+      REXLOG_INFO(
+          "BO2 native renderer command #{} DrawIndexed packet={:#010x} "
+          "indices={} prim={} src={} index32={}",
+          command.sequence, command.guest_address, command.arg0, command.arg1,
+          command.arg2, command.arg3);
+      break;
+    default:
+      REXLOG_WARN("BO2 native renderer unsupported command #{} type={}",
+                  command.sequence, static_cast<uint32_t>(command.type));
+      break;
+  }
+}
+
 void NullRendererBackend::EndFrame(uint64_t frame_index) {
   if (verbose_ && ShouldLogHighFrequencyEvent(frame_index)) {
     REXLOG_INFO("BO2 native renderer frame {} end", frame_index);

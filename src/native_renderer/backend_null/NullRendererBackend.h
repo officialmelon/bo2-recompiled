@@ -17,6 +17,7 @@ class NullRendererBackend final : public RendererBackend {
   void SubmitCommandBufferSnapshot(uint64_t frame_index,
                                    const CommandBufferSnapshot& snapshot) override;
   void SubmitDrawPacketCandidate(const DrawPacketCandidateInfo& draw) override;
+  void SubmitRenderCommand(const RenderCommand& command) override;
   void EndFrame(uint64_t frame_index) override;
   std::string_view LastError() const override { return last_error_; }
 
