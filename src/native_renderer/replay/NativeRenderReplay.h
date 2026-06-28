@@ -54,6 +54,7 @@ struct PM4ShaderRecord {
 };
 
 struct PM4ConstantRecord {
+  uint64_t seq = 0;
   uint64_t event = 0;
   uint32_t opcode = 0;
   uint32_t packet = 0;
@@ -65,6 +66,10 @@ struct PM4ConstantRecord {
   uint32_t constant_type = 0;
   uint32_t index = 0;
   uint32_t dword_count = 0;
+  uint32_t payload_dword_count = 0;
+  std::vector<uint32_t> dwords;
+  bool payload_truncated = false;
+  bool payload_missing = true;
 };
 
 struct PM4DrawRecord {
@@ -200,6 +205,7 @@ struct ReplayDrawState {
   uint64_t constants_seen_in_frame = 0;
   uint64_t last_constant_seq = 0;
   std::vector<PM4ConstantRecord> recent_constants;
+  std::vector<PM4ConstantRecord> bound_constants;
   bool missing_vertex_shader = false;
   bool missing_pixel_shader = false;
   bool missing_constants = false;
@@ -241,6 +247,10 @@ struct ReplaySummary {
   uint64_t missing_vertex_shader_draws = 0;
   uint64_t missing_pixel_shader_draws = 0;
   uint64_t missing_constant_draws = 0;
+  uint64_t constant_uploads_with_payload = 0;
+  uint64_t constant_uploads_missing_payload = 0;
+  uint64_t constant_payload_dwords = 0;
+  uint64_t constant_payload_truncated = 0;
   std::map<CaptureEventType, uint64_t> event_counts;
   std::map<uint32_t, uint64_t> draw_opcode_counts;
   std::map<uint32_t, uint64_t> primitive_counts;
@@ -269,7 +279,13 @@ struct ReplayCliOptions {
   std::filesystem::path d3d12_output_path;
   bool show_summary = true;
   bool dump_draws = false;
+  bool dump_constants = false;
+  bool dump_bound_state = false;
+  bool dump_indices = false;
+  bool dump_vertices = false;
+  bool show_resource_summary = false;
   bool show_shader_usage = false;
+  bool show_missing_shaders = false;
   bool validate_only = false;
   std::optional<std::size_t> frame_index;
   std::optional<std::size_t> draw_index;
@@ -295,10 +311,22 @@ void PrintDrawDump(const ReplayCapture &capture,
                    std::optional<std::size_t> frame_index,
                    std::optional<std::size_t> draw_index,
                    std::size_t max_draws);
+void PrintConstantsDump(const ReplayCapture &capture,
+                        std::optional<std::size_t> frame_index,
+                        std::optional<std::size_t> draw_index);
+void PrintBoundStateDump(const ReplayCapture &capture, std::size_t draw_index);
+void PrintIndexDump(const ReplayCapture &capture, std::size_t draw_index);
+void PrintVertexDump(const ReplayCapture &capture, std::size_t draw_index);
+void PrintResourceSummary(const ReplayCapture &capture);
 void PrintShaderUsage(const ReplayCapture &capture, std::size_t top_count);
+void PrintMissingShaders(const ReplayCapture &capture);
 
-bool RunD3D12ReplayBackend(const ReplayCapture &capture,
-                           const ReplayCliOptions &options, std::string &error);
+bool RunD3D12DiagnosticReplayBackend(const ReplayCapture &capture,
+                                     const ReplayCliOptions &options,
+                                     std::string &error);
+bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
+                               const ReplayCliOptions &options,
+                               std::string &error);
 
 int RunNativeRenderReplayTool(int argc, char **argv);
 

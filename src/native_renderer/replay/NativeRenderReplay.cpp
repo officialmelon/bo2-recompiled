@@ -419,6 +419,7 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
     event.shader.shader_hash = GetU64(object, "shader_hash");
     break;
   case CaptureEventType::PM4Constants:
+    event.constants.seq = event.seq;
     event.constants.event = GetU64(object, "event");
     event.constants.opcode = GetU32(object, "opcode");
     event.constants.packet = GetU32(object, "packet");
@@ -430,6 +431,23 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
     event.constants.constant_type = GetU32(object, "constant_type");
     event.constants.index = GetU32(object, "index");
     event.constants.dword_count = GetU32(object, "dword_count");
+    event.constants.payload_dword_count = GetU32(object, "payload_dword_count");
+    event.constants.dwords = GetU32Array(object, "dwords");
+    if (event.constants.dwords.empty()) {
+      event.constants.dwords = GetU32Array(object, "payload_dwords");
+    }
+    if (event.constants.payload_dword_count == 0 &&
+        !event.constants.dwords.empty()) {
+      event.constants.payload_dword_count =
+          static_cast<uint32_t>(event.constants.dwords.size());
+    }
+    event.constants.payload_truncated = GetBool(object, "payload_truncated");
+    event.constants.payload_missing = GetBool(
+        object, "payload_missing",
+        !FindValue(object, "dwords") && !FindValue(object, "payload_dwords"));
+    if (!event.constants.dwords.empty()) {
+      event.constants.payload_missing = false;
+    }
     break;
   case CaptureEventType::PM4Draw:
     event.draw.event = GetU64(object, "event");
@@ -570,6 +588,7 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
   uint64_t constants_seen_in_frame = 0;
   uint64_t last_constant_seq = 0;
   std::vector<PM4ConstantRecord> recent_constants;
+  std::map<std::pair<uint32_t, uint32_t>, PM4ConstantRecord> bound_constants;
   std::optional<std::size_t> current_frame;
   std::map<std::pair<uint32_t, uint64_t>, ShaderUsageRecord> shader_usage;
   std::map<std::pair<uint64_t, uint64_t>, ShaderPairUsageRecord>
@@ -663,6 +682,18 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
       ++constants_seen_in_frame;
       last_constant_seq = event.seq;
       recent_constants.push_back(event.constants);
+      bound_constants[{event.constants.constant_type, event.constants.index}] =
+          event.constants;
+      if (event.constants.payload_missing) {
+        ++capture.summary.constant_uploads_missing_payload;
+      } else {
+        ++capture.summary.constant_uploads_with_payload;
+        capture.summary.constant_payload_dwords +=
+            event.constants.dwords.size();
+      }
+      if (event.constants.payload_truncated) {
+        ++capture.summary.constant_payload_truncated;
+      }
       if (recent_constants.size() > 8) {
         recent_constants.erase(recent_constants.begin());
       }
@@ -694,6 +725,11 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
       draw_state.constants_seen_in_frame = constants_seen_in_frame;
       draw_state.last_constant_seq = last_constant_seq;
       draw_state.recent_constants = recent_constants;
+      draw_state.bound_constants.reserve(bound_constants.size());
+      for (const auto &[key, constant] : bound_constants) {
+        (void)key;
+        draw_state.bound_constants.push_back(constant);
+      }
       draw_state.missing_vertex_shader = draw_state.vertex_shader.hash == 0;
       draw_state.missing_pixel_shader = draw_state.pixel_shader.hash == 0;
       draw_state.missing_constants = constants_seen_total == 0;
@@ -824,6 +860,63 @@ std::string DrawStateFlags(const ReplayDrawState &draw_state) {
   return flags.empty() ? " ok" : flags;
 }
 
+std::string ConstantPayloadStatus(const PM4ConstantRecord &constant) {
+  std::ostringstream os;
+  if (constant.payload_missing) {
+    os << "payload=missing";
+    return os.str();
+  }
+  os << "payload=" << constant.dwords.size() << "/" << constant.dword_count
+     << " dwords";
+  if (constant.payload_truncated) {
+    os << " truncated";
+  }
+  return os.str();
+}
+
+void PrintDwordPreview(const std::vector<uint32_t> &dwords,
+                       std::size_t max_dwords = 8) {
+  if (dwords.empty()) {
+    return;
+  }
+  std::cout << " values=";
+  const std::size_t limit = std::min(dwords.size(), max_dwords);
+  for (std::size_t i = 0; i < limit; ++i) {
+    if (i) {
+      std::cout << ",";
+    }
+    std::cout << FormatHex32(dwords[i]);
+  }
+  if (dwords.size() > limit) {
+    std::cout << ",...";
+  }
+}
+
+void PrintConstantLine(const PM4ConstantRecord &constant,
+                       std::string_view indent) {
+  std::cout << indent << "seq=" << constant.seq << " event=" << constant.event
+            << " opcode=" << FormatHex32(constant.opcode)
+            << " packet=" << FormatHex32(constant.packet)
+            << " packet_ptr=" << FormatHex32(constant.packet_ptr)
+            << " addr=" << FormatHex32(constant.address)
+            << " offset_type=" << FormatHex32(constant.offset_type)
+            << " type=" << constant.constant_type << " index=" << constant.index
+            << " dwords=" << constant.dword_count << " "
+            << ConstantPayloadStatus(constant);
+  PrintDwordPreview(constant.dwords);
+  std::cout << "\n";
+}
+
+bool IsEventInsideFrame(const ReplayFrame &frame, uint64_t seq) {
+  if (!frame.has_begin) {
+    return false;
+  }
+  if (frame.has_end) {
+    return seq >= frame.begin_seq && seq <= frame.end_seq;
+  }
+  return seq >= frame.begin_seq;
+}
+
 void PrintHistogram(const char *title,
                     const std::map<uint32_t, uint64_t> &values,
                     bool hex_key = false) {
@@ -848,6 +941,34 @@ bool ParseSizeArgument(std::string_view text, std::size_t &out) {
   return true;
 }
 
+enum class ReplayBackendKind {
+  Null,
+  D3D12Diagnostic,
+  D3D12Real,
+  VulkanDiagnostic,
+  VulkanReal,
+  Unknown,
+};
+
+ReplayBackendKind ParseBackendKind(const std::string &backend) {
+  if (backend == "null" || backend == "offline") {
+    return ReplayBackendKind::Null;
+  }
+  if (backend == "d3d12-diagnostic" || backend == "d3d12-debug") {
+    return ReplayBackendKind::D3D12Diagnostic;
+  }
+  if (backend == "d3d12" || backend == "d3d12-real") {
+    return ReplayBackendKind::D3D12Real;
+  }
+  if (backend == "vulkan-diagnostic" || backend == "vulkan-debug") {
+    return ReplayBackendKind::VulkanDiagnostic;
+  }
+  if (backend == "vulkan") {
+    return ReplayBackendKind::VulkanReal;
+  }
+  return ReplayBackendKind::Unknown;
+}
+
 void PrintHelp() {
   std::cout
       << "native_render_replay --capture <capture.jsonl> [options]\n\n"
@@ -858,12 +979,21 @@ void PrintHelp() {
          "frame/draw output\n"
       << "  --dump-draws           Dump reconstructed draw state\n"
       << "  --draw <index>         Dump one zero-based global draw\n"
+      << "  --dump-bound-state     Dump full known state for --draw\n"
+      << "  --dump-constants       Dump constant uploads, optionally filtered "
+         "by "
+         "--frame or --draw\n"
+      << "  --dump-indices         Dump decoded index data for --draw\n"
+      << "  --dump-vertices        Dump decoded vertex/fetch data for --draw\n"
+      << "  --resource-summary     Summarize replay resource snapshot "
+         "coverage\n"
       << "  --max-draws <count>    Limit draw dump rows (default 64)\n"
       << "  --shader-usage         Print shader and shader-pair usage\n"
       << "  --top-shaders <count>  Limit shader usage rows (default 20)\n"
+      << "  --missing-shaders      Report draws missing runtime shader hashes\n"
       << "  --backend <name>       Replay backend selector: "
-         "null/offline/d3d12\n"
-      << "  --d3d12-output <path>  BMP output for --backend d3d12\n"
+         "null/d3d12-diagnostic/d3d12/vulkan-diagnostic/vulkan\n"
+      << "  --d3d12-output <path>  BMP output for --backend d3d12-diagnostic\n"
       << "  --d3d12-draws <count>  Replay draw tiles to render (default 4096)\n"
       << "  --validate             Parse/analyze only; output errors decide "
          "exit code\n"
@@ -1010,6 +1140,13 @@ void PrintReplaySummary(const ReplayCapture &capture) {
             << "\n";
   std::cout << "Shaders: unique=" << capture.shader_usage.size()
             << " shader_pairs=" << capture.shader_pair_usage.size() << "\n";
+  std::cout << "Constants: with_payload="
+            << capture.summary.constant_uploads_with_payload
+            << " missing_payload="
+            << capture.summary.constant_uploads_missing_payload
+            << " payload_dwords=" << capture.summary.constant_payload_dwords
+            << " truncated=" << capture.summary.constant_payload_truncated
+            << "\n";
 
   std::cout << "\nEvent counts:\n";
   for (const auto &[type, count] : capture.summary.event_counts) {
@@ -1137,7 +1274,8 @@ void PrintDrawDump(const ReplayCapture &capture,
         std::cout << " [type=" << constant.constant_type
                   << " index=" << constant.index
                   << " dwords=" << constant.dword_count
-                  << " addr=" << FormatHex32(constant.address) << "]";
+                  << " addr=" << FormatHex32(constant.address) << " "
+                  << ConstantPayloadStatus(constant) << "]";
       }
       std::cout << "\n";
     }
@@ -1146,6 +1284,234 @@ void PrintDrawDump(const ReplayCapture &capture,
   if (!draw_index && end < unbounded_end) {
     std::cout << "  ... draw dump limited by --max-draws\n";
   }
+}
+
+void PrintConstantsDump(const ReplayCapture &capture,
+                        std::optional<std::size_t> frame_index,
+                        std::optional<std::size_t> draw_index) {
+  if (draw_index) {
+    if (*draw_index >= capture.draws.size()) {
+      std::cout << "Draw " << *draw_index << " does not exist; capture has "
+                << capture.draws.size() << " draws\n";
+      return;
+    }
+    const ReplayDrawState &draw = capture.draws[*draw_index];
+    std::cout << "Constant dump for draw[" << draw.draw_index
+              << "] seq=" << draw.seq << " frame=" << FrameLabel(draw) << "\n";
+    if (draw.bound_constants.empty()) {
+      std::cout << "  no constant ranges captured before this draw\n";
+      return;
+    }
+    uint64_t with_payload = 0;
+    uint64_t missing_payload = 0;
+    for (const PM4ConstantRecord &constant : draw.bound_constants) {
+      if (constant.payload_missing) {
+        ++missing_payload;
+      } else {
+        ++with_payload;
+      }
+      PrintConstantLine(constant, "  ");
+    }
+    std::cout << "Bound constants=" << draw.bound_constants.size()
+              << " with_payload=" << with_payload
+              << " missing_payload=" << missing_payload << "\n";
+    return;
+  }
+
+  const ReplayFrame *selected_frame = nullptr;
+  if (frame_index) {
+    if (*frame_index >= capture.frames.size()) {
+      std::cout << "Frame " << *frame_index << " does not exist; capture has "
+                << capture.frames.size() << " frames\n";
+      return;
+    }
+    selected_frame = &capture.frames[*frame_index];
+    std::cout << "Constant dump for frame[" << selected_frame->index
+              << "] id=" << selected_frame->frame_id << "\n";
+  } else {
+    std::cout << "Constant dump for full capture\n";
+  }
+
+  uint64_t count = 0;
+  uint64_t with_payload = 0;
+  uint64_t missing_payload = 0;
+  for (const CaptureEvent &event : capture.events) {
+    if (event.type != CaptureEventType::PM4Constants) {
+      continue;
+    }
+    if (selected_frame && !IsEventInsideFrame(*selected_frame, event.seq)) {
+      continue;
+    }
+    const PM4ConstantRecord &constant = event.constants;
+    ++count;
+    if (constant.payload_missing) {
+      ++missing_payload;
+    } else {
+      ++with_payload;
+    }
+    PrintConstantLine(constant, "  ");
+  }
+
+  std::cout << "Constants listed=" << count << " with_payload=" << with_payload
+            << " missing_payload=" << missing_payload << "\n";
+  if (count == 0 && selected_frame) {
+    std::cout << "No constants were emitted inside this frame range. "
+                 "The current verified capture has most PM4 traffic before "
+                 "present-derived frame markers.\n";
+  }
+}
+
+void PrintBoundStateDump(const ReplayCapture &capture, std::size_t draw_index) {
+  if (draw_index >= capture.draws.size()) {
+    std::cout << "Draw " << draw_index << " does not exist; capture has "
+              << capture.draws.size() << " draws\n";
+    return;
+  }
+
+  const ReplayDrawState &state = capture.draws[draw_index];
+  const PM4DrawRecord &draw = state.draw;
+  std::cout << "Bound state for draw[" << state.draw_index
+            << "] seq=" << state.seq << " frame=" << FrameLabel(state) << "\n";
+  std::cout << "  draw opcode=" << FormatHex32(draw.opcode)
+            << " packet=" << FormatHex32(draw.packet)
+            << " packet_ptr=" << FormatHex32(draw.packet_ptr)
+            << " indices=" << draw.index_count
+            << " indexed=" << (draw.indexed ? "yes" : "no")
+            << " index_base=" << FormatHex32(draw.index_base)
+            << " index_len=" << draw.index_length
+            << " index_fmt=" << draw.index_format
+            << " endian=" << draw.index_endianness
+            << " prim=" << draw.primitive_type << " src=" << draw.source_select
+            << "\n";
+  std::cout << "  VS hash=" << FormatHex64(state.vertex_shader.hash)
+            << " guest=" << FormatHex32(state.vertex_shader.guest_address)
+            << " dwords=" << state.vertex_shader.dword_count
+            << " bind_seq=" << state.vertex_shader.seq << "\n";
+  std::cout << "  PS hash=" << FormatHex64(state.pixel_shader.hash)
+            << " guest=" << FormatHex32(state.pixel_shader.guest_address)
+            << " dwords=" << state.pixel_shader.dword_count
+            << " bind_seq=" << state.pixel_shader.seq << "\n";
+  std::cout << "  constants_total=" << state.constants_seen_total
+            << " constants_frame=" << state.constants_seen_in_frame
+            << " last_constant_seq=" << state.last_constant_seq
+            << " bound_ranges=" << state.bound_constants.size()
+            << " state=" << DrawStateFlags(state) << "\n";
+
+  if (state.bound_constants.empty()) {
+    std::cout << "  bound_constants: none captured before this draw\n";
+    return;
+  }
+
+  std::cout << "  bound_constants:\n";
+  for (const PM4ConstantRecord &constant : state.bound_constants) {
+    PrintConstantLine(constant, "    ");
+  }
+}
+
+void PrintIndexDump(const ReplayCapture &capture, std::size_t draw_index) {
+  if (draw_index >= capture.draws.size()) {
+    std::cout << "Draw " << draw_index << " does not exist; capture has "
+              << capture.draws.size() << " draws\n";
+    return;
+  }
+
+  const ReplayDrawState &state = capture.draws[draw_index];
+  const PM4DrawRecord &draw = state.draw;
+  std::cout << "Index dump for draw[" << draw_index << "] seq=" << state.seq
+            << "\n";
+  std::cout << "  indexed=" << (draw.indexed ? "yes" : "no")
+            << " source_select=" << draw.source_select
+            << " index_count=" << draw.index_count
+            << " index_base=" << FormatHex32(draw.index_base)
+            << " index_len=" << draw.index_length
+            << " index_buffer_count=" << draw.index_buffer_count
+            << " index_format=" << draw.index_format
+            << " endian=" << draw.index_endianness << "\n";
+  if (!draw.indexed) {
+    std::cout << "  no explicit index buffer: this draw is auto-indexed or "
+                 "source-selected by the GPU packet\n";
+    return;
+  }
+  std::cout
+      << "  raw index snapshot: missing. Current capture stores packet "
+         "metadata only; resource snapshots must be added at the CP/guest "
+         "memory boundary before decoded indices can be replayed.\n";
+}
+
+void PrintVertexDump(const ReplayCapture &capture, std::size_t draw_index) {
+  if (draw_index >= capture.draws.size()) {
+    std::cout << "Draw " << draw_index << " does not exist; capture has "
+              << capture.draws.size() << " draws\n";
+    return;
+  }
+
+  const ReplayDrawState &state = capture.draws[draw_index];
+  std::cout << "Vertex/fetch dump for draw[" << draw_index
+            << "] seq=" << state.seq << "\n";
+  std::cout << "  VS=" << FormatHex64(state.vertex_shader.hash)
+            << " PS=" << FormatHex64(state.pixel_shader.hash)
+            << " bound_constant_ranges=" << state.bound_constants.size()
+            << "\n";
+
+  uint64_t fetch_like_ranges = 0;
+  for (const PM4ConstantRecord &constant : state.bound_constants) {
+    if (constant.constant_type == 1) {
+      ++fetch_like_ranges;
+      PrintConstantLine(constant, "  fetch_candidate ");
+    }
+  }
+  if (fetch_like_ranges == 0) {
+    std::cout << "  fetch constants: none identified in current normalized "
+                 "state\n";
+  }
+  std::cout << "  raw vertex snapshot: missing. Vertex buffer addresses, "
+               "stride, attribute format, and byte snapshots are not captured "
+               "yet, so no decoded vertices can be emitted.\n";
+}
+
+void PrintResourceSummary(const ReplayCapture &capture) {
+  const auto constant_count_it =
+      capture.summary.event_counts.find(CaptureEventType::PM4Constants);
+  const uint64_t constant_uploads =
+      constant_count_it == capture.summary.event_counts.end()
+          ? 0
+          : constant_count_it->second;
+  std::cout << "Resource snapshot summary:\n";
+  std::cout << "  constant_uploads=" << constant_uploads
+            << " with_payload=" << capture.summary.constant_uploads_with_payload
+            << " missing_payload="
+            << capture.summary.constant_uploads_missing_payload
+            << " payload_dwords=" << capture.summary.constant_payload_dwords
+            << "\n";
+  std::cout << "  index_buffer_snapshots=0\n";
+  std::cout << "  vertex_buffer_snapshots=0\n";
+  std::cout << "  texture_snapshots=0\n";
+  std::cout << "  render_target_snapshots=0\n";
+  std::cout << "  sidecar_resource_manifest=missing\n";
+  std::cout
+      << "  real backend blocker: replay has draw/shader/constant metadata, "
+         "but no index, vertex, texture, or render-target resource "
+         "snapshots yet.\n";
+}
+void PrintMissingShaders(const ReplayCapture &capture) {
+  std::cout << "Missing shader state:\n";
+  uint64_t rows = 0;
+  for (const ReplayDrawState &draw : capture.draws) {
+    if (!draw.missing_vertex_shader && !draw.missing_pixel_shader) {
+      continue;
+    }
+    ++rows;
+    std::cout << "  draw[" << draw.draw_index << "] seq=" << draw.seq
+              << " frame=" << FrameLabel(draw)
+              << " missing_vs=" << (draw.missing_vertex_shader ? "yes" : "no")
+              << " missing_ps=" << (draw.missing_pixel_shader ? "yes" : "no")
+              << "\n";
+  }
+  if (rows == 0) {
+    std::cout << "  no draws are missing runtime VS/PS hashes\n";
+  }
+  std::cout << "  replacement shader registry is not bound to replay yet; "
+               "use native_shader_inspect for extracted-container lookups.\n";
 }
 
 void PrintShaderUsage(const ReplayCapture &capture, std::size_t top_count) {
@@ -1199,8 +1565,20 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       cli.show_summary = false;
     } else if (arg == "--dump-draws") {
       cli.dump_draws = true;
+    } else if (arg == "--dump-constants") {
+      cli.dump_constants = true;
+    } else if (arg == "--dump-bound-state") {
+      cli.dump_bound_state = true;
+    } else if (arg == "--dump-indices") {
+      cli.dump_indices = true;
+    } else if (arg == "--dump-vertices") {
+      cli.dump_vertices = true;
+    } else if (arg == "--resource-summary") {
+      cli.show_resource_summary = true;
     } else if (arg == "--shader-usage") {
       cli.show_shader_usage = true;
+    } else if (arg == "--missing-shaders") {
+      cli.show_missing_shaders = true;
     } else if (arg == "--validate") {
       cli.validate_only = true;
     } else if (arg == "--frame") {
@@ -1231,6 +1609,7 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
         std::cerr << "--top-shaders expects an integer\n";
         return 2;
       }
+      cli.show_shader_usage = true;
     } else if (arg == "--backend") {
       const char *value = require_value("--backend");
       if (!value) {
@@ -1265,14 +1644,23 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
   ReplayLoadOptions load_options;
   ReplayCapture capture;
   const bool clean = LoadReplayCapture(cli.capture_path, load_options, capture);
+  const ReplayBackendKind backend_kind = ParseBackendKind(cli.backend);
+  if (backend_kind == ReplayBackendKind::Unknown) {
+    std::cerr << "unknown replay backend: " << cli.backend << "\n";
+    return 2;
+  }
 
   std::cout << "Native replay backend: " << cli.backend;
-  if (cli.backend == "null" || cli.backend == "offline") {
+  if (backend_kind == ReplayBackendKind::Null) {
     std::cout << " (offline analysis only)\n";
-  } else if (cli.backend == "d3d12") {
-    std::cout << " (offscreen D3D12 debug renderer)\n";
-  } else {
-    std::cout << " (unknown backend name; using parse/state only)\n";
+  } else if (backend_kind == ReplayBackendKind::D3D12Diagnostic) {
+    std::cout << " (offscreen D3D12 diagnostic renderer)\n";
+  } else if (backend_kind == ReplayBackendKind::D3D12Real) {
+    std::cout << " (resource-backed D3D12 renderer)\n";
+  } else if (backend_kind == ReplayBackendKind::VulkanDiagnostic) {
+    std::cout << " (Vulkan diagnostic renderer)\n";
+  } else if (backend_kind == ReplayBackendKind::VulkanReal) {
+    std::cout << " (resource-backed Vulkan renderer)\n";
   }
 
   if (cli.validate_only) {
@@ -1288,10 +1676,10 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
     return 0;
   }
 
-  if (cli.backend == "d3d12") {
+  if (backend_kind == ReplayBackendKind::D3D12Diagnostic) {
     std::string backend_error;
-    if (!RunD3D12ReplayBackend(capture, cli, backend_error)) {
-      std::cerr << "D3D12 replay failed: " << backend_error << "\n";
+    if (!RunD3D12DiagnosticReplayBackend(capture, cli, backend_error)) {
+      std::cerr << "D3D12 diagnostic replay failed: " << backend_error << "\n";
       return 1;
     }
     const std::filesystem::path output =
@@ -1300,6 +1688,17 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
             : cli.d3d12_output_path;
     std::cout << "D3D12 replay output: "
               << std::filesystem::absolute(output).string() << "\n";
+  } else if (backend_kind == ReplayBackendKind::D3D12Real) {
+    std::string backend_error;
+    if (!RunD3D12RealReplayBackend(capture, cli, backend_error)) {
+      std::cerr << "D3D12 real replay unavailable: " << backend_error << "\n";
+      return 1;
+    }
+  } else if (backend_kind == ReplayBackendKind::VulkanDiagnostic ||
+             backend_kind == ReplayBackendKind::VulkanReal) {
+    std::cerr << "Vulkan replay backend unavailable: no Vulkan backend is "
+                 "implemented in this tree yet\n";
+    return 1;
   }
 
   if (cli.show_summary) {
@@ -1313,9 +1712,45 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
     std::cout << "\n";
     PrintDrawDump(capture, cli.frame_index, cli.draw_index, cli.max_draws);
   }
+  if (cli.dump_constants) {
+    std::cout << "\n";
+    PrintConstantsDump(capture, cli.frame_index, cli.draw_index);
+  }
+  if (cli.show_resource_summary) {
+    std::cout << "\n";
+    PrintResourceSummary(capture);
+  }
+  if (cli.dump_indices) {
+    if (!cli.draw_index) {
+      std::cerr << "--dump-indices requires --draw <index>\n";
+      return 2;
+    }
+    std::cout << "\n";
+    PrintIndexDump(capture, *cli.draw_index);
+  }
+  if (cli.dump_vertices) {
+    if (!cli.draw_index) {
+      std::cerr << "--dump-vertices requires --draw <index>\n";
+      return 2;
+    }
+    std::cout << "\n";
+    PrintVertexDump(capture, *cli.draw_index);
+  }
+  if (cli.dump_bound_state) {
+    if (!cli.draw_index) {
+      std::cerr << "--dump-bound-state requires --draw <index>\n";
+      return 2;
+    }
+    std::cout << "\n";
+    PrintBoundStateDump(capture, *cli.draw_index);
+  }
   if (cli.show_shader_usage) {
     std::cout << "\n";
     PrintShaderUsage(capture, cli.top_shaders);
+  }
+  if (cli.show_missing_shaders) {
+    std::cout << "\n";
+    PrintMissingShaders(capture);
   }
 
   return clean ? 0 : 1;

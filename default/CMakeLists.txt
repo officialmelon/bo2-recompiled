@@ -52,6 +52,10 @@ set(NATIVE_RENDER_REPLAY_SOURCES
     ../src/native_renderer/replay/NativeRenderReplayTool.cpp
 )
 
+set(NATIVE_SHADER_INSPECT_SOURCES
+    ../src/native_renderer/replay/NativeShaderInspect.cpp
+)
+
 set(DEFAULT_SOURCES
     src/main.cpp
     src/native_renderer_hooks.cpp
@@ -79,6 +83,9 @@ if(WIN32)
     target_compile_definitions(native_render_replay PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(native_render_replay PRIVATE d3d12 d3dcompiler)
 endif()
+
+add_executable(native_shader_inspect ${NATIVE_SHADER_INSPECT_SOURCES})
+target_compile_features(native_shader_inspect PRIVATE cxx_std_23)
 
 rexglue_setup_target(default)
 

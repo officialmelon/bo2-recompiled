@@ -403,9 +403,9 @@ bool WaitForGpu(ID3D12CommandQueue *queue, ID3D12Fence *fence, HANDLE event,
 
 } // namespace
 
-bool RunD3D12ReplayBackend(const ReplayCapture &capture,
-                           const ReplayCliOptions &options,
-                           std::string &error) {
+bool RunD3D12DiagnosticReplayBackend(const ReplayCapture &capture,
+                                     const ReplayCliOptions &options,
+                                     std::string &error) {
 #if defined(_WIN32)
   const ReplaySurfaceSize size = ChooseSurfaceSize(capture);
   const uint32_t width = std::clamp<uint32_t>(size.width, 64, 3840);
@@ -632,6 +632,21 @@ bool RunD3D12ReplayBackend(const ReplayCapture &capture,
   error = "D3D12 replay backend is only available on Windows";
   return false;
 #endif
+}
+
+bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
+                               const ReplayCliOptions &options,
+                               std::string &error) {
+  (void)options;
+  const bool has_constants = capture.summary.constant_uploads_with_payload != 0;
+  error = "capture/replay does not yet include real index-buffer bytes, vertex "
+          "fetch constants, vertex-buffer bytes, translated input layouts, or "
+          "replacement BO2 shaders. Refusing to synthesize output in "
+          "d3d12-real; use d3d12-diagnostic for the current debug renderer. "
+          "constant_payloads=" +
+          std::to_string(capture.summary.constant_uploads_with_payload) +
+          (has_constants ? " (partial constants only)" : " (none)");
+  return false;
 }
 
 } // namespace bo2::native::replay

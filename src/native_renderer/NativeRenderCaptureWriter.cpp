@@ -9,8 +9,9 @@
 
 REXCVAR_DEFINE_STRING(native_renderer_capture_path, "", "Renderer",
                       "JSONL capture file for native renderer PM4 events");
-REXCVAR_DEFINE_UINT64(native_renderer_capture_limit, 0, "Renderer",
-                      "Maximum native renderer capture events, or 0 for unlimited");
+REXCVAR_DEFINE_UINT64(
+    native_renderer_capture_limit, 0, "Renderer",
+    "Maximum native renderer capture events, or 0 for unlimited");
 REXCVAR_DEFINE_UINT32(native_renderer_capture_flush_interval, 1024, "Renderer",
                       "Native renderer capture events between file flushes");
 
@@ -23,38 +24,38 @@ std::string EscapeJson(std::string_view value) {
   out.reserve(value.size() + 8);
   for (char ch : value) {
     switch (ch) {
-      case '\\':
-        out += "\\\\";
-        break;
-      case '"':
-        out += "\\\"";
-        break;
-      case '\b':
-        out += "\\b";
-        break;
-      case '\f':
-        out += "\\f";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      case '\r':
-        out += "\\r";
-        break;
-      case '\t':
-        out += "\\t";
-        break;
-      default:
-        if (static_cast<unsigned char>(ch) < 0x20) {
-          std::ostringstream os;
-          os << "\\u" << std::hex << std::uppercase << std::setw(4)
-             << std::setfill('0') << static_cast<int>(
-                    static_cast<unsigned char>(ch));
-          out += os.str();
-        } else {
-          out += ch;
-        }
-        break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '"':
+      out += "\\\"";
+      break;
+    case '\b':
+      out += "\\b";
+      break;
+    case '\f':
+      out += "\\f";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if (static_cast<unsigned char>(ch) < 0x20) {
+        std::ostringstream os;
+        os << "\\u" << std::hex << std::uppercase << std::setw(4)
+           << std::setfill('0')
+           << static_cast<int>(static_cast<unsigned char>(ch));
+        out += os.str();
+      } else {
+        out += ch;
+      }
+      break;
     }
   }
   return out;
@@ -67,31 +68,31 @@ std::string HexValue(uint64_t value, int width) {
   return os.str();
 }
 
-const char* RenderCommandTypeName(RenderCommandType type) {
+const char *RenderCommandTypeName(RenderCommandType type) {
   switch (type) {
-    case RenderCommandType::BeginFrame:
-      return "BeginFrame";
-    case RenderCommandType::EndFrame:
-      return "EndFrame";
-    case RenderCommandType::Present:
-      return "Present";
-    case RenderCommandType::BindShader:
-      return "BindShader";
-    case RenderCommandType::BindTexture:
-      return "BindTexture";
-    case RenderCommandType::SetRenderTarget:
-      return "SetRenderTarget";
-    case RenderCommandType::DrawIndexed:
-      return "DrawIndexed";
-    case RenderCommandType::Unsupported:
-      return "Unsupported";
+  case RenderCommandType::BeginFrame:
+    return "BeginFrame";
+  case RenderCommandType::EndFrame:
+    return "EndFrame";
+  case RenderCommandType::Present:
+    return "Present";
+  case RenderCommandType::BindShader:
+    return "BindShader";
+  case RenderCommandType::BindTexture:
+    return "BindTexture";
+  case RenderCommandType::SetRenderTarget:
+    return "SetRenderTarget";
+  case RenderCommandType::DrawIndexed:
+    return "DrawIndexed";
+  case RenderCommandType::Unsupported:
+    return "Unsupported";
   }
   return "Unknown";
 }
 
-}  // namespace
+} // namespace
 
-bool NativeRenderCaptureWriter::Initialize(const RendererConfig& config) {
+bool NativeRenderCaptureWriter::Initialize(const RendererConfig &config) {
   Shutdown();
 
   app_name_ = config.app_name;
@@ -110,15 +111,17 @@ bool NativeRenderCaptureWriter::Initialize(const RendererConfig& config) {
   if (!parent.empty()) {
     std::filesystem::create_directories(parent, ec);
     if (ec) {
-      REXLOG_ERROR("BO2 native renderer could not create capture directory {}: {}",
-                   parent.string(), ec.message());
+      REXLOG_ERROR(
+          "BO2 native renderer could not create capture directory {}: {}",
+          parent.string(), ec.message());
       return false;
     }
   }
 
   file_.open(path_, std::ios::out | std::ios::trunc);
   if (!file_) {
-    REXLOG_ERROR("BO2 native renderer could not open capture {}", path_.string());
+    REXLOG_ERROR("BO2 native renderer could not open capture {}",
+                 path_.string());
     return false;
   }
 
@@ -134,8 +137,9 @@ bool NativeRenderCaptureWriter::Initialize(const RendererConfig& config) {
     EndEvent();
   }
 
-  REXLOG_INFO("BO2 native renderer capture enabled path={} limit={} flush_interval={}",
-              path_.string(), event_limit_, flush_interval_);
+  REXLOG_INFO(
+      "BO2 native renderer capture enabled path={} limit={} flush_interval={}",
+      path_.string(), event_limit_, flush_interval_);
   return true;
 }
 
@@ -160,7 +164,8 @@ bool NativeRenderCaptureWriter::BeginEvent(std::string_view type) {
     if (!limited_) {
       limited_ = true;
       file_.flush();
-      REXLOG_WARN("BO2 native renderer capture reached event limit {}", event_limit_);
+      REXLOG_WARN("BO2 native renderer capture reached event limit {}",
+                  event_limit_);
     }
     return false;
   }
@@ -198,21 +203,25 @@ void NativeRenderCaptureWriter::WriteStringField(std::string_view name,
   file_ << '"' << EscapeJson(value) << '"';
 }
 
-void NativeRenderCaptureWriter::WriteBoolField(std::string_view name, bool value) {
+void NativeRenderCaptureWriter::WriteBoolField(std::string_view name,
+                                               bool value) {
   WriteFieldPrefix(name);
   file_ << (value ? "true" : "false");
 }
 
-void NativeRenderCaptureWriter::WriteU64Field(std::string_view name, uint64_t value) {
+void NativeRenderCaptureWriter::WriteU64Field(std::string_view name,
+                                              uint64_t value) {
   WriteFieldPrefix(name);
   file_ << value;
 }
 
-void NativeRenderCaptureWriter::WriteHex32Field(std::string_view name, uint32_t value) {
+void NativeRenderCaptureWriter::WriteHex32Field(std::string_view name,
+                                                uint32_t value) {
   WriteStringField(name, HexValue(value, 8));
 }
 
-void NativeRenderCaptureWriter::WriteHex64Field(std::string_view name, uint64_t value) {
+void NativeRenderCaptureWriter::WriteHex64Field(std::string_view name,
+                                                uint64_t value) {
   WriteStringField(name, HexValue(value, 16));
 }
 
@@ -241,7 +250,7 @@ void NativeRenderCaptureWriter::WriteEndFrame(uint64_t frame_index) {
 }
 
 void NativeRenderCaptureWriter::WriteVdSwap(uint64_t frame_index,
-                                            const VdSwapInfo& swap) {
+                                            const VdSwapInfo &swap) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("vd_swap")) {
     return;
@@ -251,7 +260,8 @@ void NativeRenderCaptureWriter::WriteVdSwap(uint64_t frame_index,
   WriteHex32Field("fetch_constant", swap.fetch_constant);
   WriteHex32Field("writeback", swap.writeback);
   WriteHex32Field("system_command_buffer", swap.system_command_buffer);
-  WriteHex32Field("system_command_buffer_token", swap.system_command_buffer_token);
+  WriteHex32Field("system_command_buffer_token",
+                  swap.system_command_buffer_token);
   WriteHex32Field("frontbuffer_ptr", swap.frontbuffer_ptr);
   WriteHex32Field("texture_format_ptr", swap.texture_format_ptr);
   WriteHex32Field("color_space_ptr", swap.color_space_ptr);
@@ -261,7 +271,7 @@ void NativeRenderCaptureWriter::WriteVdSwap(uint64_t frame_index,
 }
 
 void NativeRenderCaptureWriter::WriteCommandBufferSnapshot(
-    uint64_t frame_index, const CommandBufferSnapshot& snapshot) {
+    uint64_t frame_index, const CommandBufferSnapshot &snapshot) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("present_snapshot")) {
     return;
@@ -278,7 +288,8 @@ void NativeRenderCaptureWriter::WriteCommandBufferSnapshot(
   WriteU64Field("height", snapshot.height);
   WriteFieldPrefix("dwords");
   file_ << '[';
-  for (uint32_t i = 0; i < snapshot.dword_count && i < snapshot.dwords.size(); ++i) {
+  for (uint32_t i = 0; i < snapshot.dword_count && i < snapshot.dwords.size();
+       ++i) {
     if (i) {
       file_ << ',';
     }
@@ -289,7 +300,7 @@ void NativeRenderCaptureWriter::WriteCommandBufferSnapshot(
 }
 
 void NativeRenderCaptureWriter::WriteDrawPacketCandidate(
-    const DrawPacketCandidateInfo& draw) {
+    const DrawPacketCandidateInfo &draw) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("draw_packet_candidate")) {
     return;
@@ -315,7 +326,7 @@ void NativeRenderCaptureWriter::WriteDrawPacketCandidate(
   EndEvent();
 }
 
-void NativeRenderCaptureWriter::WritePM4Packet(const PM4PacketInfo& packet) {
+void NativeRenderCaptureWriter::WritePM4Packet(const PM4PacketInfo &packet) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("pm4_packet")) {
     return;
@@ -330,8 +341,8 @@ void NativeRenderCaptureWriter::WritePM4Packet(const PM4PacketInfo& packet) {
   WriteU64Field("first_dword_count", packet.first_dword_count);
   WriteFieldPrefix("first_dwords");
   file_ << '[';
-  for (uint32_t i = 0; i < packet.first_dword_count &&
-       i < packet.first_dwords.size(); ++i) {
+  for (uint32_t i = 0;
+       i < packet.first_dword_count && i < packet.first_dwords.size(); ++i) {
     if (i) {
       file_ << ',';
     }
@@ -341,7 +352,7 @@ void NativeRenderCaptureWriter::WritePM4Packet(const PM4PacketInfo& packet) {
   EndEvent();
 }
 
-void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo& draw) {
+void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("pm4_draw")) {
     return;
@@ -370,7 +381,7 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo& draw) {
   EndEvent();
 }
 
-void NativeRenderCaptureWriter::WritePM4Shader(const PM4ShaderInfo& shader) {
+void NativeRenderCaptureWriter::WritePM4Shader(const PM4ShaderInfo &shader) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("pm4_shader")) {
     return;
@@ -391,7 +402,7 @@ void NativeRenderCaptureWriter::WritePM4Shader(const PM4ShaderInfo& shader) {
 }
 
 void NativeRenderCaptureWriter::WritePM4Constants(
-    const PM4ConstantInfo& constants) {
+    const PM4ConstantInfo &constants) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("pm4_constants")) {
     return;
@@ -407,10 +418,24 @@ void NativeRenderCaptureWriter::WritePM4Constants(
   WriteU64Field("constant_type", constants.type);
   WriteU64Field("index", constants.index);
   WriteU64Field("dword_count", constants.dword_count);
+  WriteU64Field("payload_dword_count", constants.payload_dword_count);
+  WriteBoolField("payload_truncated", constants.payload_truncated);
+  WriteBoolField("payload_missing", constants.payload_missing);
+  WriteFieldPrefix("dwords");
+  file_ << '[';
+  for (uint32_t i = 0;
+       i < constants.payload_dword_count && i < constants.payload_dwords.size();
+       ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(constants.payload_dwords[i], 8) << '"';
+  }
+  file_ << ']';
   EndEvent();
 }
 
-void NativeRenderCaptureWriter::WritePM4Swap(const PM4SwapInfo& swap) {
+void NativeRenderCaptureWriter::WritePM4Swap(const PM4SwapInfo &swap) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("pm4_swap")) {
     return;
@@ -428,7 +453,8 @@ void NativeRenderCaptureWriter::WritePM4Swap(const PM4SwapInfo& swap) {
   EndEvent();
 }
 
-void NativeRenderCaptureWriter::WriteRenderCommand(const RenderCommand& command) {
+void NativeRenderCaptureWriter::WriteRenderCommand(
+    const RenderCommand &command) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("render_command")) {
     return;
@@ -443,4 +469,4 @@ void NativeRenderCaptureWriter::WriteRenderCommand(const RenderCommand& command)
   EndEvent();
 }
 
-}  // namespace bo2::native
+} // namespace bo2::native

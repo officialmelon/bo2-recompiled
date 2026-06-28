@@ -158,6 +158,8 @@ struct PM4ShaderInfo {
 };
 
 struct PM4ConstantInfo {
+  static constexpr std::size_t kMaxPayloadDwords = 64;
+
   uint64_t event_index = 0;
   uint32_t opcode = 0;
   uint32_t packet = 0;
@@ -169,6 +171,10 @@ struct PM4ConstantInfo {
   uint32_t type = 0;
   uint32_t index = 0;
   uint32_t dword_count = 0;
+  uint32_t payload_dword_count = 0;
+  std::array<uint32_t, kMaxPayloadDwords> payload_dwords{};
+  bool payload_truncated = false;
+  bool payload_missing = true;
 };
 
 struct PM4SwapInfo {
@@ -184,8 +190,8 @@ struct PM4SwapInfo {
   uint32_t frame_counter = 0;
 };
 
-const char* ToString(RendererMode mode);
-const char* ToString(RendererBackendKind backend);
+const char *ToString(RendererMode mode);
+const char *ToString(RendererBackendKind backend);
 RendererMode ParseRendererMode(std::string mode);
 
-}  // namespace bo2::native
+} // namespace bo2::native

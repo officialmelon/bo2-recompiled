@@ -4,7 +4,7 @@ Last updated: 2026-06-28
 
 `native_render_replay.exe` is the first offline replay executable for the BO2 native renderer work. It reads the JSONL written by `native_renderer_capture_path`, reconstructs frame/draw/shader/constant state, and reports enough state per draw to drive backend bring-up without booting the game for every iteration.
 
-The tool also has a first D3D12 debug backend. That backend renders an offscreen BMP from replayed draw events using BO2-owned D3D12 commands, including a small HLSL shader pipeline and synthetic triangle draws. It is a diagnostic native output path, not a full BO2 scene renderer yet.
+The tool also has a first D3D12 diagnostic backend. That backend renders an offscreen BMP from replayed draw events using BO2-owned D3D12 commands, including a small HLSL shader pipeline and synthetic triangle draws. It is a diagnostic native output path, not a full BO2 scene renderer yet. The `d3d12` backend name is now reserved for the real resource-backed D3D12 path and fails closed until captured BO2 index/vertex/shader/resource state exists.
 
 ## Build
 
@@ -25,8 +25,8 @@ Verified output:
 ```powershell
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --summary --shader-usage --top-shaders 20
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --frame 2 --dump-draws --max-draws 24
-default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --backend d3d12 --d3d12-output default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-replay.bmp --d3d12-draws 4096 --no-summary
-default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --backend d3d12 --d3d12-output default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-geometry-replay.bmp --d3d12-draws 4096 --no-summary
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --draw 1209 --dump-bound-state --dump-constants --dump-indices --dump-vertices --resource-summary --no-summary
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --backend d3d12-diagnostic --d3d12-output default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-diagnostic-updated.bmp --d3d12-draws 4096 --no-summary
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-final-smoke.jsonl --validate
 ```
 
@@ -36,8 +36,13 @@ Options:
 - `--frame <index>`: select a zero-based replay frame for frame summary and draw dump.
 - `--dump-draws`: list reconstructed draw state.
 - `--draw <index>`: dump one zero-based global draw.
+- `--dump-bound-state`: list the selected draw's bound shader hashes and known constant ranges.
+- `--dump-constants`: list captured constant uploads; with `--draw`, lists constants known before that draw.
+- `--dump-indices`: report indexed-draw metadata and whether an index snapshot is available.
+- `--dump-vertices`: report fetch/vertex state coverage for the selected draw.
+- `--resource-summary`: report current replay resource snapshot coverage.
 - `--shader-usage --top-shaders <n>`: show shader hash and shader-pair draw usage.
-- `--backend null|offline|d3d12`: backend selector. `d3d12` runs the offscreen D3D12 debug renderer.
+- `--backend null|offline|d3d12-diagnostic|d3d12|vulkan-diagnostic|vulkan`: backend selector. `d3d12-diagnostic` runs the offscreen D3D12 debug renderer. `d3d12` and `vulkan*` fail closed until real backends exist.
 - `--d3d12-output <path>`: BMP output path for the D3D12 replay backend.
 - `--d3d12-draws <count>`: number of replay draw tiles to render; default is `4096`.
 - `--validate`: parse/analyze only and return non-zero on parse errors.
@@ -63,6 +68,8 @@ Replay result:
 - Draws before any captured constants: `1209`
 - Unique live shader hashes: `8`
 - Live shader pairs: `7`
+- Constant uploads with payload in the existing capture: `0`
+- Constant uploads missing payload in the existing capture: `170`
 
 Event counts:
 
@@ -100,23 +107,32 @@ Primitive/source summary:
 
 The current frame markers come from `VdSwap`/present hooks, so most command-processor traffic in this capture is pre-frame from the replay tool's perspective. A real backend must not assume all draw work appears between current `begin_frame` and `end_frame`; the CP stream and present packet together define the usable frame boundary.
 
-## D3D12 debug output
+## D3D12 diagnostic output
 
 Command:
 
 ```powershell
-default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --backend d3d12 --d3d12-output default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-replay.bmp --d3d12-draws 4096 --no-summary
+default\out\build\win-amd64-clangmsvc-debug\native_renderer_direct_build\native_render_replay_direct.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --backend d3d12-diagnostic --d3d12-output default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-diagnostic-updated.bmp --d3d12-draws 4096 --no-summary
 ```
 
 Result:
 
 - Exit code: `0`
-- Output: `C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-replay.bmp`
+- Output: `C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-diagnostic-updated.bmp`
 - Size: `3686454` bytes.
-- Last write time: `2026-06-28 16:44:48`.
-- SHA-256: `D82EED84E69EED945B8DA0FF70D7F97B80FCCB35392D5E1E822809231DA03E37`
+- Last write time: `2026-06-28 20:07:57`.
+- SHA-256: `08D49F9F79AC9B77C1A895B110C77D563FC821448D3E65BCA34EC72752333C39`
 
 The BMP is a `1280x720` offscreen D3D12 render target copied back to disk. The renderer clears the target, issues D3D12 `ClearRenderTargetView` calls over per-draw rectangles, then uses a root-signature/PSO path with runtime-compiled HLSL and `DrawInstanced` calls to overlay synthetic triangle rectangles. Color is derived from the reconstructed VS hash, PS hash, primitive type, and source select. This proves a BO2-owned native D3D12 output path driven by replayed capture events, but it does not yet draw BO2 geometry.
+
+The real D3D12 backend currently fails closed:
+
+```text
+Native replay backend: d3d12 (resource-backed D3D12 renderer)
+D3D12 real replay unavailable: capture/replay does not yet include real index-buffer bytes, vertex fetch constants, vertex-buffer bytes, translated input layouts, or replacement BO2 shaders. Refusing to synthesize output in d3d12-real; use d3d12-diagnostic for the current debug renderer. constant_payloads=0 (none)
+```
+
+The Vulkan backend names are accepted but fail closed because no Vulkan backend is implemented in this tree yet.
 
 Updated geometry replay result:
 
@@ -142,6 +158,15 @@ First frame with a draw, frame index `2` / frame id `3`:
 draw[27] seq=176 frame=2/id=3 PM4_DRAW_INDX_2 opcode=0x00000036 packet=0xC0003601 packet_ptr=0x04F9B168 indices=3 prim=8 src=2 indexed=no index_base=0x00000000 index_len=0 index_fmt=0 endian=0
   VS=0x1E6883FCCDE1F688 PS=0xA4A965C189287B99 constants_total=0 constants_frame=0 last_constant_seq=0 state= no_constants_yet
 ```
+
+First indexed draw after constants, draw index `1209`:
+
+```text
+draw[1209] seq=5334 frame=pre PM4_DRAW_INDX opcode=0x00000022 packet=0xC0032201 packet_ptr=0x0501B4F0 indices=6 prim=4 src=0 indexed=yes index_base=0x0501E0A0 index_len=12 index_fmt=0 endian=1
+  VS=0x5D918D91043B3ED0 PS=0xC4ED2979F29C9139 constants_total=2 constants_frame=2 last_constant_seq=5329 state= ok
+```
+
+Bound state for that draw currently has two ALU constant ranges, both missing payload in the old capture. Its index metadata is real packet data (`index_base=0x0501E0A0`, `index_len=12`, `index_format=0`, `endian=1`), but raw index bytes are not yet captured.
 
 ## Shader usage from replay
 
@@ -185,6 +210,11 @@ Generated logs:
 - `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-geometry-replay.out.log`
 - `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-geometry-replay.err.log`
 - `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-geometry-replay.bmp`
+- `default\out\build\win-amd64-clangmsvc-debug\native-renderer-replay-summary-updated.log`
+- `default\out\build\win-amd64-clangmsvc-debug\native-renderer-draw-bound-state-updated.log`
+- `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-diagnostic-updated.out.log`
+- `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-diagnostic-updated.err.log`
+- `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-diagnostic-updated.bmp`
 
 The smoke capture validation result was:
 

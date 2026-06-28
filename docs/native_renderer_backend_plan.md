@@ -2,13 +2,14 @@
 
 Last updated: 2026-06-28
 
-This plan describes the path from the current capture/replay milestone to a BO2-owned native renderer. It does not claim that native rendering is complete. The current executable backend is still null/offline replay analysis.
+This plan describes the path from the current capture/replay milestone to a BO2-owned native renderer. It does not claim that native rendering is complete. The current executable backend split is explicit: `null` is analysis-only, `d3d12-diagnostic` is synthetic debug visualization, and `d3d12` is reserved for real resource-backed rendering and currently fails closed.
 
 ## Current state
 
 - Runtime hooks and the ReXGlue command-processor trace sink capture PM4 packet, shader, constant, draw, swap, and present events.
-- `native_render_replay.exe` parses verified captures and reconstructs draw state with bound VS/PS hashes and recent constant uploads.
-- `native_render_replay.exe --backend d3d12` now creates a BO2-owned D3D12 device, renders an offscreen debug target from replayed draw events, submits a synthetic triangle draw pass through a real D3D12 shader pipeline, reads it back, and writes a BMP.
+- `native_render_replay.exe` parses verified captures and reconstructs draw state with bound VS/PS hashes, recent constants, and current bound constant ranges.
+- `native_render_replay.exe --backend d3d12-diagnostic` now creates a BO2-owned D3D12 device, renders an offscreen debug target from replayed draw events, submits a synthetic triangle draw pass through a real D3D12 shader pipeline, reads it back, and writes a BMP.
+- `native_render_replay.exe --backend d3d12` refuses to draw synthetic output and reports missing real BO2 resource/shader state.
 - The first verified replay run parsed `20000` events, `4388` draws, `1011` shader loads, `170` constant uploads, `85` PM4 swaps, and `86` present snapshots with `0` parse errors.
 - The first verified D3D12 clear-tile replay output is `native-renderer-d3d12-replay.bmp`, size `3686454`, SHA-256 `D82EED84E69EED945B8DA0FF70D7F97B80FCCB35392D5E1E822809231DA03E37`.
 - The first verified D3D12 shader-pipeline geometry replay output is `native-renderer-d3d12-geometry-replay.bmp`, size `3686454`, SHA-256 `08D49F9F79AC9B77C1A895B110C77D563FC821448D3E65BCA34EC72752333C39`.
@@ -28,7 +29,7 @@ The native backend should consume a normalized stream, not raw JSON:
 7. `DrawAutoIndexed` for `PM4_DRAW_INDX_2` / `source_select=2`.
 8. `Present(frontbuffer, width, height)`.
 
-The replay tool now reconstructs items 1, 2, 3, 6, 7, and 8 enough to print state. Items 4 and 5 need additional capture fields before a real backend can draw BO2 geometry correctly.
+The replay tool now reconstructs items 1, 2, 3, 6, 7, and 8 enough to print state. Item 3 can now carry optional raw dwords, but the existing verified capture predates that payload. Items 4 and 5 need additional capture fields before a real backend can draw BO2 geometry correctly.
 
 ## D3D12 first backend
 
@@ -46,7 +47,7 @@ Keep the runtime backend and replay backend sharing state translation code, but 
 - Runtime backend: receives events through `RendererBackend` from `default.exe`.
 - Replay backend: receives `ReplayCapture`/`ReplayDrawState` from `native_render_replay.exe`.
 
-Current implemented D3D12 replay behavior:
+Current implemented D3D12 diagnostic replay behavior:
 
 - Creates a D3D12 device, direct queue, command allocator/list, render target, RTV heap, readback buffer, and fence.
 - Chooses output dimensions from the first present/swap event, currently `1280x720` for the verified capture.
@@ -56,6 +57,12 @@ Current implemented D3D12 replay behavior:
 - Copies the render target to a readback heap and writes a top-down 32-bit BMP.
 
 This is intentionally diagnostic. It is native GPU output from BO2 replay data, but not BO2 scene rendering.
+
+Current `d3d12` real replay behavior:
+
+- Parses and reconstructs replay state.
+- Refuses to synthesize geometry or shaders.
+- Fails with an explicit blocker if the capture lacks real index-buffer bytes, vertex fetch constants, vertex-buffer bytes, translated input layouts, and replacement BO2 shaders.
 
 ## Translation rules
 
@@ -78,8 +85,8 @@ Shaders:
 Constants:
 
 - `PM4_SET_SHADER_CONSTANTS` and `PM4_LOAD_ALU_CONSTANT` are captured as `pm4_constants`.
-- Replay tracks total constants and recent constants per draw. It currently flags `1209` early draws before any constant upload has been captured.
-- Backend needs constant payload bytes, not only address/count. Extend the CP trace sink to copy a bounded constant payload into JSONL for replay.
+- Replay tracks total constants, recent constants, and current bound constant ranges per draw. It currently flags `1209` early draws before any constant upload has been captured.
+- The BO2 capture/replay structs now support optional bounded constant payload dwords and report missing/truncated state. The existing 20,000-event capture has `170` constants and `0` payload-bearing constants because it predates the ReXGlue-side payload fields.
 
 Render targets and textures:
 
@@ -96,7 +103,7 @@ Synchronization:
 
 Completed first steps:
 
-- `native_render_replay.exe --backend d3d12 --d3d12-output ... --d3d12-draws 4096 --no-summary` exits `0`.
+- `native_render_replay.exe --backend d3d12-diagnostic --d3d12-output ... --d3d12-draws 4096 --no-summary` exits `0`.
 - It writes a nonblank BMP using native D3D12 command submission and readback.
 - The latest D3D12 replay output includes actual graphics-pipeline draw calls with runtime-compiled debug shaders.
 
@@ -113,11 +120,12 @@ This proves the BO2-owned backend path, but it is still a diagnostic renderer un
 
 - Current D3D12 replay output uses synthetic debug shaders and rectangles, not BO2 vertex/index buffers or real BO2 replacement shaders.
 - Captured draw state lacks vertex fetch buffers and texture/sampler bindings.
-- Captured constants only have address/count metadata, not payload values.
+- Existing captured constants only have address/count metadata, not payload values. New capture files can carry payload once the corresponding ReXGlue CP trace callback changes are compiled into the runtime.
 - Shader replacement table is not connected to runtime hashes.
+- Real D3D12 replay is blocked at draw `1209`: the draw has real index metadata and two bound constant ranges, but no raw index bytes, no decoded vertex/fetch state, no vertex bytes, and no replacement shaders.
 - Frame boundaries are present-driven; most current PM4 work is pre-frame in replay terms.
 - Android/ARM64 direct generated calls can still bypass dispatcher hooks outside the CP sink.
-- ReXGlue SDK callback changes are in the external `C:\Users\braxt\rexglue-sdk` worktree and need their own clean checkpoint before this repo is reproducible from a fresh clone.
+- ReXGlue SDK callback changes are required for fresh constant payload captures and live resource snapshots. The BO2 hook path compiles with or without the new fields, but payloads remain `missing` until the SDK side is rebuilt.
 
 ## Next implementation steps
 

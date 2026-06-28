@@ -96,6 +96,16 @@ Top live shader pairs:
 
 These runtime hashes are not the same IDs as `shader_work/shaders/index.json` container SHA-256 hashes. They come from the ReXGlue command-processor trace over loaded Xenos microcode. The replacement registry should therefore key first on `(stage, runtime_hash)` and later attach source container/microcode metadata when the hash relationship is proven.
 
+## Shader inspection tool
+
+`native_shader_inspect.exe` has been added as the first static shader registry inspection tool. Verified command:
+
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_renderer_direct_build\native_shader_inspect_direct.exe --index shader_work\shaders\index.json --summary
+```
+
+It loads `shader_work/shaders/index.json`, prints the summary counts, previews the first pixel and vertex containers, and supports `--hash <value> --find` for static container/microcode substring search. It does not yet match runtime 64-bit replay hashes to static SHA-256 records.
+
 ## Native renderer path forward
 
 1. Preserve the runtime `(stage, hash, guest_address, dword_count)` stream from replay as the first shader registry key.
