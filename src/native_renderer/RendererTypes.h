@@ -119,6 +119,8 @@ struct PM4PacketInfo {
 };
 
 struct PM4DrawInfo {
+  static constexpr std::size_t kMaxIndexPayloadBytes = 1024;
+
   uint64_t event_index = 0;
   std::string_view opcode_name;
   uint32_t opcode = 0;
@@ -135,6 +137,10 @@ struct PM4DrawInfo {
   uint32_t index_buffer_count = 0;
   uint32_t index_format = 0;
   uint32_t index_endianness = 0;
+  uint32_t index_payload_byte_count = 0;
+  std::array<uint8_t, kMaxIndexPayloadBytes> index_bytes{};
+  bool index_payload_truncated = false;
+  bool index_payload_missing = true;
   uint32_t major_mode = 0;
   bool explicit_major_mode = false;
   uint32_t viz_query_condition = 0;

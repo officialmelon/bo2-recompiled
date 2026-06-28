@@ -89,6 +89,10 @@ struct PM4DrawRecord {
   uint32_t index_buffer_count = 0;
   uint32_t index_format = 0;
   uint32_t index_endianness = 0;
+  uint32_t index_payload_byte_count = 0;
+  std::vector<uint8_t> index_bytes;
+  bool index_payload_truncated = false;
+  bool index_payload_missing = true;
   uint32_t major_mode = 0;
   bool explicit_major_mode = false;
   uint32_t viz_query_condition = 0;
@@ -251,6 +255,10 @@ struct ReplaySummary {
   uint64_t constant_uploads_missing_payload = 0;
   uint64_t constant_payload_dwords = 0;
   uint64_t constant_payload_truncated = 0;
+  uint64_t index_buffer_snapshots = 0;
+  uint64_t index_buffer_snapshots_missing = 0;
+  uint64_t index_payload_bytes = 0;
+  uint64_t index_payload_truncated = 0;
   std::map<CaptureEventType, uint64_t> event_counts;
   std::map<uint32_t, uint64_t> draw_opcode_counts;
   std::map<uint32_t, uint64_t> primitive_counts;

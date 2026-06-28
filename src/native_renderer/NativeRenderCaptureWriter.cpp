@@ -373,6 +373,20 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
   WriteU64Field("index_buffer_count", draw.index_buffer_count);
   WriteU64Field("index_format", draw.index_format);
   WriteU64Field("index_endianness", draw.index_endianness);
+  WriteU64Field("index_payload_byte_count", draw.index_payload_byte_count);
+  WriteBoolField("index_payload_truncated", draw.index_payload_truncated);
+  WriteBoolField("index_payload_missing", draw.index_payload_missing);
+  WriteFieldPrefix("index_bytes");
+  file_ << '[';
+  const uint32_t index_copy_count = std::min<uint32_t>(
+      draw.index_payload_byte_count, draw.index_bytes.size());
+  for (uint32_t i = 0; i < index_copy_count; ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(draw.index_bytes[i], 2) << '"';
+  }
+  file_ << ']';
   WriteU64Field("major_mode", draw.major_mode);
   WriteBoolField("explicit_major_mode", draw.explicit_major_mode);
   WriteHex32Field("viz_query_condition", draw.viz_query_condition);

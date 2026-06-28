@@ -13,22 +13,22 @@ The only working GPU-output backend is `d3d12-diagnostic`, which renders synthet
 `native_render_replay.exe --backend d3d12` is reserved for the real resource-backed D3D12 backend. It currently fails closed:
 
 ```text
-D3D12 real replay unavailable: capture/replay does not yet include real index-buffer bytes, vertex fetch constants, vertex-buffer bytes, translated input layouts, or replacement BO2 shaders.
+D3D12 real replay unavailable: capture/replay now includes bounded index snapshots for fresh captures, but still does not include vertex fetch constants, vertex-buffer bytes, translated input layouts, textures/samplers, render-target/depth state, or replacement BO2 shaders.
 ```
 
 This behavior is intentional. The real backend must not emit synthetic geometry through the real backend name.
 
 ## Current verified blocker
 
-Draw `1209` has enough packet metadata to identify a real indexed draw, but not enough resource data to submit it:
+Draw `1209` in `native_captures\payload_capture_002` has enough packet data and index bytes to identify and decode a real indexed draw, but not enough vertex/shader/resource data to submit it:
 
-- Real: draw packet, index metadata, shader hashes, and constant range metadata.
-- Missing: raw index bytes, vertex/fetch decode, raw vertex bytes, shader replacements/translation, render target/depth state, and texture/sampler state.
+- Real: draw packet, index metadata, raw index bytes, decoded indices `3,0,2,2,0,1`, shader hashes, and two constant ranges with payload.
+- Missing: vertex/fetch decode, raw vertex bytes, shader replacements/translation, render target/depth state, and texture/sampler state.
 
 ## Next implementation targets
 
-1. Compile a runtime with ReXGlue CP trace fields for bounded constant payloads.
-2. Capture a new JSONL and verify `constant_uploads_with_payload > 0`.
-3. Extend the CP trace sink with index-buffer and vertex/fetch snapshots.
-4. Add sidecar resource manifests to keep large buffers/textures out of JSONL.
-5. Build the first D3D12 real path only after replay can load actual index and vertex data for draw `1209` or another selected draw.
+1. Decode/capture vertex fetch constants and raw vertex bytes for draw `1209`.
+2. Add sidecar resource manifests to keep large buffers/textures out of JSONL.
+3. Build D3D12 index/vertex buffer creation after replay can load both captured index and vertex data.
+4. Add shader runtime-hash matching and manual overrides for the `5D918D91043B3ED0` / `C4ED2979F29C9139` pair.
+5. Decode texture/sampler and render-target/depth/blend/raster state for the same frame.

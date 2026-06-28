@@ -6,6 +6,72 @@ Last updated: 2026-06-28
 
 Native rendering is not complete. The current verified output is diagnostic D3D12 replay output, not BO2 scene rendering.
 
+## 2026-06-28 index-payload pass
+
+Full Windows build:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"" -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j1 default native_render_replay native_shader_inspect"
+```
+
+- Build log: `default\out\build\win-amd64-clangmsvc-debug\native-renderer-index-payload-build.out.log`
+- Result: linked `default.exe`, `native_render_replay.exe`, and `native_shader_inspect.exe`.
+- `default.exe`: `78921728` bytes, last write `2026-06-28 22:32:01`.
+- `native_render_replay.exe`: `951808` bytes, last write `2026-06-28 22:33:38`.
+- `native_shader_inspect.exe`: `693248` bytes, last write `2026-06-28 22:32:11`.
+- `native-renderer-replay-rebuild.out.log` records the replay-only rebuild after adjusting non-validation exit behavior.
+
+Fresh capture:
+
+```powershell
+default.exe --native_renderer_mode native --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\payload_capture_002\events.jsonl --native_renderer_capture_limit 25000 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false
+```
+
+- Capture: `C:\Users\braxt\bo2-recompiled\native_captures\payload_capture_002\events.jsonl`
+- Events: `25000`
+- Parse errors: `0`
+- Draws: `5471`
+- Constant payloads: `227/227`
+- Indexed draw snapshots: `81`
+- Missing indexed snapshots: `0`
+- Index payload bytes: `972`
+
+Validation:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\payload_capture_002\events.jsonl --validate
+```
+
+- Exit code: `0`
+- Result: `Validation OK: 25000 events, 106 frames, 5471 draws`
+
+First indexed draw with real index bytes:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\payload_capture_002\events.jsonl --draw 1209 --dump-bound-state --dump-constants --dump-indices --resource-summary --no-summary
+```
+
+- Draw: `PM4_DRAW_INDX`, `index_base=0x0501E090`, `index_len=12`, `index_format=0`, `endian=1`
+- Raw index bytes: `00 03 00 00 00 02 00 02 00 00 00 01`
+- Decoded indices: `3,0,2,2,0,1`
+- Constants: two bound ranges, both with payload
+
+D3D12 diagnostic replay:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\payload_capture_002\events.jsonl --backend d3d12-diagnostic --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\payload_capture_002\native-renderer-d3d12-index-payload-diagnostic.bmp --d3d12-draws 512 --no-summary
+```
+
+- Exit code: `0`
+- Output: `C:\Users\braxt\bo2-recompiled\native_captures\payload_capture_002\native-renderer-d3d12-index-payload-diagnostic.bmp`
+- Size: `3686454` bytes
+- SHA-256: `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`
+
+Old capture validation behavior:
+
+- `payload_capture_001` remains readable for dumps.
+- `--validate` correctly fails with `indexed draws missing index snapshots: 83`.
+
 ## Commands run in this pass
 
 Direct MSVC compile was used first to validate the changed replay tools without touching the generated build graph:
@@ -115,12 +181,12 @@ XEX:
 
 ## Current hard blocker
 
-The current capture cannot feed a real D3D12/Vulkan backend because it lacks raw index-buffer bytes, vertex/fetch decode, raw vertex bytes, texture/sampler state, render-target/depth state, and replacement/translated shaders. Real backends intentionally fail closed rather than synthesize missing data.
+The current fresh capture can feed real index buffers for the first indexed draws, but it still cannot feed a real D3D12/Vulkan scene backend because it lacks vertex/fetch decode, raw vertex bytes, texture/sampler state, render-target/depth state, and replacement/translated shaders. Real backends intentionally fail closed rather than synthesize missing data.
 
 ## Next required work
 
-1. Rebuild runtime with ReXGlue CP trace payload fields and capture fresh constants.
-2. Add index-buffer and vertex/fetch resource snapshots to the trace/capture format.
-3. Add sidecar resource manifests.
-4. Use draw `1209` as the first real indexed draw target.
-5. Implement shader runtime-hash matching and manual override plumbing for the top replay shader pairs.
+1. Decode/capture vertex fetch constants and raw vertex buffers for draw `1209`.
+2. Add sidecar resource manifests for larger vertex/texture/RT snapshots.
+3. Bind captured indices into the real D3D12 replay path once vertex buffers are available.
+4. Implement shader runtime-hash matching and manual override plumbing for the top replay shader pairs.
+5. Decode texture/sampler and render-target/depth state for the same tested frame.

@@ -17,8 +17,8 @@ cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\C
 Verified output:
 
 - `C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe`
-- Size: `897024` bytes.
-- Last write time: `2026-06-28 16:51:52`.
+- Size: `951808` bytes.
+- Last write time: `2026-06-28 22:33:38`.
 
 ## Usage
 
@@ -38,14 +38,55 @@ Options:
 - `--draw <index>`: dump one zero-based global draw.
 - `--dump-bound-state`: list the selected draw's bound shader hashes and known constant ranges.
 - `--dump-constants`: list captured constant uploads; with `--draw`, lists constants known before that draw.
-- `--dump-indices`: report indexed-draw metadata and whether an index snapshot is available.
+- `--dump-indices`: report indexed-draw metadata, captured raw index bytes, and decoded index values when an index snapshot is available.
 - `--dump-vertices`: report fetch/vertex state coverage for the selected draw.
 - `--resource-summary`: report current replay resource snapshot coverage.
 - `--shader-usage --top-shaders <n>`: show shader hash and shader-pair draw usage.
 - `--backend null|offline|d3d12-diagnostic|d3d12|vulkan-diagnostic|vulkan`: backend selector. `d3d12-diagnostic` runs the offscreen D3D12 debug renderer. `d3d12` and `vulkan*` fail closed until real backends exist.
 - `--d3d12-output <path>`: BMP output path for the D3D12 replay backend.
 - `--d3d12-draws <count>`: number of replay draw tiles to render; default is `4096`.
-- `--validate`: parse/analyze only and return non-zero on parse errors.
+- `--validate`: parse/analyze only and return non-zero on parse errors or strict replay validation errors such as indexed draws with missing index snapshots.
+
+## Verified index-payload capture
+
+Input:
+
+`C:\Users\braxt\bo2-recompiled\native_captures\payload_capture_002\events.jsonl`
+
+Replay result:
+
+- Events: `25000`
+- Parse errors: `0`
+- Frames: `106`
+- Pre-frame events: `24144`
+- Draws: `5471`
+- Shader loads: `1276`
+- Constant uploads: `227`, all with payload
+- Indexed draw snapshots: `81`, all with payload
+- Index payload bytes: `972`
+- Missing indexed snapshots: `0`
+- Validation: `Validation OK: 25000 events, 106 frames, 5471 draws`
+
+First indexed draw with raw index bytes, draw index `1209`:
+
+```text
+draw[1209] seq=5335 frame=pre PM4_DRAW_INDX opcode=0x00000022 packet=0xC0032201 packet_ptr=0x0501B6E0 indices=6 prim=4 src=0 indexed=yes index_base=0x0501E090 index_len=12 index_fmt=0 endian=1 payload=12/12 bytes
+  VS=0x5D918D91043B3ED0 PS=0xC4ED2979F29C9139 constants_total=2 constants_frame=2 last_constant_seq=5330 state= ok
+```
+
+Index dump:
+
+```text
+raw index bytes: 0x00,0x03,0x00,0x00,0x00,0x02,0x00,0x02,0x00,0x00,0x00,0x01
+decoded_indices=6/6: 3,0,2,2,0,1
+```
+
+D3D12 diagnostic replay on the same capture:
+
+- Output: `C:\Users\braxt\bo2-recompiled\native_captures\payload_capture_002\native-renderer-d3d12-index-payload-diagnostic.bmp`
+- Exit code: `0`
+- Size: `3686454` bytes
+- SHA-256: `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`
 
 ## Verified capture results
 
@@ -129,7 +170,7 @@ The real D3D12 backend currently fails closed:
 
 ```text
 Native replay backend: d3d12 (resource-backed D3D12 renderer)
-D3D12 real replay unavailable: capture/replay does not yet include real index-buffer bytes, vertex fetch constants, vertex-buffer bytes, translated input layouts, or replacement BO2 shaders. Refusing to synthesize output in d3d12-real; use d3d12-diagnostic for the current debug renderer. constant_payloads=0 (none)
+D3D12 real replay unavailable: capture/replay now includes bounded index snapshots for fresh captures, but still does not include vertex fetch constants, vertex-buffer bytes, translated input layouts, textures/samplers, render-target/depth state, or replacement BO2 shaders. Refusing to synthesize output in d3d12-real; use d3d12-diagnostic for the current debug renderer.
 ```
 
 The Vulkan backend names are accepted but fail closed because no Vulkan backend is implemented in this tree yet.

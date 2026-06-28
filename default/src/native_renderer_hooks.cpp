@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/graphics_system.h>
 #include <rex/hook.h>
@@ -69,6 +71,28 @@ void OnNativeRendererPM4Packet(
   bo2::native::NativeRenderer::Instance().OnPM4Packet(packet);
 }
 
+template <typename DrawEvent>
+void CopyDrawIndexPayloadIfPresent(const DrawEvent *event,
+                                   bo2::native::PM4DrawInfo &draw) {
+  if constexpr (requires {
+                  event->index_payload_byte_count;
+                  event->index_payload_truncated;
+                  event->index_payload_missing;
+                  event->index_bytes[0];
+                }) {
+    draw.index_payload_byte_count = event->index_payload_byte_count;
+    draw.index_payload_truncated = event->index_payload_truncated;
+    draw.index_payload_missing = event->index_payload_missing;
+    const uint32_t copy_count = std::min<uint32_t>(
+        draw.index_payload_byte_count, draw.index_bytes.size());
+    for (uint32_t i = 0; i < copy_count; ++i) {
+      draw.index_bytes[i] = event->index_bytes[i];
+    }
+  } else {
+    draw.index_payload_missing = true;
+  }
+}
+
 void OnNativeRendererDraw(const rex::graphics::NativeRendererDrawEvent *event,
                           void *) {
   if (!event) {
@@ -90,6 +114,7 @@ void OnNativeRendererDraw(const rex::graphics::NativeRendererDrawEvent *event,
   draw.index_buffer_count = event->index_buffer_count;
   draw.index_format = event->index_format;
   draw.index_endianness = event->index_endianness;
+  CopyDrawIndexPayloadIfPresent(event, draw);
   draw.major_mode = event->major_mode;
   draw.explicit_major_mode = event->explicit_major_mode;
   draw.viz_query_condition = event->viz_query_condition;

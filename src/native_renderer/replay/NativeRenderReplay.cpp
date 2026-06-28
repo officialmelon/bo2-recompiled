@@ -374,6 +374,19 @@ std::vector<uint32_t> GetU32Array(const JsonObject &object,
   return values;
 }
 
+std::vector<uint8_t> GetU8Array(const JsonObject &object,
+                                std::string_view key) {
+  std::vector<uint8_t> bytes;
+  const std::vector<uint32_t> values = GetU32Array(object, key);
+  bytes.reserve(values.size());
+  for (uint32_t value : values) {
+    if (value <= std::numeric_limits<uint8_t>::max()) {
+      bytes.push_back(static_cast<uint8_t>(value));
+    }
+  }
+  return bytes;
+}
+
 bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
                        CaptureEvent &event, std::string &error) {
   event.line = line;
@@ -466,6 +479,26 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
     event.draw.index_buffer_count = GetU32(object, "index_buffer_count");
     event.draw.index_format = GetU32(object, "index_format");
     event.draw.index_endianness = GetU32(object, "index_endianness");
+    event.draw.index_payload_byte_count =
+        GetU32(object, "index_payload_byte_count");
+    event.draw.index_bytes = GetU8Array(object, "index_bytes");
+    if (event.draw.index_bytes.empty()) {
+      event.draw.index_bytes = GetU8Array(object, "index_payload_bytes");
+    }
+    if (event.draw.index_payload_byte_count == 0 &&
+        !event.draw.index_bytes.empty()) {
+      event.draw.index_payload_byte_count =
+          static_cast<uint32_t>(event.draw.index_bytes.size());
+    }
+    event.draw.index_payload_truncated =
+        GetBool(object, "index_payload_truncated");
+    event.draw.index_payload_missing = GetBool(
+        object, "index_payload_missing",
+        !FindValue(object, "index_bytes") &&
+            !FindValue(object, "index_payload_bytes"));
+    if (!event.draw.index_bytes.empty()) {
+      event.draw.index_payload_missing = false;
+    }
     event.draw.major_mode = GetU32(object, "major_mode");
     event.draw.explicit_major_mode = GetBool(object, "explicit_major_mode");
     event.draw.viz_query_condition = GetU32(object, "viz_query_condition");
@@ -743,6 +776,17 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
       if (draw_state.missing_constants) {
         ++capture.summary.missing_constant_draws;
       }
+      if (event.draw.indexed) {
+        if (event.draw.index_payload_missing || event.draw.index_bytes.empty()) {
+          ++capture.summary.index_buffer_snapshots_missing;
+        } else {
+          ++capture.summary.index_buffer_snapshots;
+          capture.summary.index_payload_bytes += event.draw.index_bytes.size();
+        }
+        if (event.draw.index_payload_truncated) {
+          ++capture.summary.index_payload_truncated;
+        }
+      }
 
       ++capture.summary.draw_opcode_counts[event.draw.opcode];
       ++capture.summary.primitive_counts[event.draw.primitive_type];
@@ -790,6 +834,12 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
     AddWarning(capture, options,
                "capture ended with open frame index " +
                    std::to_string(*current_frame));
+  }
+
+  if (capture.summary.index_buffer_snapshots_missing != 0) {
+    capture.errors.push_back(
+        "indexed draws missing index snapshots: " +
+        std::to_string(capture.summary.index_buffer_snapshots_missing));
   }
 
   capture.shader_usage.reserve(shader_usage.size());
@@ -872,6 +922,98 @@ std::string ConstantPayloadStatus(const PM4ConstantRecord &constant) {
     os << " truncated";
   }
   return os.str();
+}
+
+std::string IndexPayloadStatus(const PM4DrawRecord &draw) {
+  std::ostringstream os;
+  if (draw.index_payload_missing || draw.index_bytes.empty()) {
+    os << "payload=missing";
+    return os.str();
+  }
+  os << "payload=" << draw.index_bytes.size() << "/" << draw.index_length
+     << " bytes";
+  if (draw.index_payload_truncated) {
+    os << " truncated";
+  }
+  return os.str();
+}
+
+uint16_t LoadLittleEndian16(const std::vector<uint8_t> &bytes,
+                            std::size_t offset) {
+  return static_cast<uint16_t>(bytes[offset]) |
+         static_cast<uint16_t>(bytes[offset + 1] << 8);
+}
+
+uint32_t LoadLittleEndian32(const std::vector<uint8_t> &bytes,
+                            std::size_t offset) {
+  return static_cast<uint32_t>(bytes[offset]) |
+         (static_cast<uint32_t>(bytes[offset + 1]) << 8) |
+         (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
+         (static_cast<uint32_t>(bytes[offset + 3]) << 24);
+}
+
+uint32_t NormalizeIndexEndian(uint32_t index_format, uint32_t endian) {
+  if (index_format == 0) {
+    if (endian == 2) {
+      return 1;
+    }
+    if (endian == 3) {
+      return 0;
+    }
+  }
+  return endian;
+}
+
+uint32_t GpuSwapIndex(uint32_t value, uint32_t index_format, uint32_t endian) {
+  endian = NormalizeIndexEndian(index_format, endian);
+  if (index_format == 0) {
+    value &= 0xFFFF;
+    if (endian == 1) {
+      value = ((value << 8) & 0xFF00) | ((value >> 8) & 0x00FF);
+    }
+    return value & 0xFFFFFF;
+  }
+
+  switch (endian) {
+  case 1:
+    value = ((value << 8) & 0xFF00FF00) |
+            ((value >> 8) & 0x00FF00FF);
+    break;
+  case 2:
+    value = ((value & 0x000000FF) << 24) |
+            ((value & 0x0000FF00) << 8) |
+            ((value & 0x00FF0000) >> 8) |
+            ((value & 0xFF000000) >> 24);
+    break;
+  case 3:
+    value = ((value >> 16) & 0x0000FFFF) | (value << 16);
+    break;
+  default:
+    break;
+  }
+  return value & 0xFFFFFF;
+}
+
+std::vector<uint32_t> DecodeIndexPayload(const PM4DrawRecord &draw) {
+  std::vector<uint32_t> indices;
+  if (!draw.indexed || draw.index_payload_missing || draw.index_bytes.empty()) {
+    return indices;
+  }
+
+  const uint32_t index_size = draw.index_format == 0 ? 2 : 4;
+  const std::size_t available_count = draw.index_bytes.size() / index_size;
+  const std::size_t decode_count =
+      std::min<std::size_t>(draw.index_count, available_count);
+  indices.reserve(decode_count);
+  for (std::size_t i = 0; i < decode_count; ++i) {
+    const std::size_t offset = i * index_size;
+    uint32_t value = index_size == 2
+                         ? LoadLittleEndian16(draw.index_bytes, offset)
+                         : LoadLittleEndian32(draw.index_bytes, offset);
+    indices.push_back(
+        GpuSwapIndex(value, draw.index_format, draw.index_endianness));
+  }
+  return indices;
 }
 
 void PrintDwordPreview(const std::vector<uint32_t> &dwords,
@@ -1147,6 +1289,12 @@ void PrintReplaySummary(const ReplayCapture &capture) {
             << " payload_dwords=" << capture.summary.constant_payload_dwords
             << " truncated=" << capture.summary.constant_payload_truncated
             << "\n";
+  std::cout << "Index buffers: snapshots="
+            << capture.summary.index_buffer_snapshots
+            << " missing=" << capture.summary.index_buffer_snapshots_missing
+            << " payload_bytes=" << capture.summary.index_payload_bytes
+            << " truncated=" << capture.summary.index_payload_truncated
+            << "\n";
 
   std::cout << "\nEvent counts:\n";
   for (const auto &[type, count] : capture.summary.event_counts) {
@@ -1261,7 +1409,8 @@ void PrintDrawDump(const ReplayCapture &capture,
               << " index_base=" << FormatHex32(draw.index_base)
               << " index_len=" << draw.index_length
               << " index_fmt=" << draw.index_format
-              << " endian=" << draw.index_endianness << "\n";
+              << " endian=" << draw.index_endianness << " "
+              << IndexPayloadStatus(draw) << "\n";
     std::cout << "    VS=" << FormatHex64(state.vertex_shader.hash)
               << " PS=" << FormatHex64(state.pixel_shader.hash)
               << " constants_total=" << state.constants_seen_total
@@ -1381,6 +1530,7 @@ void PrintBoundStateDump(const ReplayCapture &capture, std::size_t draw_index) {
             << " index_len=" << draw.index_length
             << " index_fmt=" << draw.index_format
             << " endian=" << draw.index_endianness
+            << " " << IndexPayloadStatus(draw)
             << " prim=" << draw.primitive_type << " src=" << draw.source_select
             << "\n";
   std::cout << "  VS hash=" << FormatHex64(state.vertex_shader.hash)
@@ -1426,16 +1576,47 @@ void PrintIndexDump(const ReplayCapture &capture, std::size_t draw_index) {
             << " index_len=" << draw.index_length
             << " index_buffer_count=" << draw.index_buffer_count
             << " index_format=" << draw.index_format
-            << " endian=" << draw.index_endianness << "\n";
+            << " endian=" << draw.index_endianness
+            << " " << IndexPayloadStatus(draw) << "\n";
   if (!draw.indexed) {
     std::cout << "  no explicit index buffer: this draw is auto-indexed or "
                  "source-selected by the GPU packet\n";
     return;
   }
-  std::cout
-      << "  raw index snapshot: missing. Current capture stores packet "
-         "metadata only; resource snapshots must be added at the CP/guest "
-         "memory boundary before decoded indices can be replayed.\n";
+  if (draw.index_payload_missing || draw.index_bytes.empty()) {
+    std::cout
+        << "  raw index snapshot: missing. Current capture stores packet "
+           "metadata only; resource snapshots must be added at the CP/guest "
+           "memory boundary before decoded indices can be replayed.\n";
+    return;
+  }
+
+  std::cout << "  raw index bytes:";
+  const std::size_t raw_limit = std::min<std::size_t>(draw.index_bytes.size(), 64);
+  for (std::size_t i = 0; i < raw_limit; ++i) {
+    std::cout << (i == 0 ? " " : ",")
+              << FormatHex(static_cast<uint32_t>(draw.index_bytes[i]), 2);
+  }
+  if (draw.index_bytes.size() > raw_limit) {
+    std::cout << ",...";
+  }
+  std::cout << "\n";
+
+  const std::vector<uint32_t> decoded_indices = DecodeIndexPayload(draw);
+  std::cout << "  decoded_indices=" << decoded_indices.size() << "/"
+            << draw.index_count << ":";
+  const std::size_t decoded_limit =
+      std::min<std::size_t>(decoded_indices.size(), 64);
+  for (std::size_t i = 0; i < decoded_limit; ++i) {
+    std::cout << (i == 0 ? " " : ",") << decoded_indices[i];
+  }
+  if (decoded_indices.size() > decoded_limit) {
+    std::cout << ",...";
+  }
+  if (decoded_indices.size() < draw.index_count) {
+    std::cout << " (incomplete)";
+  }
+  std::cout << "\n";
 }
 
 void PrintVertexDump(const ReplayCapture &capture, std::size_t draw_index) {
@@ -1483,15 +1664,27 @@ void PrintResourceSummary(const ReplayCapture &capture) {
             << capture.summary.constant_uploads_missing_payload
             << " payload_dwords=" << capture.summary.constant_payload_dwords
             << "\n";
-  std::cout << "  index_buffer_snapshots=0\n";
+  std::cout << "  index_buffer_snapshots="
+            << capture.summary.index_buffer_snapshots
+            << " missing=" << capture.summary.index_buffer_snapshots_missing
+            << " payload_bytes=" << capture.summary.index_payload_bytes
+            << " truncated=" << capture.summary.index_payload_truncated
+            << "\n";
   std::cout << "  vertex_buffer_snapshots=0\n";
   std::cout << "  texture_snapshots=0\n";
   std::cout << "  render_target_snapshots=0\n";
   std::cout << "  sidecar_resource_manifest=missing\n";
-  std::cout
-      << "  real backend blocker: replay has draw/shader/constant metadata, "
-         "but no index, vertex, texture, or render-target resource "
-         "snapshots yet.\n";
+  if (capture.summary.index_buffer_snapshots == 0) {
+    std::cout
+        << "  real backend blocker: replay has draw/shader/constant metadata, "
+           "but no index, vertex, texture, or render-target resource "
+           "snapshots yet.\n";
+  } else {
+    std::cout
+        << "  real backend blocker: replay now has bounded index snapshots, "
+           "but still lacks vertex, texture, and render-target resource "
+           "snapshots.\n";
+  }
 }
 void PrintMissingShaders(const ReplayCapture &capture) {
   std::cout << "Missing shader state:\n";
@@ -1664,7 +1857,7 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
   }
 
   if (cli.validate_only) {
-    if (!clean) {
+    if (!clean || !capture.errors.empty()) {
       for (const std::string &error : capture.errors) {
         std::cerr << error << "\n";
       }

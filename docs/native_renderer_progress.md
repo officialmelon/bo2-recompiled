@@ -107,8 +107,8 @@ cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\C
 Final verified executable:
 
 - `C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\default.exe`
-- Size: `78917120` bytes.
-- Last write time: `2026-06-28 14:56:32`.
+- Size: `78921728` bytes.
+- Last write time: `2026-06-28 22:32:01`.
 
 Runtime verification:
 
@@ -116,7 +116,7 @@ Runtime verification:
 - `native-renderer-capture-limit.jsonl`: 20-second bounded capture, intentionally force-stopped after the capture hit its own limit. It contains exactly `20000` complete JSONL events: `8601` `pm4_packet`, `1011` `pm4_shader`, `4388` `pm4_draw`, `170` `pm4_constants`, `85` `pm4_swap`, `5399` `render_command`, plus `vd_swap`, `present_snapshot`, and frame markers.
 - `native-renderer-final-smoke.jsonl`: final rebuilt binary smoke run with `native_renderer_capture_limit=100`. It contains exactly `100` complete JSONL events and the log confirms `BO2 native renderer capture reached event limit 100`.
 - All Windows runs had empty redirected stdout/stderr. `ExitCode=-1` is expected for these verification runs because the process was intentionally stopped after capture/log collection.
-- `native_render_replay.exe`: built successfully from the Windows `default` build. Verified size `897024` bytes, last write `2026-06-28 16:51:52`.
+- `native_render_replay.exe`: built successfully from the Windows `default` build. Latest verified size `951808` bytes, last write `2026-06-28 22:33:38`.
 - Replay summary on `native-renderer-capture-limit.jsonl`: `20000` events, `0` parse errors, `86` frames, `4388` draws, `8` unique live shader hashes, `7` shader pairs, `0` missing VS/PS draws, and `1209` draws before any captured constants.
 - Updated replay summary reports existing capture constant payload coverage as `with_payload=0`, `missing_payload=170`, `payload_dwords=0`.
 - Draw `1209` is the first useful indexed draw after constants in the verified capture: `PM4_DRAW_INDX`, `index_base=0x0501E0A0`, `index_len=12`, `index_format=0`, `endian=1`, VS `0x5D918D91043B3ED0`, PS `0xC4ED2979F29C9139`, and two bound ALU constant ranges. The old capture lacks raw constant/index/vertex bytes for it.
@@ -124,7 +124,10 @@ Runtime verification:
 - D3D12 replay output on `native-renderer-capture-limit.jsonl`: `native-renderer-d3d12-replay.bmp`, exit code `0`, size `3686454` bytes, SHA-256 `D82EED84E69EED945B8DA0FF70D7F97B80FCCB35392D5E1E822809231DA03E37`. The BMP was visually checked and is nonblank.
 - D3D12 geometry replay output on `native-renderer-capture-limit.jsonl`: `native-renderer-d3d12-geometry-replay.bmp`, exit code `0`, size `3686454` bytes, SHA-256 `08D49F9F79AC9B77C1A895B110C77D563FC821448D3E65BCA34EC72752333C39`. The BMP was visually checked and shows shader-pipeline draw tiles over the clear-tile layer.
 - Updated D3D12 diagnostic replay output on `native-renderer-capture-limit.jsonl`: `native-renderer-d3d12-diagnostic-updated.bmp`, exit code `0`, size `3686454` bytes, SHA-256 `08D49F9F79AC9B77C1A895B110C77D563FC821448D3E65BCA34EC72752333C39`.
-- Real `--backend d3d12` fails closed because the replay still has no index-buffer bytes, vertex/fetch constants, vertex-buffer bytes, translated input layouts, or replacement BO2 shaders.
+- Fresh payload capture `C:\Users\braxt\bo2-recompiled\native_captures\payload_capture_002\events.jsonl` was taken from the rebuilt `default.exe` with `native_renderer_capture_limit=25000`. It contains `25000` complete JSONL events, `5471` PM4 draws, `227` constant uploads with payload, and `81` indexed draw snapshots with raw index bytes. Validation result: `Validation OK: 25000 events, 106 frames, 5471 draws`.
+- New first indexed target in that capture is draw `1209`: `PM4_DRAW_INDX`, `index_base=0x0501E090`, `index_len=12`, `index_format=0`, `endian=1`, VS `0x5D918D91043B3ED0`, PS `0xC4ED2979F29C9139`, two constant ranges with payload, and raw index bytes `00 03 00 00 00 02 00 02 00 00 00 01`. Replay decodes them as indices `3,0,2,2,0,1`.
+- D3D12 diagnostic replay on `payload_capture_002` succeeded and wrote `C:\Users\braxt\bo2-recompiled\native_captures\payload_capture_002\native-renderer-d3d12-index-payload-diagnostic.bmp`, size `3686454` bytes, SHA-256 `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`.
+- Real `--backend d3d12` still fails closed because replay has bounded index bytes and constant payloads, but still has no vertex/fetch decode, vertex-buffer bytes, texture/sampler state, render-target/depth/blend/raster state, translated input layouts, or replacement BO2 shaders.
 - `--backend vulkan-diagnostic` and `--backend vulkan` fail closed because no Vulkan backend exists in this tree yet.
 - The interrupted Ninja run was repaired by regenerating the CMake build graph with Visual Studio CMake. Target-specific `native_render_replay` and `native_shader_inspect` builds now succeed through Ninja under `VsDevCmd`.
 - The full `default` target was attempted with a 180-second cap and stopped while rebuilding ReXGlue runtime objects at step `28/165`; it had not reached or failed on the BO2 native renderer changes.
@@ -141,7 +144,8 @@ Runtime verification:
 - JSONL capture can record the live render stream for replay/backend bring-up.
 - Offline replay reconstructs draw state enough to list draw opcode, packet pointer, index/primitive/source fields, bound VS/PS hashes, constant history, bound constant ranges, and missing-state flags per draw.
 - Offline replay now parses optional constant payload arrays and reports whether each constant upload has payload, is missing payload, or is truncated.
-- Offline replay now has explicit `--dump-indices`, `--dump-vertices`, and `--resource-summary` reports. They currently document missing resource snapshots rather than inventing synthetic data.
+- Offline replay now parses bounded raw index-byte payloads for indexed draws, validates indexed draws with missing snapshots, and decodes 16-bit/32-bit indices using the captured Xenos endian mode.
+- Offline replay now has explicit `--dump-indices`, `--dump-vertices`, and `--resource-summary` reports. Index dumps can show real decoded BO2 indices for fresh captures; vertex/fetch dumps still document missing state rather than inventing synthetic data.
 - Offline D3D12 replay creates a native D3D12 render target, emits draw-derived clear rectangles, compiles a tiny HLSL VS/PS pair, submits synthetic triangle draw calls, copies the target to CPU memory, and writes a BMP without using ReXGlue/Xenia final rendering.
 - Ghidra MCP is usable for both programs: `CoDMPServer_PC.exe` provides PDB-backed renderer symbols, and `default.xex` instruction searches verify the XEX packet emitter addresses even where Ghidra's PPC function boundaries are broken.
 
@@ -151,8 +155,8 @@ Runtime verification:
 - There is a D3D12 debug replay backend, but it renders diagnostic draw tiles and synthetic shader-pipeline rectangles. It does not yet submit BO2 indexed geometry, shader replacements, textures, or render-target/depth state.
 - Runtime draw calls, render target changes, shader bindings, texture bindings, and buffer uploads are not translated into a real in-game backend yet.
 - The selected draw-candidate hook and CP trace sink submit backend-neutral commands, but the null backend only logs/captures them and no separate BO2-owned GPU backend consumes them yet.
-- Existing captures have constant upload metadata but not constant payload bytes. The BO2 capture writer/replay parser now support bounded constant payload arrays; fresh captures require the corresponding ReXGlue CP trace callback fields.
-- Replay currently has draw/index metadata but not complete vertex fetch, texture fetch, sampler, render-target, or depth/stencil state.
+- Old captures have constant/index metadata but no raw index bytes. Fresh captures after ReXGlue commit `3ed291c` plus the index payload trace update carry bounded constant payload dwords and bounded indexed-draw byte snapshots.
+- Replay currently has draw/index metadata, constant payloads, and bounded index snapshots, but not complete vertex fetch, texture fetch, sampler, render-target, or depth/stencil state.
 - Frame markers are present/swap-derived. Most current PM4 work in the verified capture is pre-frame from replay's perspective, so backend frame grouping must use CP stream plus present packets rather than only current `begin_frame` / `end_frame`.
 - Android/ARM64 direct generated calls can still bypass dispatcher hooks. An ARM64-safe generated-function detour or generated-call rewrite is still needed before every logged candidate is guaranteed to fire on Android.
 - The XEX equivalents for the static material asset-load functions are not fully mapped. The current map is strongest for runtime packet emitters and shader/material binding.
@@ -162,7 +166,7 @@ Runtime verification:
 ## Next highest-impact targets
 
 1. Add an ARM64-safe generated-call interception path or generated-call rewrite, so Android direct calls cannot bypass dispatcher hooks.
-2. Extend the CP trace sink/capture writer with constant payload bytes, vertex fetch state, texture fetch state, render target binds, and depth/stencil state.
+2. Extend the CP trace sink/capture writer with vertex fetch state, vertex-buffer byte snapshots, texture fetch state, render target binds, and depth/stencil state.
 3. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends.
 4. Extend the D3D12 replay backend from offscreen BMP output to window/swapchain output and captured-state indexed geometry.
 5. Connect runtime shader/microcode hashes from `shader_work/shaders/index.json` to a replacement shader registry keyed by `(stage, hash)`.
