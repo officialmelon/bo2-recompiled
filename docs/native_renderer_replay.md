@@ -4,7 +4,7 @@ Last updated: 2026-06-28
 
 `native_render_replay.exe` is the first offline replay executable for the BO2 native renderer work. It reads the JSONL written by `native_renderer_capture_path`, reconstructs frame/draw/shader/constant state, and reports enough state per draw to drive backend bring-up without booting the game for every iteration.
 
-The tool also has a first D3D12 debug backend. That backend renders an offscreen BMP from replayed draw events using BO2-owned D3D12 commands. It is a diagnostic native output path, not a full BO2 scene renderer yet.
+The tool also has a first D3D12 debug backend. That backend renders an offscreen BMP from replayed draw events using BO2-owned D3D12 commands, including a small HLSL shader pipeline and synthetic triangle draws. It is a diagnostic native output path, not a full BO2 scene renderer yet.
 
 ## Build
 
@@ -17,8 +17,8 @@ cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\C
 Verified output:
 
 - `C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe`
-- Size: `888320` bytes.
-- Last write time: `2026-06-28 16:44:28`.
+- Size: `897024` bytes.
+- Last write time: `2026-06-28 16:51:52`.
 
 ## Usage
 
@@ -26,6 +26,7 @@ Verified output:
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --summary --shader-usage --top-shaders 20
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --frame 2 --dump-draws --max-draws 24
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --backend d3d12 --d3d12-output default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-replay.bmp --d3d12-draws 4096 --no-summary
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --backend d3d12 --d3d12-output default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-geometry-replay.bmp --d3d12-draws 4096 --no-summary
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-final-smoke.jsonl --validate
 ```
 
@@ -115,7 +116,16 @@ Result:
 - Last write time: `2026-06-28 16:44:48`.
 - SHA-256: `D82EED84E69EED945B8DA0FF70D7F97B80FCCB35392D5E1E822809231DA03E37`
 
-The BMP is a `1280x720` offscreen D3D12 render target copied back to disk. The renderer clears the target, then issues D3D12 `ClearRenderTargetView` calls over per-draw rectangles. Color is derived from the reconstructed VS hash, PS hash, primitive type, and source select. This proves a BO2-owned native D3D12 output path driven by replayed capture events, but it does not yet draw BO2 geometry.
+The BMP is a `1280x720` offscreen D3D12 render target copied back to disk. The renderer clears the target, issues D3D12 `ClearRenderTargetView` calls over per-draw rectangles, then uses a root-signature/PSO path with runtime-compiled HLSL and `DrawInstanced` calls to overlay synthetic triangle rectangles. Color is derived from the reconstructed VS hash, PS hash, primitive type, and source select. This proves a BO2-owned native D3D12 output path driven by replayed capture events, but it does not yet draw BO2 geometry.
+
+Updated geometry replay result:
+
+- Output: `C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-geometry-replay.bmp`
+- Exit code: `0`
+- Size: `3686454` bytes.
+- Last write time: `2026-06-28 16:52:19`.
+- SHA-256: `08D49F9F79AC9B77C1A895B110C77D563FC821448D3E65BCA34EC72752333C39`
+- Visual check: nonblank, with D3D12 shader-pipeline draw tiles visible over the clear-tile layer.
 
 ## Reconstructed draw examples
 
@@ -172,6 +182,9 @@ Generated logs:
 - `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-replay.out.log`
 - `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-replay.err.log`
 - `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-replay.bmp`
+- `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-geometry-replay.out.log`
+- `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-geometry-replay.err.log`
+- `default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-geometry-replay.bmp`
 
 The smoke capture validation result was:
 

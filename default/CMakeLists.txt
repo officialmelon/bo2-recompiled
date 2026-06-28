@@ -77,7 +77,7 @@ target_include_directories(native_render_replay PRIVATE
 target_compile_features(native_render_replay PRIVATE cxx_std_23)
 if(WIN32)
     target_compile_definitions(native_render_replay PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(native_render_replay PRIVATE d3d12)
+    target_link_libraries(native_render_replay PRIVATE d3d12 d3dcompiler)
 endif()
 
 rexglue_setup_target(default)
