@@ -87,6 +87,103 @@ struct DrawPacketCandidateInfo {
   bool index_32bit = false;
 };
 
+struct CommandBufferEventInfo {
+  uint64_t event_index = 0;
+  uint32_t function_address = 0;
+  std::string_view function_name;
+  uint64_t link_register = 0;
+  uint32_t r3 = 0;
+  uint32_t r4 = 0;
+  uint32_t r5 = 0;
+  uint32_t r6 = 0;
+  uint32_t command_buffer_object = 0;
+  uint32_t write_begin = 0;
+  uint32_t write_end = 0;
+  uint32_t write_limit_begin = 0;
+  uint32_t write_limit_end = 0;
+  uint32_t return_value = 0;
+};
+
+struct PM4PacketInfo {
+  static constexpr std::size_t kMaxDwords = 4;
+
+  uint64_t event_index = 0;
+  uint32_t opcode = 0;
+  uint32_t packet = 0;
+  uint32_t payload_dword_count = 0;
+  uint32_t packet_ptr = 0;
+  uint32_t buffer_ptr = 0;
+  uint32_t packet_offset = 0;
+  uint32_t first_dword_count = 0;
+  std::array<uint32_t, kMaxDwords> first_dwords{};
+};
+
+struct PM4DrawInfo {
+  uint64_t event_index = 0;
+  std::string_view opcode_name;
+  uint32_t opcode = 0;
+  uint32_t packet = 0;
+  uint32_t packet_ptr = 0;
+  uint32_t buffer_ptr = 0;
+  uint32_t packet_offset = 0;
+  uint32_t index_count = 0;
+  uint32_t primitive_type = 0;
+  uint32_t source_select = 0;
+  bool indexed = false;
+  uint32_t index_base = 0;
+  uint32_t index_length = 0;
+  uint32_t index_buffer_count = 0;
+  uint32_t index_format = 0;
+  uint32_t index_endianness = 0;
+  uint32_t major_mode = 0;
+  bool explicit_major_mode = false;
+  uint32_t viz_query_condition = 0;
+  uint64_t vertex_shader_hash = 0;
+  uint64_t pixel_shader_hash = 0;
+};
+
+struct PM4ShaderInfo {
+  uint64_t event_index = 0;
+  uint32_t opcode = 0;
+  uint32_t packet = 0;
+  uint32_t packet_ptr = 0;
+  uint32_t buffer_ptr = 0;
+  uint32_t packet_offset = 0;
+  uint32_t shader_type = 0;
+  bool embedded = false;
+  uint32_t guest_address = 0;
+  uintptr_t host_address = 0;
+  uint32_t dword_count = 0;
+  uint64_t shader_hash = 0;
+};
+
+struct PM4ConstantInfo {
+  uint64_t event_index = 0;
+  uint32_t opcode = 0;
+  uint32_t packet = 0;
+  uint32_t packet_ptr = 0;
+  uint32_t buffer_ptr = 0;
+  uint32_t packet_offset = 0;
+  uint32_t address = 0;
+  uint32_t offset_type = 0;
+  uint32_t type = 0;
+  uint32_t index = 0;
+  uint32_t dword_count = 0;
+};
+
+struct PM4SwapInfo {
+  uint64_t event_index = 0;
+  uint32_t opcode = 0;
+  uint32_t packet = 0;
+  uint32_t packet_ptr = 0;
+  uint32_t buffer_ptr = 0;
+  uint32_t packet_offset = 0;
+  uint32_t frontbuffer_ptr = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t frame_counter = 0;
+};
+
 const char* ToString(RendererMode mode);
 const char* ToString(RendererBackendKind backend);
 RendererMode ParseRendererMode(std::string mode);

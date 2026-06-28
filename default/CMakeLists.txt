@@ -12,9 +12,30 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(generated/rexglue.cmake)
 
+foreach(REXGLUE_FFMPEG_TARGET libavutil libavcodec libavformat libswresample libswscale)
+    if(TARGET ${REXGLUE_FFMPEG_TARGET})
+        target_include_directories(${REXGLUE_FFMPEG_TARGET} BEFORE PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src/rexglue_compat")
+    endif()
+endforeach()
+
+if(TARGET rexcore AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND NOT MSVC)
+    target_compile_options(rexcore PRIVATE -mssse3)
+endif()
+
+if(TARGET rexcore AND WIN32)
+    set(REXGLUE_CHRONO_COMPAT_INCLUDE "${CMAKE_CURRENT_LIST_DIR}/../src/rexglue_compat/chrono_clock_time_conversion.h")
+    target_include_directories(rexcore BEFORE PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src/rexglue_compat")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        target_compile_options(rexcore PRIVATE "/FI${REXGLUE_CHRONO_COMPAT_INCLUDE}" /utf-8)
+    else()
+        target_compile_options(rexcore PRIVATE -include "${REXGLUE_CHRONO_COMPAT_INCLUDE}")
+    endif()
+endif()
+
 # Sources
 set(NATIVE_RENDERER_SOURCES
     ../src/native_renderer/NativeRenderer.cpp
+    ../src/native_renderer/NativeRenderCaptureWriter.cpp
     ../src/native_renderer/DebugRenderLog.cpp
     ../src/native_renderer/RenderResourceManager.cpp
     ../src/native_renderer/ShaderManager.cpp
@@ -44,3 +65,13 @@ else()
 endif()
 
 rexglue_setup_target(default)
+
+if(WIN32)
+    set(REXGLUE_CHRONO_COMPAT_INCLUDE "${CMAKE_CURRENT_LIST_DIR}/../src/rexglue_compat/chrono_clock_time_conversion.h")
+    target_include_directories(default BEFORE PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src/rexglue_compat")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        target_compile_options(default PRIVATE "/FI${REXGLUE_CHRONO_COMPAT_INCLUDE}" /utf-8)
+    else()
+        target_compile_options(default PRIVATE -include "${REXGLUE_CHRONO_COMPAT_INCLUDE}")
+    endif()
+endif()

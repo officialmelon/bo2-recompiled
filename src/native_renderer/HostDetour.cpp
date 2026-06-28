@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 #include <rex/logging.h>
 #include <rex/platform.h>
@@ -18,6 +19,20 @@ namespace {
 constexpr size_t kAbsoluteJumpSize = 12;
 
 #if REX_PLATFORM_WIN32
+std::string FormatBytes(const uint8_t* bytes, size_t byte_count) {
+  std::string result;
+  result.reserve(byte_count * 3);
+  constexpr char kHex[] = "0123456789abcdef";
+  for (size_t i = 0; i < byte_count; ++i) {
+    if (i) {
+      result.push_back(' ');
+    }
+    result.push_back(kHex[bytes[i] >> 4]);
+    result.push_back(kHex[bytes[i] & 0x0F]);
+  }
+  return result;
+}
+
 void WriteAbsoluteJump(uint8_t* patch, PPCFunc* replacement) {
   patch[0] = 0x48;
   patch[1] = 0xB8;
@@ -33,6 +48,30 @@ bool MakeWritable(uint8_t* patch, size_t patch_size, DWORD* old_protect,
   }
   REXLOG_ERROR("BO2 native renderer failed to make {} writable", name);
   return false;
+}
+
+size_t GeneratedFunctionPatchSize(const uint8_t* patch, const char* name) {
+  constexpr uint8_t kLegacyGeneratedPrologue[kAbsoluteJumpSize] = {
+      0x41, 0x56, 0x56, 0x57, 0x53, 0x48, 0x83, 0xEC, 0x28, 0x48, 0x89, 0xD6,
+  };
+  if (std::memcmp(patch, kLegacyGeneratedPrologue, kAbsoluteJumpSize) == 0) {
+    return kAbsoluteJumpSize;
+  }
+
+  // Clang/COFF debug builds emitted by this project begin generated PPC bodies
+  // by reserving stack space and spilling the PPCContext/base arguments.
+  if (patch[0] == 0x48 && patch[1] == 0x83 && patch[2] == 0xEC &&
+      patch[4] == 0x48 && patch[5] == 0x89 && patch[6] == 0x54 &&
+      patch[7] == 0x24 && patch[9] == 0x48 && patch[10] == 0x89 &&
+      patch[11] == 0x4C && patch[12] == 0x24) {
+    return 14;
+  }
+
+  REXLOG_ERROR(
+      "BO2 native renderer unexpected generated-function prologue for {} at {}; "
+      "bytes={} ; direct-call detour disabled",
+      name, static_cast<void*>(const_cast<uint8_t*>(patch)), FormatBytes(patch, 32));
+  return 0;
 }
 #endif
 
@@ -64,44 +103,43 @@ bool InstallHostDetour(PPCFunc* target, PPCFunc* replacement, const char* name) 
 PPCFunc* InstallGeneratedFunctionDetour(PPCFunc* target, PPCFunc* replacement,
                                         const char* name) {
 #if REX_PLATFORM_WIN32
-  constexpr uint8_t kExpectedGeneratedPrologue[kAbsoluteJumpSize] = {
-      0x41, 0x56, 0x56, 0x57, 0x53, 0x48, 0x83, 0xEC, 0x28, 0x48, 0x89, 0xD6,
-  };
-  constexpr size_t kTrampolineSize = kAbsoluteJumpSize + kAbsoluteJumpSize;
-
   auto* patch = reinterpret_cast<uint8_t*>(reinterpret_cast<void*>(target));
-  if (std::memcmp(patch, kExpectedGeneratedPrologue, kAbsoluteJumpSize) != 0) {
-    REXLOG_ERROR(
-        "BO2 native renderer unexpected generated-function prologue for {}; "
-        "direct-call detour disabled",
-        name);
+  const size_t patch_size = GeneratedFunctionPatchSize(patch, name);
+  if (!patch_size) {
     return nullptr;
   }
+  const size_t trampoline_size = patch_size + kAbsoluteJumpSize;
 
   auto* trampoline = static_cast<uint8_t*>(
-      VirtualAlloc(nullptr, kTrampolineSize, MEM_COMMIT | MEM_RESERVE,
+      VirtualAlloc(nullptr, trampoline_size, MEM_COMMIT | MEM_RESERVE,
                    PAGE_EXECUTE_READWRITE));
   if (!trampoline) {
     REXLOG_ERROR("BO2 native renderer failed to allocate trampoline for {}", name);
     return nullptr;
   }
 
-  std::memcpy(trampoline, patch, kAbsoluteJumpSize);
-  WriteAbsoluteJump(trampoline + kAbsoluteJumpSize,
-                    reinterpret_cast<PPCFunc*>(patch + kAbsoluteJumpSize));
+  std::memcpy(trampoline, patch, patch_size);
+  WriteAbsoluteJump(trampoline + patch_size,
+                    reinterpret_cast<PPCFunc*>(patch + patch_size));
 
   DWORD old_protect = 0;
-  if (!MakeWritable(patch, kAbsoluteJumpSize, &old_protect, name)) {
+  if (!MakeWritable(patch, patch_size, &old_protect, name)) {
     VirtualFree(trampoline, 0, MEM_RELEASE);
     return nullptr;
   }
 
   WriteAbsoluteJump(patch, replacement);
-  FlushInstructionCache(GetCurrentProcess(), patch, kAbsoluteJumpSize);
+  if (patch_size > kAbsoluteJumpSize) {
+    std::memset(patch + kAbsoluteJumpSize, 0x90, patch_size - kAbsoluteJumpSize);
+  }
+  FlushInstructionCache(GetCurrentProcess(), patch, patch_size);
 
   DWORD unused_protect = 0;
-  VirtualProtect(patch, kAbsoluteJumpSize, old_protect, &unused_protect);
-  REXLOG_INFO("BO2 native renderer installed generated-function detour for {}", name);
+  VirtualProtect(patch, patch_size, old_protect, &unused_protect);
+  REXLOG_INFO(
+      "BO2 native renderer installed generated-function detour for {} at {} "
+      "patch_size={}",
+      name, static_cast<void*>(patch), patch_size);
   return reinterpret_cast<PPCFunc*>(trampoline);
 #else
   (void)target;

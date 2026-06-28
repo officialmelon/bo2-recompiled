@@ -19,6 +19,11 @@ class RendererBackend {
   virtual void SubmitCommandBufferSnapshot(
       uint64_t frame_index, const CommandBufferSnapshot& snapshot) = 0;
   virtual void SubmitDrawPacketCandidate(const DrawPacketCandidateInfo& draw) = 0;
+  virtual void SubmitPM4Packet(const PM4PacketInfo& packet) = 0;
+  virtual void SubmitPM4Draw(const PM4DrawInfo& draw) = 0;
+  virtual void SubmitPM4Shader(const PM4ShaderInfo& shader) = 0;
+  virtual void SubmitPM4Constants(const PM4ConstantInfo& constants) = 0;
+  virtual void SubmitPM4Swap(const PM4SwapInfo& swap) = 0;
   virtual void SubmitRenderCommand(const RenderCommand& command) = 0;
   virtual void EndFrame(uint64_t frame_index) = 0;
   virtual std::string_view LastError() const = 0;

@@ -213,6 +213,117 @@ void NativeRenderer::OnDrawPacketCandidateEnd(DrawPacketCandidateInfo& draw) {
   }
 }
 
+CommandBufferEventInfo NativeRenderer::OnCommandBufferEventBegin(
+    std::string_view function_name, uint32_t function_address, PPCContext& ctx) {
+  CommandBufferEventInfo event{};
+  if (config_.mode == RendererMode::Emulated) {
+    return event;
+  }
+
+  event.event_index = ++command_buffer_event_count_;
+  event.function_address = function_address;
+  event.function_name = function_name;
+  event.link_register = ctx.lr;
+  event.r3 = ctx.r3.u32;
+  event.r4 = ctx.r4.u32;
+  event.r5 = ctx.r5.u32;
+  event.r6 = ctx.r6.u32;
+  event.command_buffer_object = ctx.r3.u32;
+  if (event.command_buffer_object) {
+    event.write_begin = ReadGuestU32(event.command_buffer_object + 48);
+    event.write_limit_begin = ReadGuestU32(event.command_buffer_object + 56);
+  }
+  return event;
+}
+
+void NativeRenderer::OnCommandBufferEventEnd(CommandBufferEventInfo& event,
+                                             PPCContext& ctx) {
+  if (!event.event_index || !config_.verbose ||
+      !ShouldLogHighFrequencyEvent(event.event_index)) {
+    return;
+  }
+
+  event.return_value = ctx.r3.u32;
+  if (event.command_buffer_object) {
+    event.write_end = ReadGuestU32(event.command_buffer_object + 48);
+    event.write_limit_end = ReadGuestU32(event.command_buffer_object + 56);
+  }
+
+  REXLOG_INFO(
+      "BO2 native renderer render hook #{} {}({:#010x}) lr={:#010x} "
+      "r3={:#010x} r4={:#010x} r5={:#010x} r6={:#010x} "
+      "write={:#010x}->{:#010x} limit={:#010x}->{:#010x} ret={:#010x}",
+      event.event_index, event.function_name, event.function_address,
+      static_cast<uint32_t>(event.link_register), event.r3, event.r4, event.r5,
+      event.r6, event.write_begin, event.write_end, event.write_limit_begin,
+      event.write_limit_end, event.return_value);
+}
+
+void NativeRenderer::OnPM4Packet(PM4PacketInfo packet) {
+  if (!EnsureBackend()) {
+    return;
+  }
+
+  packet.event_index = ++pm4_packet_count_;
+  backend_->SubmitPM4Packet(packet);
+}
+
+void NativeRenderer::OnPM4Draw(PM4DrawInfo draw) {
+  if (!EnsureBackend()) {
+    return;
+  }
+
+  draw.event_index = ++pm4_draw_count_;
+  backend_->SubmitPM4Draw(draw);
+
+  RenderCommand command{};
+  command.type = RenderCommandType::DrawIndexed;
+  command.sequence = draw.event_index;
+  command.guest_address = draw.packet_ptr;
+  command.arg0 = draw.index_count;
+  command.arg1 = draw.primitive_type;
+  command.arg2 = draw.source_select;
+  command.arg3 = draw.indexed ? 1 : 0;
+  backend_->SubmitRenderCommand(command);
+}
+
+void NativeRenderer::OnPM4Shader(PM4ShaderInfo shader) {
+  if (!EnsureBackend()) {
+    return;
+  }
+
+  shader.event_index = ++pm4_shader_count_;
+  backend_->SubmitPM4Shader(shader);
+
+  RenderCommand command{};
+  command.type = RenderCommandType::BindShader;
+  command.sequence = shader.event_index;
+  command.guest_address = shader.guest_address;
+  command.arg0 = shader.shader_type;
+  command.arg1 = static_cast<uint32_t>(shader.shader_hash);
+  command.arg2 = static_cast<uint32_t>(shader.shader_hash >> 32);
+  command.arg3 = shader.dword_count;
+  backend_->SubmitRenderCommand(command);
+}
+
+void NativeRenderer::OnPM4Constants(PM4ConstantInfo constants) {
+  if (!EnsureBackend()) {
+    return;
+  }
+
+  constants.event_index = ++pm4_constant_count_;
+  backend_->SubmitPM4Constants(constants);
+}
+
+void NativeRenderer::OnPM4Swap(PM4SwapInfo swap) {
+  if (!EnsureBackend()) {
+    return;
+  }
+
+  swap.event_index = ++pm4_swap_count_;
+  backend_->SubmitPM4Swap(swap);
+}
+
 void NativeRenderer::Shutdown() {
   if (backend_) {
     backend_->Shutdown();
