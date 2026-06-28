@@ -39,7 +39,7 @@ Options:
 - `--dump-bound-state`: list the selected draw's bound shader hashes and known constant ranges.
 - `--dump-constants`: list captured constant uploads; with `--draw`, lists constants known before that draw.
 - `--dump-indices`: report indexed-draw metadata, captured raw index bytes, and decoded index values when an index snapshot is available.
-- `--dump-vertices`: report fetch/vertex state coverage for the selected draw.
+- `--dump-vertices`: report fetch/vertex state coverage for the selected draw, including decoded vertex component previews for known Xenos formats.
 - `--resource-summary`: report current replay resource snapshot coverage.
 - `--shader-usage --top-shaders <n>`: show shader hash and shader-pair draw usage.
 - `--backend null|offline|d3d12-diagnostic|d3d12|vulkan-diagnostic|vulkan`: backend selector. `d3d12-diagnostic` runs the offscreen D3D12 debug renderer. `d3d12` and `vulkan*` fail closed until real backends exist.
@@ -179,6 +179,8 @@ Results:
 - Validation: `Validation OK: 12000 events, 53 frames, 2646 draws`
 - Resource summary: `31` indexed snapshots, `222` vertex fetch records, `222` vertex-buffer snapshots, `16892` vertex payload bytes
 - Draw `1004`: decoded indices `3,0,2,2,0,1`, `vf95` at `0x05008230`, stride `32`, Xenos formats `38`, `6`, `37`, and `128/128` vertex bytes
+- Draw `1004` decoded vertex preview: positions `(0,0,0,1)`, `(1280,0,0,1)`, `(1280,720,0,1)`, `(0,720,0,1)`, colors `(1,1,1,1)`, and UVs `(0,0)`, `(1,0)`, `(1,1)`, `(0,1)`
+- Draw `24` decoded vertex preview: three non-indexed vertices with format `57` positions `(-0.5,-0.5,0)`, `(639.5,-0.5,0)`, `(639.5,359.5,0)` and format `38` zero vectors
 
 The real D3D12 backend currently fails closed:
 

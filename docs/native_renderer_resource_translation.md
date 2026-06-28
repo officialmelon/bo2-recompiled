@@ -25,6 +25,11 @@ Verified draw `1004` from `native_captures\vertex_fetch_capture_001\events.jsonl
 - Vertex fetch: `vf95`, raw words `0x05008233 0x10000082`, address `0x05008230`, size `128` bytes, stride `32` bytes, endian `2`
 - Attributes: format `38` at offset `0`, format `6` at offset `16`, format `37` at offset `20`
 - Raw vertex payload: `128/128` bytes captured
+- Decoded vertices:
+  - `v0`: position `(0,0,0,1)`, color `(1,1,1,1)`, uv `(0,0)`
+  - `v1`: position `(1280,0,0,1)`, color `(1,1,1,1)`, uv `(1,0)`
+  - `v2`: position `(1280,720,0,1)`, color `(1,1,1,1)`, uv `(1,1)`
+  - `v3`: position `(0,720,0,1)`, color `(1,1,1,1)`, uv `(0,1)`
 - Shaders: VS `0x5D918D91043B3ED0`, PS `0xC4ED2979F29C9139`
 - Constants: two ALU ranges at indices `1008` and `2032`, both with payload
 
@@ -41,11 +46,12 @@ Verified draw `1004` from `native_captures\vertex_fetch_capture_001\events.jsonl
 - BO2 JSONL capture writes `vertex_fetch_count`, `vertex_fetch_truncated`, and structured `vertex_fetches`.
 - Replay parses nested fetch/attribute records, validates whether fresh captures carry vertex-fetch state fields, and reports zero-fetch draws separately from old captures with missing fields.
 - Replay command `--draw <n> --dump-vertices` now reports real fetch constants, stream addresses, stride, attribute formats, and raw vertex byte previews when snapshots exist.
+- Replay vertex dumps now decode captured vertex payloads into CPU-visible float components for observed Xenos formats `6`, `7`, `16`, `17`, `25`, `26`, `31`, `32`, `33`, `34`, `35`, `36`, `37`, `38`, and `57`, with captured endian handling.
 - Replay command `--resource-summary` reports snapshot coverage and current real-backend blockers.
 
 ## Required next capture fields
 
-1. Decoded native vertex values and input-layout conversion for observed Xenos formats `38`, `6`, `37`, `57`, and `38`/`37` signed-integer variants.
+1. Native input-layout conversion and backend vertex-buffer packing for the decoded Xenos formats.
 2. Textures/samplers: texture fetch constants, base address, dimensions, format, mip count, tiling/swizzle, endian, sampler filter/wrap/lod, and raw bytes or sidecar snapshot.
 3. Render state: color/depth target addresses, formats, pitch, viewport, scissor, blend, depth/stencil, rasterizer/cull, clears, resolves, and present target mapping.
 4. Shader microcode: raw PM4-loaded microcode bytes or stable sidecar resource references for runtime-used shaders.
@@ -53,4 +59,4 @@ Verified draw `1004` from `native_captures\vertex_fetch_capture_001\events.jsonl
 
 ## Hard blocker
 
-The current verified capture can replay real index values and bounded raw vertex-buffer bytes for the first useful indexed draws, but it still cannot produce real BO2 scene output because it lacks native input-layout conversion, shaders, textures/samplers, and render-target/depth/blend/raster state. Any real backend draw would still have to synthesize those pieces, which is intentionally rejected by `--backend d3d12`.
+The current verified capture can replay real index values and decode bounded vertex-buffer bytes for the first useful indexed draws, but it still cannot produce real BO2 scene output because it lacks backend input-layout conversion, shaders, textures/samplers, and render-target/depth/blend/raster state. Any real backend draw would still have to synthesize those pieces, which is intentionally rejected by `--backend d3d12`.

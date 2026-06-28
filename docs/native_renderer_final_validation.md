@@ -124,7 +124,22 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 - Vertex fetch: `vf95`, raw words `0x05008233 0x10000082`, address `0x05008230`, size `128`, stride `32`, endian `2`
 - Attributes: Xenos formats `38`, `6`, and `37` at byte offsets `0`, `16`, and `20`
 - Raw vertex payload: `128/128` bytes
+- Decoded vertex preview: a four-vertex `1280x720` quad with position/color/UV components:
+  - `(0,0,0,1)`, `(1,1,1,1)`, `(0,0)`
+  - `(1280,0,0,1)`, `(1,1,1,1)`, `(1,0)`
+  - `(1280,720,0,1)`, `(1,1,1,1)`, `(1,1)`
+  - `(0,720,0,1)`, `(1,1,1,1)`, `(0,1)`
 - Constants: two bound ranges, both with payload
+
+Non-indexed draw vertex decode check:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --draw 24 --dump-vertices --no-summary
+```
+
+- Draw `24`: `PM4_DRAW_INDX_2`, `vf0`, address `0x04F955DC`, size `84`, stride `28`, endian `2`
+- Attributes: Xenos formats `57` and `38`
+- Decoded positions: `(-0.5,-0.5,0)`, `(639.5,-0.5,0)`, `(639.5,359.5,0)`
 
 D3D12 diagnostic replay:
 

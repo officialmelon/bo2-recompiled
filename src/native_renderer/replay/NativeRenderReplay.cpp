@@ -1,7 +1,9 @@
 #include "NativeRenderReplay.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -1307,6 +1309,283 @@ std::vector<uint32_t> DecodeIndexPayload(const PM4DrawRecord &draw) {
   return indices;
 }
 
+const char *VertexFormatName(uint32_t format) {
+  switch (format) {
+  case 6:
+    return "FMT_8_8_8_8";
+  case 7:
+    return "FMT_2_10_10_10";
+  case 16:
+    return "FMT_10_11_11";
+  case 17:
+    return "FMT_11_11_10";
+  case 25:
+    return "FMT_16_16";
+  case 26:
+    return "FMT_16_16_16_16";
+  case 31:
+    return "FMT_16_16_FLOAT";
+  case 32:
+    return "FMT_16_16_16_16_FLOAT";
+  case 33:
+    return "FMT_32";
+  case 34:
+    return "FMT_32_32";
+  case 35:
+    return "FMT_32_32_32_32";
+  case 36:
+    return "FMT_32_FLOAT";
+  case 37:
+    return "FMT_32_32_FLOAT";
+  case 38:
+    return "FMT_32_32_32_32_FLOAT";
+  case 57:
+    return "FMT_32_32_32_FLOAT";
+  default:
+    return "FMT_UNKNOWN";
+  }
+}
+
+uint32_t VertexFormatComponentCount(uint32_t format) {
+  switch (format) {
+  case 33:
+  case 36:
+    return 1;
+  case 25:
+  case 31:
+  case 34:
+  case 37:
+    return 2;
+  case 16:
+  case 17:
+  case 57:
+    return 3;
+  case 6:
+  case 7:
+  case 26:
+  case 32:
+  case 35:
+  case 38:
+    return 4;
+  default:
+    return 0;
+  }
+}
+
+uint32_t VertexFormatByteSize(uint32_t format) {
+  switch (format) {
+  case 6:
+  case 7:
+  case 16:
+  case 17:
+  case 25:
+  case 31:
+  case 33:
+  case 36:
+    return 4;
+  case 26:
+  case 32:
+  case 34:
+  case 37:
+    return 8;
+  case 57:
+    return 12;
+  case 35:
+  case 38:
+    return 16;
+  default:
+    return 0;
+  }
+}
+
+uint32_t GpuSwap32(uint32_t value, uint32_t endian) {
+  switch (endian) {
+  case 1:
+    return ((value << 8) & 0xFF00FF00) |
+           ((value >> 8) & 0x00FF00FF);
+  case 2:
+    return ((value & 0x000000FF) << 24) |
+           ((value & 0x0000FF00) << 8) |
+           ((value & 0x00FF0000) >> 8) |
+           ((value & 0xFF000000) >> 24);
+  case 3:
+    return ((value >> 16) & 0x0000FFFF) | (value << 16);
+  default:
+    return value;
+  }
+}
+
+float FloatFromBits(uint32_t bits) {
+  float value = 0.0f;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+float HalfToFloat(uint16_t bits) {
+  const uint32_t sign = uint32_t(bits & 0x8000) << 16;
+  uint32_t exponent = (bits >> 10) & 0x1F;
+  uint32_t mantissa = bits & 0x03FF;
+  uint32_t out = 0;
+  if (exponent == 0) {
+    if (mantissa == 0) {
+      out = sign;
+    } else {
+      exponent = 127 - 15 + 1;
+      while ((mantissa & 0x0400) == 0) {
+        mantissa <<= 1;
+        --exponent;
+      }
+      mantissa &= 0x03FF;
+      out = sign | (exponent << 23) | (mantissa << 13);
+    }
+  } else if (exponent == 0x1F) {
+    out = sign | 0x7F800000 | (mantissa << 13);
+  } else {
+    out = sign | ((exponent + (127 - 15)) << 23) | (mantissa << 13);
+  }
+  return FloatFromBits(out);
+}
+
+int32_t SignExtend(uint32_t value, uint32_t bit_count) {
+  const uint32_t shift = 32 - bit_count;
+  return static_cast<int32_t>(value << shift) >> shift;
+}
+
+float ConvertPackedComponent(uint32_t raw, uint32_t width,
+                             const VertexAttributeRecord &attribute) {
+  if (attribute.is_signed) {
+    const int32_t signed_value = SignExtend(raw, width);
+    if (attribute.is_integer) {
+      return static_cast<float>(signed_value);
+    }
+    const float scale =
+        attribute.signed_rf_mode == 1
+            ? (1.0f / (float((uint64_t{1} << (width - 1)) - 1) + 0.5f))
+            : (1.0f / float((uint64_t{1} << (width - 1)) - 1));
+    return static_cast<float>(signed_value) * scale;
+  }
+  if (attribute.is_integer) {
+    return static_cast<float>(raw);
+  }
+  return static_cast<float>(raw) / float((uint64_t{1} << width) - 1);
+}
+
+bool DecodeVertexAttribute(const VertexFetchRecord &fetch,
+                           const VertexAttributeRecord &attribute,
+                           uint32_t vertex_index,
+                           std::vector<float> &components,
+                           std::string &format_note) {
+  components.clear();
+  const uint32_t component_count =
+      VertexFormatComponentCount(attribute.data_format);
+  const uint32_t byte_size = VertexFormatByteSize(attribute.data_format);
+  if (component_count == 0 || byte_size == 0) {
+    format_note = "unsupported_format";
+    return false;
+  }
+  const uint64_t base = uint64_t(vertex_index) * fetch.stride_bytes +
+                        attribute.offset_bytes;
+  if (base + byte_size > fetch.payload_bytes.size()) {
+    format_note = "out_of_snapshot";
+    return false;
+  }
+
+  auto load_word = [&](uint32_t word_index) {
+    return GpuSwap32(LoadLittleEndian32(fetch.payload_bytes,
+                                        std::size_t(base) + word_index * 4),
+                     fetch.endian);
+  };
+
+  switch (attribute.data_format) {
+  case 6: {
+    const uint32_t word = load_word(0);
+    for (uint32_t i = 0; i < 4; ++i) {
+      components.push_back(ConvertPackedComponent((word >> (i * 8)) & 0xFF,
+                                                  8, attribute));
+    }
+    return true;
+  }
+  case 7: {
+    const uint32_t word = load_word(0);
+    components.push_back(ConvertPackedComponent(word & 0x3FF, 10, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 10) & 0x3FF, 10, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 20) & 0x3FF, 10, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 30) & 0x003, 2, attribute));
+    return true;
+  }
+  case 16: {
+    const uint32_t word = load_word(0);
+    components.push_back(ConvertPackedComponent(word & 0x7FF, 11, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 11) & 0x7FF, 11, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 22) & 0x3FF, 10, attribute));
+    return true;
+  }
+  case 17: {
+    const uint32_t word = load_word(0);
+    components.push_back(ConvertPackedComponent(word & 0x3FF, 10, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 10) & 0x7FF, 11, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 21) & 0x7FF, 11, attribute));
+    return true;
+  }
+  case 25:
+  case 26: {
+    for (uint32_t i = 0; i < component_count; ++i) {
+      const uint32_t word = load_word(i / 2);
+      const uint32_t raw = (word >> ((i & 1) * 16)) & 0xFFFF;
+      components.push_back(ConvertPackedComponent(raw, 16, attribute));
+    }
+    return true;
+  }
+  case 31:
+  case 32: {
+    for (uint32_t i = 0; i < component_count; ++i) {
+      const uint32_t word = load_word(i / 2);
+      const uint32_t raw = (word >> ((i & 1) * 16)) & 0xFFFF;
+      components.push_back(HalfToFloat(static_cast<uint16_t>(raw)));
+    }
+    return true;
+  }
+  case 33:
+  case 34:
+  case 35: {
+    for (uint32_t i = 0; i < component_count; ++i) {
+      const uint32_t word = load_word(i);
+      if (attribute.is_signed) {
+        const int32_t value = static_cast<int32_t>(word);
+        components.push_back(attribute.is_integer
+                                 ? static_cast<float>(value)
+                                 : static_cast<float>(value) *
+                                       (1.0f / 2147483647.0f));
+      } else {
+        components.push_back(attribute.is_integer
+                                 ? static_cast<float>(word)
+                                 : static_cast<float>(word) *
+                                       (1.0f / 4294967295.0f));
+      }
+    }
+    return true;
+  }
+  case 36:
+  case 37:
+  case 38:
+  case 57:
+    for (uint32_t i = 0; i < component_count; ++i) {
+      components.push_back(FloatFromBits(load_word(i)));
+    }
+    return true;
+  default:
+    format_note = "unsupported_format";
+    return false;
+  }
+}
+
 void PrintDwordPreview(const std::vector<uint32_t> &dwords,
                        std::size_t max_dwords = 8) {
   if (dwords.empty()) {
@@ -1980,15 +2259,57 @@ void PrintVertexDump(const ReplayCapture &capture, std::size_t draw_index) {
       for (std::size_t i = 0; i < fetch.attributes.size(); ++i) {
         const VertexAttributeRecord &attribute = fetch.attributes[i];
         std::cout << "    attr[" << i << "] format="
-                  << attribute.data_format
+                  << attribute.data_format << "("
+                  << VertexFormatName(attribute.data_format) << ")"
                   << " offset=" << attribute.offset_bytes
                   << " stride=" << attribute.stride_bytes
+                  << " bytes=" << VertexFormatByteSize(attribute.data_format)
                   << " exp_adjust=" << attribute.exp_adjust
                   << " prefetch=" << attribute.prefetch_count
                   << " signed=" << (attribute.is_signed ? "yes" : "no")
                   << " integer=" << (attribute.is_integer ? "yes" : "no")
                   << " rounded="
                   << (attribute.is_index_rounded ? "yes" : "no") << "\n";
+      }
+    }
+    const uint32_t vertex_count =
+        fetch.stride_bytes == 0
+            ? 0
+            : static_cast<uint32_t>(
+                  fetch.payload_bytes.size() / fetch.stride_bytes);
+    if (vertex_count != 0) {
+      const uint32_t preview_count = std::min<uint32_t>(vertex_count, 4);
+      std::cout << "    decoded vertex preview count=" << preview_count
+                << "/" << vertex_count << "\n";
+      for (uint32_t vertex_index = 0; vertex_index < preview_count;
+           ++vertex_index) {
+        std::cout << "      v[" << vertex_index << "]";
+        for (std::size_t attr_index = 0; attr_index < fetch.attributes.size();
+             ++attr_index) {
+          const VertexAttributeRecord &attribute = fetch.attributes[attr_index];
+          std::vector<float> components;
+          std::string note;
+          const bool decoded =
+              DecodeVertexAttribute(fetch, attribute, vertex_index, components,
+                                    note);
+          std::cout << " a" << attr_index << "=";
+          if (!decoded) {
+            std::cout << note;
+            continue;
+          }
+          std::cout << "(";
+          for (std::size_t component_index = 0;
+               component_index < components.size(); ++component_index) {
+            if (component_index) {
+              std::cout << ",";
+            }
+            std::cout << std::fixed << std::setprecision(6)
+                      << components[component_index];
+          }
+          std::cout.unsetf(std::ios::floatfield);
+          std::cout << ")";
+        }
+        std::cout << "\n";
       }
     }
     if (!fetch.payload_missing && !fetch.payload_bytes.empty()) {

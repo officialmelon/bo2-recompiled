@@ -150,6 +150,7 @@ Runtime verification:
 - Offline replay now parses optional constant payload arrays and reports whether each constant upload has payload, is missing payload, or is truncated.
 - Offline replay now parses bounded raw index-byte payloads for indexed draws, validates indexed draws with missing snapshots, and decodes 16-bit/32-bit indices using the captured Xenos endian mode.
 - Offline replay now has explicit `--dump-indices`, `--dump-vertices`, and `--resource-summary` reports. Index dumps can show real decoded BO2 indices for fresh captures; vertex/fetch dumps can show real fetch constants, stream base/size/stride, shader-decoded attribute formats, and bounded raw vertex bytes.
+- Offline replay now decodes captured vertex payload bytes for the observed Xenos fetch formats. Draw `1004` decodes to a real `1280x720` indexed quad with position/color/UV attributes, and draw `24` decodes non-indexed position data from format `57`.
 - Offline D3D12 replay creates a native D3D12 render target, emits draw-derived clear rectangles, compiles a tiny HLSL VS/PS pair, submits synthetic triangle draw calls, copies the target to CPU memory, and writes a BMP without using ReXGlue/Xenia final rendering.
 - Ghidra MCP is usable for both programs: `CoDMPServer_PC.exe` provides PDB-backed renderer symbols, and `default.xex` instruction searches verify the XEX packet emitter addresses even where Ghidra's PPC function boundaries are broken.
 
@@ -160,7 +161,7 @@ Runtime verification:
 - Runtime draw calls, render target changes, shader bindings, texture bindings, and buffer uploads are not translated into a real in-game backend yet.
 - The selected draw-candidate hook and CP trace sink submit backend-neutral commands, but the null backend only logs/captures them and no separate BO2-owned GPU backend consumes them yet.
 - Old captures have constant/index metadata but no raw index bytes. Fresh captures after ReXGlue commit `3ed291c` plus the index payload trace update carry bounded constant payload dwords and bounded indexed-draw byte snapshots.
-- Replay currently has draw/index metadata, constant payloads, bounded index snapshots, vertex fetch records, and bounded vertex snapshots where the active vertex shader decodes fetch bindings, but not complete texture fetch, sampler, render-target, or depth/stencil state.
+- Replay currently has draw/index metadata, constant payloads, bounded index snapshots, vertex fetch records, bounded vertex snapshots, and CPU-side vertex component decoding for observed formats, but not complete texture fetch, sampler, render-target, or depth/stencil state.
 - Frame markers are present/swap-derived. Most current PM4 work in the verified capture is pre-frame from replay's perspective, so backend frame grouping must use CP stream plus present packets rather than only current `begin_frame` / `end_frame`.
 - Android/ARM64 direct generated calls can still bypass dispatcher hooks. An ARM64-safe generated-function detour or generated-call rewrite is still needed before every logged candidate is guaranteed to fire on Android.
 - The XEX equivalents for the static material asset-load functions are not fully mapped. The current map is strongest for runtime packet emitters and shader/material binding.
@@ -170,8 +171,8 @@ Runtime verification:
 ## Next highest-impact targets
 
 1. Add an ARM64-safe generated-call interception path or generated-call rewrite, so Android direct calls cannot bypass dispatcher hooks.
-2. Extend the CP trace sink/capture writer with texture fetch state, render target binds, depth/stencil state, and sidecar resource manifests for large snapshots.
-3. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends.
-4. Extend the D3D12 replay backend from offscreen BMP output to window/swapchain output and captured-state indexed geometry.
+2. Extend the D3D12 replay backend from offscreen diagnostic output to captured-state indexed geometry using decoded vertex/index payloads.
+3. Extend the CP trace sink/capture writer with texture fetch state, render target binds, depth/stencil state, and sidecar resource manifests for large snapshots.
+4. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends.
 5. Connect runtime shader/microcode hashes from `shader_work/shaders/index.json` to a replacement shader registry keyed by `(stage, hash)`.
 6. Replace the null runtime backend with a `D3D12Debug` backend once the replay D3D12 path proves device/swapchain/indexed draw submission.

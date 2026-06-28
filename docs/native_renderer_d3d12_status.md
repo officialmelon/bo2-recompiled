@@ -47,11 +47,11 @@ Result:
 
 ## Real backend
 
-`--backend d3d12` is present as a fail-closed command path. It does not draw until real captured resources and shaders exist.
+`--backend d3d12` is present as a fail-closed command path. It does not draw until decoded replay resources can be bound with real native shaders and render state.
 
 Current missing pieces:
 
-- Decoded native input layouts and Xenos vertex-format conversion
+- Backend input layouts and D3D12 vertex/index buffer binding for decoded Xenos vertex data
 - Replacement or translated native shaders
 - Texture/sampler state
 - Render target/depth/blend/raster state
@@ -61,7 +61,8 @@ Current captured pieces from `native_captures\vertex_fetch_capture_001`:
 - Constant payloads: `84/84`
 - Indexed draw snapshots: `31/31`, `372` raw index bytes total
 - Vertex fetch records: `222`, all with bounded raw vertex payloads, `16892` raw vertex bytes total
-- First indexed draw `1004`: decoded indices `3,0,2,2,0,1`, `vf95`, stride `32`, attributes `(format=38, offset=0)`, `(format=6, offset=16)`, `(format=37, offset=20)`, and `128/128` vertex bytes
+- First indexed draw `1004`: decoded indices `3,0,2,2,0,1`, `vf95`, stride `32`, attributes `(format=38, offset=0)`, `(format=6, offset=16)`, `(format=37, offset=20)`, `128/128` vertex bytes, and decoded position/color/UV vertices for a `1280x720` quad
+- Replay-side vertex decoding covers the observed formats `57`, `38`, `37`, and `6`, plus the common packed/integer/half/float variants implemented in `native_render_replay`
 - Real D3D12 still fails closed with: `translated input layouts, native shader replacements/translations, texture/sampler state, and render-target/depth state`
 
 ## Build note
