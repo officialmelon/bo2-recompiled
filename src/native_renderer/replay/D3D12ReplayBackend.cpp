@@ -639,13 +639,17 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
                                std::string &error) {
   (void)options;
   const bool has_constants = capture.summary.constant_uploads_with_payload != 0;
-  error = "capture/replay does not yet include real index-buffer bytes, vertex "
-          "fetch constants, vertex-buffer bytes, translated input layouts, or "
-          "replacement BO2 shaders. Refusing to synthesize output in "
-          "d3d12-real; use d3d12-diagnostic for the current debug renderer. "
-          "constant_payloads=" +
+  error = "capture/replay now has bounded index and vertex snapshots where "
+          "the command stream provides them, but d3d12-real still lacks "
+          "translated input layouts, native shader replacements/translations, "
+          "texture/sampler state, and render-target/depth state. Refusing to "
+          "synthesize output in d3d12-real; use d3d12-diagnostic for the "
+          "current debug renderer. constant_payloads=" +
           std::to_string(capture.summary.constant_uploads_with_payload) +
-          (has_constants ? " (partial constants only)" : " (none)");
+          (has_constants ? " vertex_snapshots=" : " (none) vertex_snapshots=") +
+          std::to_string(capture.summary.vertex_buffer_snapshots) +
+          " index_snapshots=" +
+          std::to_string(capture.summary.index_buffer_snapshots);
   return false;
 }
 

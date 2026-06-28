@@ -166,11 +166,25 @@ Result:
 
 The BMP is a `1280x720` offscreen D3D12 render target copied back to disk. The renderer clears the target, issues D3D12 `ClearRenderTargetView` calls over per-draw rectangles, then uses a root-signature/PSO path with runtime-compiled HLSL and `DrawInstanced` calls to overlay synthetic triangle rectangles. Color is derived from the reconstructed VS hash, PS hash, primitive type, and source select. This proves a BO2-owned native D3D12 output path driven by replayed capture events, but it does not yet draw BO2 geometry.
 
+Latest verified vertex-fetch capture:
+
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\vertex_fetch_capture_001\events.jsonl --validate
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\vertex_fetch_capture_001\events.jsonl --draw 1004 --dump-bound-state --dump-indices --dump-vertices --no-summary
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\vertex_fetch_capture_001\events.jsonl --resource-summary --no-summary
+```
+
+Results:
+
+- Validation: `Validation OK: 12000 events, 53 frames, 2646 draws`
+- Resource summary: `31` indexed snapshots, `222` vertex fetch records, `222` vertex-buffer snapshots, `16892` vertex payload bytes
+- Draw `1004`: decoded indices `3,0,2,2,0,1`, `vf95` at `0x05008230`, stride `32`, Xenos formats `38`, `6`, `37`, and `128/128` vertex bytes
+
 The real D3D12 backend currently fails closed:
 
 ```text
 Native replay backend: d3d12 (resource-backed D3D12 renderer)
-D3D12 real replay unavailable: capture/replay now includes bounded index snapshots for fresh captures, but still does not include vertex fetch constants, vertex-buffer bytes, translated input layouts, textures/samplers, render-target/depth state, or replacement BO2 shaders. Refusing to synthesize output in d3d12-real; use d3d12-diagnostic for the current debug renderer.
+D3D12 real replay unavailable: capture/replay now has bounded index and vertex snapshots where the command stream provides them, but d3d12-real still lacks translated input layouts, native shader replacements/translations, texture/sampler state, and render-target/depth state. Refusing to synthesize output in d3d12-real; use d3d12-diagnostic for the current debug renderer.
 ```
 
 The Vulkan backend names are accepted but fail closed because no Vulkan backend is implemented in this tree yet.

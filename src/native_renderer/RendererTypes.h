@@ -118,8 +118,42 @@ struct PM4PacketInfo {
   std::array<uint32_t, kMaxDwords> first_dwords{};
 };
 
+struct VertexAttributeInfo {
+  uint32_t data_format = 0;
+  int32_t offset = 0;
+  uint32_t stride = 0;
+  int32_t exp_adjust = 0;
+  uint32_t prefetch_count = 0;
+  uint32_t signed_rf_mode = 0;
+  bool is_index_rounded = false;
+  bool is_signed = false;
+  bool is_integer = false;
+};
+
+struct VertexFetchInfo {
+  static constexpr std::size_t kMaxAttributes = 8;
+  static constexpr std::size_t kMaxPayloadBytes = 512;
+
+  uint32_t fetch_constant = 0;
+  uint32_t dword_0 = 0;
+  uint32_t dword_1 = 0;
+  uint32_t type = 0;
+  uint32_t address = 0;
+  uint32_t size = 0;
+  uint32_t endian = 0;
+  uint32_t stride_words = 0;
+  uint32_t attribute_count = 0;
+  uint32_t captured_attribute_count = 0;
+  std::array<VertexAttributeInfo, kMaxAttributes> attributes{};
+  uint32_t payload_byte_count = 0;
+  std::array<uint8_t, kMaxPayloadBytes> payload_bytes{};
+  bool payload_truncated = false;
+  bool payload_missing = true;
+};
+
 struct PM4DrawInfo {
   static constexpr std::size_t kMaxIndexPayloadBytes = 1024;
+  static constexpr std::size_t kMaxVertexFetches = 32;
 
   uint64_t event_index = 0;
   std::string_view opcode_name;
@@ -141,6 +175,9 @@ struct PM4DrawInfo {
   std::array<uint8_t, kMaxIndexPayloadBytes> index_bytes{};
   bool index_payload_truncated = false;
   bool index_payload_missing = true;
+  uint32_t vertex_fetch_count = 0;
+  std::array<VertexFetchInfo, kMaxVertexFetches> vertex_fetches{};
+  bool vertex_fetch_truncated = false;
   uint32_t major_mode = 0;
   bool explicit_major_mode = false;
   uint32_t viz_query_condition = 0;

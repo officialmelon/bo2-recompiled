@@ -93,6 +93,64 @@ void CopyDrawIndexPayloadIfPresent(const DrawEvent *event,
   }
 }
 
+template <typename DrawEvent>
+void CopyDrawVertexFetchesIfPresent(const DrawEvent *event,
+                                    bo2::native::PM4DrawInfo &draw) {
+  if constexpr (requires {
+                  event->vertex_fetch_count;
+                  event->vertex_fetch_truncated;
+                  event->vertex_fetches[0].fetch_constant;
+                  event->vertex_fetches[0].attributes[0].data_format;
+                  event->vertex_fetches[0].payload_bytes[0];
+                }) {
+    draw.vertex_fetch_count = std::min<uint32_t>(
+        event->vertex_fetch_count, draw.vertex_fetches.size());
+    draw.vertex_fetch_truncated = event->vertex_fetch_truncated ||
+                                  event->vertex_fetch_count >
+                                      draw.vertex_fetches.size();
+    for (uint32_t i = 0; i < draw.vertex_fetch_count; ++i) {
+      const auto &source = event->vertex_fetches[i];
+      auto &target = draw.vertex_fetches[i];
+      target.fetch_constant = source.fetch_constant;
+      target.dword_0 = source.dword_0;
+      target.dword_1 = source.dword_1;
+      target.type = source.type;
+      target.address = source.address;
+      target.size = source.size;
+      target.endian = source.endian;
+      target.stride_words = source.stride_words;
+      target.attribute_count = source.attribute_count;
+      target.captured_attribute_count = std::min<uint32_t>(
+          source.captured_attribute_count, target.attributes.size());
+      for (uint32_t j = 0; j < target.captured_attribute_count; ++j) {
+        const auto &source_attr = source.attributes[j];
+        auto &target_attr = target.attributes[j];
+        target_attr.data_format = source_attr.data_format;
+        target_attr.offset = source_attr.offset;
+        target_attr.stride = source_attr.stride;
+        target_attr.exp_adjust = source_attr.exp_adjust;
+        target_attr.prefetch_count = source_attr.prefetch_count;
+        target_attr.signed_rf_mode = source_attr.signed_rf_mode;
+        target_attr.is_index_rounded = source_attr.is_index_rounded;
+        target_attr.is_signed = source_attr.is_signed;
+        target_attr.is_integer = source_attr.is_integer;
+      }
+      target.payload_byte_count = std::min<uint32_t>(
+          source.payload_byte_count, target.payload_bytes.size());
+      for (uint32_t j = 0; j < target.payload_byte_count; ++j) {
+        target.payload_bytes[j] = source.payload_bytes[j];
+      }
+      target.payload_truncated = source.payload_truncated ||
+                                 source.payload_byte_count >
+                                     target.payload_bytes.size();
+      target.payload_missing = source.payload_missing;
+    }
+  } else {
+    draw.vertex_fetch_count = 0;
+    draw.vertex_fetch_truncated = false;
+  }
+}
+
 void OnNativeRendererDraw(const rex::graphics::NativeRendererDrawEvent *event,
                           void *) {
   if (!event) {
@@ -115,6 +173,7 @@ void OnNativeRendererDraw(const rex::graphics::NativeRendererDrawEvent *event,
   draw.index_format = event->index_format;
   draw.index_endianness = event->index_endianness;
   CopyDrawIndexPayloadIfPresent(event, draw);
+  CopyDrawVertexFetchesIfPresent(event, draw);
   draw.major_mode = event->major_mode;
   draw.explicit_major_mode = event->explicit_major_mode;
   draw.viz_query_condition = event->viz_query_condition;

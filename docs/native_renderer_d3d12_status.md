@@ -1,6 +1,6 @@
 # Native Renderer D3D12 Status
 
-Last updated: 2026-06-28
+Last updated: 2026-06-29
 
 ## Diagnostic backend
 
@@ -32,24 +32,38 @@ Result:
 - Size: `3686454`
 - SHA-256: `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`
 
+Latest vertex-fetch capture command:
+
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\vertex_fetch_capture_001\events.jsonl --backend d3d12-diagnostic --d3d12-output native_captures\vertex_fetch_capture_001\native-renderer-d3d12-vertex-fetch-diagnostic.bmp --d3d12-draws 512 --no-summary
+```
+
+Result:
+
+- Exit code: `0`
+- Output: `native_captures\vertex_fetch_capture_001\native-renderer-d3d12-vertex-fetch-diagnostic.bmp`
+- Size: `3686454`
+- SHA-256: `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`
+
 ## Real backend
 
 `--backend d3d12` is present as a fail-closed command path. It does not draw until real captured resources and shaders exist.
 
 Current missing pieces:
 
-- Vertex/fetch decode and vertex-buffer byte snapshots
-- Translated input layouts and topology mapping
+- Decoded native input layouts and Xenos vertex-format conversion
 - Replacement or translated native shaders
 - Texture/sampler state
 - Render target/depth/blend/raster state
 
-Current captured pieces from `native_captures\payload_capture_002`:
+Current captured pieces from `native_captures\vertex_fetch_capture_001`:
 
-- Constant payloads: `227/227`
-- Indexed draw snapshots: `81/81`, `972` raw index bytes total
-- First indexed draw `1209`: decoded indices `3,0,2,2,0,1`
+- Constant payloads: `84/84`
+- Indexed draw snapshots: `31/31`, `372` raw index bytes total
+- Vertex fetch records: `222`, all with bounded raw vertex payloads, `16892` raw vertex bytes total
+- First indexed draw `1004`: decoded indices `3,0,2,2,0,1`, `vf95`, stride `32`, attributes `(format=38, offset=0)`, `(format=6, offset=16)`, `(format=37, offset=20)`, and `128/128` vertex bytes
+- Real D3D12 still fails closed with: `translated input layouts, native shader replacements/translations, texture/sampler state, and render-target/depth state`
 
 ## Build note
 
-The CMake build graph was regenerated with Visual Studio CMake. `default`, `native_render_replay`, and `native_shader_inspect` build successfully through Ninja under `VsDevCmd` in the 2026-06-28 index-payload pass.
+The CMake build graph was regenerated with Visual Studio CMake. `default`, `native_render_replay`, and `native_shader_inspect` build successfully through Ninja under `VsDevCmd`; latest verified artifact times are 2026-06-28 23:16-23:17 Brisbane time.

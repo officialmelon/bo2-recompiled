@@ -387,6 +387,91 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
     file_ << '"' << HexValue(draw.index_bytes[i], 2) << '"';
   }
   file_ << ']';
+  WriteU64Field("vertex_fetch_count", draw.vertex_fetch_count);
+  WriteBoolField("vertex_fetch_truncated", draw.vertex_fetch_truncated);
+  WriteFieldPrefix("vertex_fetches");
+  file_ << '[';
+  const uint32_t vertex_fetch_count = std::min<uint32_t>(
+      draw.vertex_fetch_count, draw.vertex_fetches.size());
+  for (uint32_t i = 0; i < vertex_fetch_count; ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    const VertexFetchInfo &fetch = draw.vertex_fetches[i];
+    file_ << '{';
+    bool first_fetch_field = true;
+    auto fetch_prefix = [&]() {
+      if (!first_fetch_field) {
+        file_ << ',';
+      }
+      first_fetch_field = false;
+    };
+    auto fetch_u64 = [&](const char *name, uint64_t value) {
+      fetch_prefix();
+      file_ << '"' << name << "\":" << value;
+    };
+    auto fetch_bool = [&](const char *name, bool value) {
+      fetch_prefix();
+      file_ << '"' << name << "\":" << (value ? "true" : "false");
+    };
+    auto fetch_hex = [&](const char *name, uint64_t value, int width) {
+      fetch_prefix();
+      file_ << '"' << name << "\":\"" << HexValue(value, width) << '"';
+    };
+    fetch_u64("fetch_constant", fetch.fetch_constant);
+    fetch_hex("dword_0", fetch.dword_0, 8);
+    fetch_hex("dword_1", fetch.dword_1, 8);
+    fetch_u64("type", fetch.type);
+    fetch_hex("address", fetch.address, 8);
+    fetch_hex("address_bytes", uint64_t(fetch.address) << 2, 8);
+    fetch_u64("size_words", fetch.size);
+    fetch_u64("size_bytes", uint64_t(fetch.size) << 2);
+    fetch_u64("endian", fetch.endian);
+    fetch_u64("stride_words", fetch.stride_words);
+    fetch_u64("stride_bytes", uint64_t(fetch.stride_words) << 2);
+    fetch_u64("attribute_count", fetch.attribute_count);
+    fetch_u64("captured_attribute_count", fetch.captured_attribute_count);
+    fetch_prefix();
+    file_ << "\"attributes\":[";
+    const uint32_t attribute_count = std::min<uint32_t>(
+        fetch.captured_attribute_count, fetch.attributes.size());
+    for (uint32_t j = 0; j < attribute_count; ++j) {
+      if (j) {
+        file_ << ',';
+      }
+      const VertexAttributeInfo &attribute = fetch.attributes[j];
+      file_ << '{'
+            << "\"data_format\":" << attribute.data_format
+            << ",\"offset\":" << attribute.offset
+            << ",\"offset_bytes\":" << (int64_t(attribute.offset) * 4)
+            << ",\"stride\":" << attribute.stride
+            << ",\"stride_bytes\":" << (uint64_t(attribute.stride) << 2)
+            << ",\"exp_adjust\":" << attribute.exp_adjust
+            << ",\"prefetch_count\":" << attribute.prefetch_count
+            << ",\"signed_rf_mode\":" << attribute.signed_rf_mode
+            << ",\"is_index_rounded\":"
+            << (attribute.is_index_rounded ? "true" : "false")
+            << ",\"is_signed\":" << (attribute.is_signed ? "true" : "false")
+            << ",\"is_integer\":"
+            << (attribute.is_integer ? "true" : "false") << '}';
+    }
+    file_ << ']';
+    fetch_u64("payload_byte_count", fetch.payload_byte_count);
+    fetch_bool("payload_truncated", fetch.payload_truncated);
+    fetch_bool("payload_missing", fetch.payload_missing);
+    fetch_prefix();
+    file_ << "\"payload_bytes\":[";
+    const uint32_t payload_count = std::min<uint32_t>(
+        fetch.payload_byte_count, fetch.payload_bytes.size());
+    for (uint32_t j = 0; j < payload_count; ++j) {
+      if (j) {
+        file_ << ',';
+      }
+      file_ << '"' << HexValue(fetch.payload_bytes[j], 2) << '"';
+    }
+    file_ << "]}";
+  }
+  file_ << ']';
   WriteU64Field("major_mode", draw.major_mode);
   WriteBoolField("explicit_major_mode", draw.explicit_major_mode);
   WriteHex32Field("viz_query_condition", draw.viz_query_condition);

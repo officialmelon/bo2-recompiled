@@ -1,6 +1,6 @@
 # Native Renderer Real Backend Status
 
-Last updated: 2026-06-28
+Last updated: 2026-06-29
 
 ## Status
 
@@ -13,22 +13,22 @@ The only working GPU-output backend is `d3d12-diagnostic`, which renders synthet
 `native_render_replay.exe --backend d3d12` is reserved for the real resource-backed D3D12 backend. It currently fails closed:
 
 ```text
-D3D12 real replay unavailable: capture/replay now includes bounded index snapshots for fresh captures, but still does not include vertex fetch constants, vertex-buffer bytes, translated input layouts, textures/samplers, render-target/depth state, or replacement BO2 shaders.
+D3D12 real replay unavailable: capture/replay now has bounded index and vertex snapshots where the command stream provides them, but d3d12-real still lacks translated input layouts, native shader replacements/translations, texture/sampler state, and render-target/depth state.
 ```
 
 This behavior is intentional. The real backend must not emit synthetic geometry through the real backend name.
 
 ## Current verified blocker
 
-Draw `1209` in `native_captures\payload_capture_002` has enough packet data and index bytes to identify and decode a real indexed draw, but not enough vertex/shader/resource data to submit it:
+Draw `1004` in `native_captures\vertex_fetch_capture_001` has enough packet data, index bytes, constants, vertex fetch metadata, and bounded vertex bytes to identify a real indexed draw:
 
-- Real: draw packet, index metadata, raw index bytes, decoded indices `3,0,2,2,0,1`, shader hashes, and two constant ranges with payload.
-- Missing: vertex/fetch decode, raw vertex bytes, shader replacements/translation, render target/depth state, and texture/sampler state.
+- Real: draw packet, index metadata, raw index bytes, decoded indices `3,0,2,2,0,1`, shader hashes, two constant ranges with payload, `vf95` at guest physical `0x05008230`, stride `32`, attributes with Xenos formats `38`, `6`, and `37`, and `128/128` raw vertex bytes.
+- Missing: native input-layout/vertex-format conversion, shader replacements/translation, render target/depth state, and texture/sampler state.
 
 ## Next implementation targets
 
-1. Decode/capture vertex fetch constants and raw vertex bytes for draw `1209`.
-2. Add sidecar resource manifests to keep large buffers/textures out of JSONL.
-3. Build D3D12 index/vertex buffer creation after replay can load both captured index and vertex data.
-4. Add shader runtime-hash matching and manual overrides for the `5D918D91043B3ED0` / `C4ED2979F29C9139` pair.
-5. Decode texture/sampler and render-target/depth/blend/raster state for the same frame.
+1. Decode observed Xenos vertex formats into native input-layout metadata and CPU-visible vertex previews.
+2. Build D3D12 index/vertex buffer creation from the captured draw `1004` data.
+3. Add shader runtime-hash matching and manual overrides for the `5D918D91043B3ED0` / `C4ED2979F29C9139` pair.
+4. Decode texture/sampler and render-target/depth/blend/raster state for the same frame.
+5. Add sidecar resource manifests to keep larger buffers/textures out of JSONL.

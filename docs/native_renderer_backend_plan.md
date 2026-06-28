@@ -29,7 +29,7 @@ The native backend should consume a normalized stream, not raw JSON:
 7. `DrawAutoIndexed` for `PM4_DRAW_INDX_2` / `source_select=2`.
 8. `Present(frontbuffer, width, height)`.
 
-The replay tool now reconstructs items 1, 2, 3, 6, 7, and 8 enough to print state. Item 3 can now carry optional raw dwords, but the existing verified capture predates that payload. Items 4 and 5 need additional capture fields before a real backend can draw BO2 geometry correctly.
+The replay tool now reconstructs items 1, 2, 3, 5, 6, 7, and 8 enough to print state for fresh captures. Constant payloads, index bytes, vertex fetch records, and bounded vertex bytes are present in `vertex_fetch_capture_001`. Item 4 and native conversion of item 5 still need work before a real backend can draw BO2 geometry correctly.
 
 ## D3D12 first backend
 
@@ -62,14 +62,14 @@ Current `d3d12` real replay behavior:
 
 - Parses and reconstructs replay state.
 - Refuses to synthesize geometry or shaders.
-- Fails with an explicit blocker if the capture lacks real index-buffer bytes, vertex fetch constants, vertex-buffer bytes, translated input layouts, and replacement BO2 shaders.
+- Fails with an explicit blocker if the capture lacks real index-buffer bytes, vertex fetch constants, vertex-buffer bytes, translated input layouts, replacement BO2 shaders, texture/sampler state, or render-target/depth state.
 
 ## Translation rules
 
 Draw packets:
 
 - `PM4_DRAW_INDX` (`opcode 0x22`, observed count `60`): indexed draw. Use captured `index_base`, `index_length`, `index_format`, `index_endianness`, and `index_count`.
-- `PM4_DRAW_INDX_2` (`opcode 0x36`, observed count `4328`): auto-index or immediate draw path. For `source_select=2`, synthesize a sequential index/vertex stream until real vertex fetch capture is available.
+- `PM4_DRAW_INDX_2` (`opcode 0x36`, observed count `2615` in `vertex_fetch_capture_001`): auto-index or immediate draw path. For `source_select=2`, use captured vertex fetch state where the active vertex shader exposes bindings; otherwise treat zero-fetch draws as shader/topology cases that need separate handling, not as missing capture fields.
 - Primitive type `4` is the clearest PC `triCount * 3` match in the current capture; primitive types `1` and `8` need Xenos topology mapping before GPU submission.
 
 Shaders:
@@ -85,8 +85,8 @@ Shaders:
 Constants:
 
 - `PM4_SET_SHADER_CONSTANTS` and `PM4_LOAD_ALU_CONSTANT` are captured as `pm4_constants`.
-- Replay tracks total constants, recent constants, and current bound constant ranges per draw. It currently flags `1209` early draws before any constant upload has been captured.
-- The BO2 capture/replay structs now support optional bounded constant payload dwords and report missing/truncated state. The existing 20,000-event capture has `170` constants and `0` payload-bearing constants because it predates the ReXGlue-side payload fields.
+- Replay tracks total constants, recent constants, and current bound constant ranges per draw. `vertex_fetch_capture_001` has `84/84` constant uploads with payload.
+- The BO2 capture/replay structs support bounded constant payload dwords and report missing/truncated state. Old captures remain readable and fail strict validation when required resource fields are absent.
 
 Render targets and textures:
 
@@ -114,24 +114,24 @@ Next visible D3D12 target should still be deliberately small:
 3. Add replacement shaders for top replay pairs and draw them through PSOs.
 4. Present without using ReXGlue/Xenia final rendering.
 
-This proves the BO2-owned backend path, but it is still a diagnostic renderer until vertex fetch, render targets, textures, and real shader replacements are connected.
+This proves the BO2-owned backend path, but it is still a diagnostic renderer until captured vertex/index buffers are consumed by real PSOs and render targets, textures, and real shader replacements are connected.
 
 ## Blockers before real BO2 rendering
 
 - Current D3D12 replay output uses synthetic debug shaders and rectangles, not BO2 vertex/index buffers or real BO2 replacement shaders.
-- Captured draw state lacks vertex fetch buffers and texture/sampler bindings.
-- Existing captured constants only have address/count metadata, not payload values. New capture files can carry payload once the corresponding ReXGlue CP trace callback changes are compiled into the runtime.
+- Captured draw state now includes bounded vertex fetch buffers where the active vertex shader exposes bindings, but texture/sampler bindings are still missing.
+- Fresh captured constants include payload values; older captures only have address/count metadata.
 - Shader replacement table is not connected to runtime hashes.
-- Real D3D12 replay is blocked at draw `1209`: the draw has real index metadata and two bound constant ranges, but no raw index bytes, no decoded vertex/fetch state, no vertex bytes, and no replacement shaders.
+- Real D3D12 replay is blocked at draw `1004`: the draw has real index metadata, raw index bytes, decoded vertex fetch state, bounded vertex bytes, and two bound constant ranges, but no native input-layout conversion, no replacement shaders, no texture/sampler state, and no render-target/depth state.
 - Frame boundaries are present-driven; most current PM4 work is pre-frame in replay terms.
 - Android/ARM64 direct generated calls can still bypass dispatcher hooks outside the CP sink.
-- ReXGlue SDK callback changes are required for fresh constant payload captures and live resource snapshots. The BO2 hook path compiles with or without the new fields, but payloads remain `missing` until the SDK side is rebuilt.
+- ReXGlue SDK callback changes are required for each new class of live resource snapshot. The BO2 hook path compiles with or without new fields, but fields remain `missing` until the SDK side is rebuilt.
 
 ## Next implementation steps
 
-1. Extend `NativeRendererPM4*` trace callbacks to include bounded constant payload and vertex/index/fetch state snapshots.
+1. Decode observed Xenos vertex formats and derive native input-layout metadata from captured fetch records.
 2. Add `ReplayRenderState` as a stable normalized state object between JSONL replay and real backends.
 3. Add a D3D12 replay swapchain/window path.
 4. Add a shader replacement registry keyed by `(stage, hash)` with minimal passthrough/debug shaders for the top replay pairs.
-5. Add replay-derived vertex/index buffers once fetch-state capture is extended.
+5. Add replay-derived vertex/index buffers for draw `1004` and fail only on missing shaders/render state.
 6. Move runtime backend selection from `NullDebug` only to `NullDebug` / `D3D12Debug` once replay D3D12 geometry is backed by real captured state.

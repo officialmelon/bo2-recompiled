@@ -72,6 +72,41 @@ struct PM4ConstantRecord {
   bool payload_missing = true;
 };
 
+struct VertexAttributeRecord {
+  uint32_t data_format = 0;
+  int32_t offset = 0;
+  uint32_t offset_bytes = 0;
+  uint32_t stride = 0;
+  uint32_t stride_bytes = 0;
+  int32_t exp_adjust = 0;
+  uint32_t prefetch_count = 0;
+  uint32_t signed_rf_mode = 0;
+  bool is_index_rounded = false;
+  bool is_signed = false;
+  bool is_integer = false;
+};
+
+struct VertexFetchRecord {
+  uint32_t fetch_constant = 0;
+  uint32_t dword_0 = 0;
+  uint32_t dword_1 = 0;
+  uint32_t type = 0;
+  uint32_t address = 0;
+  uint32_t address_bytes = 0;
+  uint32_t size_words = 0;
+  uint32_t size_bytes = 0;
+  uint32_t endian = 0;
+  uint32_t stride_words = 0;
+  uint32_t stride_bytes = 0;
+  uint32_t attribute_count = 0;
+  uint32_t captured_attribute_count = 0;
+  std::vector<VertexAttributeRecord> attributes;
+  uint32_t payload_byte_count = 0;
+  std::vector<uint8_t> payload_bytes;
+  bool payload_truncated = false;
+  bool payload_missing = true;
+};
+
 struct PM4DrawRecord {
   uint64_t event = 0;
   std::string opcode_name;
@@ -93,6 +128,10 @@ struct PM4DrawRecord {
   std::vector<uint8_t> index_bytes;
   bool index_payload_truncated = false;
   bool index_payload_missing = true;
+  uint32_t vertex_fetch_count = 0;
+  std::vector<VertexFetchRecord> vertex_fetches;
+  bool vertex_fetch_truncated = false;
+  bool vertex_fetch_state_present = false;
   uint32_t major_mode = 0;
   bool explicit_major_mode = false;
   uint32_t viz_query_condition = 0;
@@ -259,6 +298,14 @@ struct ReplaySummary {
   uint64_t index_buffer_snapshots_missing = 0;
   uint64_t index_payload_bytes = 0;
   uint64_t index_payload_truncated = 0;
+  uint64_t draws_with_vertex_fetch = 0;
+  uint64_t draws_missing_vertex_fetch = 0;
+  uint64_t draws_missing_vertex_fetch_state = 0;
+  uint64_t vertex_fetch_records = 0;
+  uint64_t vertex_buffer_snapshots = 0;
+  uint64_t vertex_buffer_snapshots_missing = 0;
+  uint64_t vertex_payload_bytes = 0;
+  uint64_t vertex_payload_truncated = 0;
   std::map<CaptureEventType, uint64_t> event_counts;
   std::map<uint32_t, uint64_t> draw_opcode_counts;
   std::map<uint32_t, uint64_t> primitive_counts;

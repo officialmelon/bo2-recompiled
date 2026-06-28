@@ -1,6 +1,6 @@
 # Native Renderer Validation
 
-Last updated: 2026-06-28
+Last updated: 2026-06-29
 
 ## Completion status
 
@@ -71,6 +71,77 @@ Old capture validation behavior:
 
 - `payload_capture_001` remains readable for dumps.
 - `--validate` correctly fails with `indexed draws missing index snapshots: 83`.
+
+## 2026-06-29 vertex-fetch pass
+
+Full Windows build:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"" -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j1 default native_render_replay native_shader_inspect"
+```
+
+- Build log: `default\out\build\win-amd64-clangmsvc-debug\native-renderer-vertex-fetch-build.out.log`
+- Result: linked `default.exe`, `native_render_replay.exe`, and `native_shader_inspect.exe`.
+- `default.exe`: `78928896` bytes, last write `2026-06-28 23:16:27`.
+- `native_render_replay.exe`: `998912` bytes, last write `2026-06-28 23:16:37`.
+- `native_shader_inspect.exe`: `693248` bytes, last write `2026-06-28 23:16:37`.
+- Replay-only rebuilds after validation-message fixes linked successfully via `native-renderer-vertex-fetch-replay-rebuild.out.log` and `native-renderer-d3d12-message-rebuild.out.log`.
+
+Fresh capture:
+
+```powershell
+default.exe --native_renderer_mode native --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --native_renderer_capture_limit 12000 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false
+```
+
+- Capture: `C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl`
+- Events: `12000`
+- Parse errors: `0`
+- Draws: `2646`
+- Constant payloads: `84/84`
+- Indexed draw snapshots: `31`
+- Vertex fetch records: `222`
+- Vertex buffer snapshots: `222`
+- Vertex payload bytes: `16892`
+
+Validation:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --validate
+```
+
+- Exit code: `0`
+- Result: `Validation OK: 12000 events, 53 frames, 2646 draws`
+
+First indexed draw with real index and vertex bytes:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --draw 1004 --dump-bound-state --dump-indices --dump-vertices --no-summary
+```
+
+- Draw: `PM4_DRAW_INDX`, `index_base=0x050082B0`, `index_len=12`, `index_format=0`, `endian=1`
+- Raw index bytes: `00 03 00 00 00 02 00 02 00 00 00 01`
+- Decoded indices: `3,0,2,2,0,1`
+- Vertex fetch: `vf95`, raw words `0x05008233 0x10000082`, address `0x05008230`, size `128`, stride `32`, endian `2`
+- Attributes: Xenos formats `38`, `6`, and `37` at byte offsets `0`, `16`, and `20`
+- Raw vertex payload: `128/128` bytes
+- Constants: two bound ranges, both with payload
+
+D3D12 diagnostic replay:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --backend d3d12-diagnostic --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\native-renderer-d3d12-vertex-fetch-diagnostic.bmp --d3d12-draws 512 --no-summary
+```
+
+- Exit code: `0`
+- Output: `C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\native-renderer-d3d12-vertex-fetch-diagnostic.bmp`
+- Size: `3686454` bytes
+- SHA-256: `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`
+
+Real D3D12 fail-closed check:
+
+```text
+D3D12 real replay unavailable: capture/replay now has bounded index and vertex snapshots where the command stream provides them, but d3d12-real still lacks translated input layouts, native shader replacements/translations, texture/sampler state, and render-target/depth state. Refusing to synthesize output in d3d12-real; use d3d12-diagnostic for the current debug renderer. constant_payloads=84 vertex_snapshots=222 index_snapshots=31
+```
 
 ## Commands run in this pass
 
@@ -181,12 +252,12 @@ XEX:
 
 ## Current hard blocker
 
-The current fresh capture can feed real index buffers for the first indexed draws, but it still cannot feed a real D3D12/Vulkan scene backend because it lacks vertex/fetch decode, raw vertex bytes, texture/sampler state, render-target/depth state, and replacement/translated shaders. Real backends intentionally fail closed rather than synthesize missing data.
+The current fresh capture can feed real index buffers and bounded raw vertex-buffer payloads for the first indexed draws, but it still cannot feed a real D3D12/Vulkan scene backend because it lacks decoded native input layouts, texture/sampler state, render-target/depth state, and replacement/translated shaders. Real backends intentionally fail closed rather than synthesize missing data.
 
 ## Next required work
 
-1. Decode/capture vertex fetch constants and raw vertex buffers for draw `1209`.
-2. Add sidecar resource manifests for larger vertex/texture/RT snapshots.
-3. Bind captured indices into the real D3D12 replay path once vertex buffers are available.
-4. Implement shader runtime-hash matching and manual override plumbing for the top replay shader pairs.
-5. Decode texture/sampler and render-target/depth state for the same tested frame.
+1. Decode observed Xenos vertex formats into native input-layout metadata and CPU-visible vertex previews.
+2. Bind captured indices and vertex buffers into the real D3D12 replay path for draw `1004`.
+3. Implement shader runtime-hash matching and manual override plumbing for the top replay shader pairs.
+4. Decode texture/sampler and render-target/depth state for the same tested frame.
+5. Add sidecar resource manifests for larger vertex/texture/RT snapshots.

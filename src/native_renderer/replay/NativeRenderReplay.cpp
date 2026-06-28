@@ -20,14 +20,17 @@ enum class JsonValueType {
   Number,
   Bool,
   Array,
+  Object,
 };
 
 struct JsonValue {
   JsonValueType type = JsonValueType::Null;
   std::string string_value;
   uint64_t number_value = 0;
+  int64_t signed_number_value = 0;
   bool bool_value = false;
   std::vector<JsonValue> array_value;
+  std::vector<std::pair<std::string, JsonValue>> object_value;
 };
 
 using JsonObject = std::unordered_map<std::string, JsonValue>;
@@ -118,6 +121,10 @@ private:
       out.type = JsonValueType::Array;
       return ParseArray(out.array_value, error);
     }
+    if (text_[pos_] == '{') {
+      out.type = JsonValueType::Object;
+      return ParseObjectValue(out.object_value, error);
+    }
     if (StartsWith("true")) {
       pos_ += 4;
       out.type = JsonValueType::Bool;
@@ -135,9 +142,9 @@ private:
       out.type = JsonValueType::Null;
       return true;
     }
-    if (text_[pos_] >= '0' && text_[pos_] <= '9') {
+    if (text_[pos_] == '-' || (text_[pos_] >= '0' && text_[pos_] <= '9')) {
       out.type = JsonValueType::Number;
-      return ParseNumber(out.number_value, error);
+      return ParseNumber(out.number_value, out.signed_number_value, error);
     }
 
     error = "unsupported value";
@@ -229,7 +236,17 @@ private:
     return true;
   }
 
-  bool ParseNumber(uint64_t &out, std::string &error) {
+  bool ParseNumber(uint64_t &out, int64_t &signed_out, std::string &error) {
+    bool negative = false;
+    if (text_[pos_] == '-') {
+      negative = true;
+      ++pos_;
+      if (pos_ >= text_.size() || text_[pos_] < '0' || text_[pos_] > '9') {
+        error = "invalid number";
+        return false;
+      }
+    }
+
     const std::size_t begin = pos_;
     while (pos_ < text_.size() && text_[pos_] >= '0' && text_[pos_] <= '9') {
       ++pos_;
@@ -238,10 +255,30 @@ private:
     const auto number = text_.substr(begin, pos_ - begin);
     const char *first = number.data();
     const char *last = first + number.size();
-    const auto result = std::from_chars(first, last, out, 10);
+    uint64_t magnitude = 0;
+    const auto result = std::from_chars(first, last, magnitude, 10);
     if (result.ec != std::errc{} || result.ptr != last) {
       error = "invalid number";
       return false;
+    }
+    if (negative) {
+      constexpr uint64_t kMinMagnitude =
+          uint64_t(std::numeric_limits<int64_t>::max()) + 1;
+      if (magnitude > kMinMagnitude) {
+        error = "negative number out of range";
+        return false;
+      }
+      signed_out = magnitude == kMinMagnitude
+                       ? std::numeric_limits<int64_t>::min()
+                       : -static_cast<int64_t>(magnitude);
+      out = 0;
+    } else {
+      if (magnitude > uint64_t(std::numeric_limits<int64_t>::max())) {
+        signed_out = std::numeric_limits<int64_t>::max();
+      } else {
+        signed_out = static_cast<int64_t>(magnitude);
+      }
+      out = magnitude;
     }
     return true;
   }
@@ -277,6 +314,48 @@ private:
     return false;
   }
 
+  bool ParseObjectValue(std::vector<std::pair<std::string, JsonValue>> &out,
+                        std::string &error) {
+    if (!Consume('{')) {
+      error = "expected object";
+      return false;
+    }
+
+    SkipWhitespace();
+    if (Consume('}')) {
+      return true;
+    }
+
+    while (pos_ < text_.size()) {
+      std::string key;
+      if (!ParseString(key, error)) {
+        return false;
+      }
+      SkipWhitespace();
+      if (!Consume(':')) {
+        error = "expected ':' after key";
+        return false;
+      }
+      JsonValue value;
+      if (!ParseValue(value, error)) {
+        return false;
+      }
+      out.emplace_back(std::move(key), std::move(value));
+      SkipWhitespace();
+      if (Consume('}')) {
+        return true;
+      }
+      if (!Consume(',')) {
+        error = "expected ',' or '}'";
+        return false;
+      }
+      SkipWhitespace();
+    }
+
+    error = "unterminated object";
+    return false;
+  }
+
   bool StartsWith(std::string_view value) const {
     return text_.substr(pos_, value.size()) == value;
   }
@@ -288,6 +367,17 @@ private:
 const JsonValue *FindValue(const JsonObject &object, std::string_view key) {
   const auto it = object.find(std::string(key));
   return it == object.end() ? nullptr : &it->second;
+}
+
+const JsonValue *FindValue(
+    const std::vector<std::pair<std::string, JsonValue>> &object,
+    std::string_view key) {
+  for (const auto &[member_key, value] : object) {
+    if (member_key == key) {
+      return &value;
+    }
+  }
+  return nullptr;
 }
 
 bool ParseIntegerText(std::string_view text, uint64_t &out) {
@@ -307,13 +397,17 @@ bool ParseIntegerText(std::string_view text, uint64_t &out) {
   return result.ec == std::errc{} && result.ptr == last;
 }
 
-uint64_t GetU64(const JsonObject &object, std::string_view key,
+template <typename Object>
+uint64_t GetU64(const Object &object, std::string_view key,
                 uint64_t default_value = 0) {
   const JsonValue *value = FindValue(object, key);
   if (!value) {
     return default_value;
   }
   if (value->type == JsonValueType::Number) {
+    if (value->signed_number_value < 0) {
+      return default_value;
+    }
     return value->number_value;
   }
   if (value->type == JsonValueType::String) {
@@ -324,7 +418,57 @@ uint64_t GetU64(const JsonObject &object, std::string_view key,
   return default_value;
 }
 
-uint32_t GetU32(const JsonObject &object, std::string_view key,
+template <typename Object>
+int32_t GetI32(const Object &object, std::string_view key,
+               int32_t default_value = 0) {
+  const JsonValue *value = FindValue(object, key);
+  if (!value) {
+    return default_value;
+  }
+  if (value->type == JsonValueType::Number) {
+    if (value->signed_number_value < std::numeric_limits<int32_t>::min() ||
+        value->signed_number_value > std::numeric_limits<int32_t>::max()) {
+      return default_value;
+    }
+    return static_cast<int32_t>(value->signed_number_value);
+  }
+  if (value->type == JsonValueType::String) {
+    int base = 10;
+    std::string_view text = value->string_value;
+    bool negative = false;
+    if (!text.empty() && text.front() == '-') {
+      negative = true;
+      text.remove_prefix(1);
+    }
+    if (text.size() > 2 && text[0] == '0' &&
+        (text[1] == 'x' || text[1] == 'X')) {
+      text.remove_prefix(2);
+      base = 16;
+    }
+    uint64_t magnitude = 0;
+    const char *first = text.data();
+    const char *last = first + text.size();
+    const auto result = std::from_chars(first, last, magnitude, base);
+    if (result.ec != std::errc{} || result.ptr != last) {
+      return default_value;
+    }
+    if (negative) {
+      if (magnitude > uint64_t(std::numeric_limits<int32_t>::max()) + 1) {
+        return default_value;
+      }
+      return magnitude == uint64_t(std::numeric_limits<int32_t>::max()) + 1
+                 ? std::numeric_limits<int32_t>::min()
+                 : -static_cast<int32_t>(magnitude);
+    }
+    return magnitude > uint64_t(std::numeric_limits<int32_t>::max())
+               ? default_value
+               : static_cast<int32_t>(magnitude);
+  }
+  return default_value;
+}
+
+template <typename Object>
+uint32_t GetU32(const Object &object, std::string_view key,
                 uint32_t default_value = 0) {
   const uint64_t value = GetU64(object, key, default_value);
   return value > std::numeric_limits<uint32_t>::max()
@@ -332,14 +476,16 @@ uint32_t GetU32(const JsonObject &object, std::string_view key,
              : static_cast<uint32_t>(value);
 }
 
-bool GetBool(const JsonObject &object, std::string_view key,
+template <typename Object>
+bool GetBool(const Object &object, std::string_view key,
              bool default_value = false) {
   const JsonValue *value = FindValue(object, key);
   return value && value->type == JsonValueType::Bool ? value->bool_value
                                                      : default_value;
 }
 
-std::string GetString(const JsonObject &object, std::string_view key,
+template <typename Object>
+std::string GetString(const Object &object, std::string_view key,
                       std::string default_value = {}) {
   const JsonValue *value = FindValue(object, key);
   return value && value->type == JsonValueType::String
@@ -347,7 +493,8 @@ std::string GetString(const JsonObject &object, std::string_view key,
              : std::move(default_value);
 }
 
-std::vector<uint32_t> GetU32Array(const JsonObject &object,
+template <typename Object>
+std::vector<uint32_t> GetU32Array(const Object &object,
                                   std::string_view key) {
   std::vector<uint32_t> values;
   const JsonValue *value = FindValue(object, key);
@@ -374,7 +521,8 @@ std::vector<uint32_t> GetU32Array(const JsonObject &object,
   return values;
 }
 
-std::vector<uint8_t> GetU8Array(const JsonObject &object,
+template <typename Object>
+std::vector<uint8_t> GetU8Array(const Object &object,
                                 std::string_view key) {
   std::vector<uint8_t> bytes;
   const std::vector<uint32_t> values = GetU32Array(object, key);
@@ -385,6 +533,95 @@ std::vector<uint8_t> GetU8Array(const JsonObject &object,
     }
   }
   return bytes;
+}
+
+std::vector<VertexAttributeRecord> ParseVertexAttributes(
+    const std::vector<std::pair<std::string, JsonValue>> &object) {
+  std::vector<VertexAttributeRecord> attributes;
+  const JsonValue *value = FindValue(object, "attributes");
+  if (!value || value->type != JsonValueType::Array) {
+    return attributes;
+  }
+
+  attributes.reserve(value->array_value.size());
+  for (const JsonValue &element : value->array_value) {
+    if (element.type != JsonValueType::Object) {
+      continue;
+    }
+    const auto &attr_object = element.object_value;
+    VertexAttributeRecord attribute{};
+    attribute.data_format = GetU32(attr_object, "data_format");
+    attribute.offset = GetI32(attr_object, "offset");
+    attribute.offset_bytes =
+        GetU32(attr_object, "offset_bytes",
+               attribute.offset < 0 ? 0
+                                    : static_cast<uint32_t>(attribute.offset) * 4);
+    attribute.stride = GetU32(attr_object, "stride");
+    attribute.stride_bytes =
+        GetU32(attr_object, "stride_bytes", attribute.stride * 4);
+    attribute.exp_adjust = GetI32(attr_object, "exp_adjust");
+    attribute.prefetch_count = GetU32(attr_object, "prefetch_count");
+    attribute.signed_rf_mode = GetU32(attr_object, "signed_rf_mode");
+    attribute.is_index_rounded = GetBool(attr_object, "is_index_rounded");
+    attribute.is_signed = GetBool(attr_object, "is_signed");
+    attribute.is_integer = GetBool(attr_object, "is_integer");
+    attributes.push_back(std::move(attribute));
+  }
+  return attributes;
+}
+
+std::vector<VertexFetchRecord> ParseVertexFetches(const JsonObject &object) {
+  std::vector<VertexFetchRecord> fetches;
+  const JsonValue *value = FindValue(object, "vertex_fetches");
+  if (!value || value->type != JsonValueType::Array) {
+    return fetches;
+  }
+
+  fetches.reserve(value->array_value.size());
+  for (const JsonValue &element : value->array_value) {
+    if (element.type != JsonValueType::Object) {
+      continue;
+    }
+    const auto &fetch_object = element.object_value;
+    VertexFetchRecord fetch{};
+    fetch.fetch_constant = GetU32(fetch_object, "fetch_constant");
+    fetch.dword_0 = GetU32(fetch_object, "dword_0");
+    fetch.dword_1 = GetU32(fetch_object, "dword_1");
+    fetch.type = GetU32(fetch_object, "type");
+    fetch.address = GetU32(fetch_object, "address");
+    fetch.address_bytes =
+        GetU32(fetch_object, "address_bytes", fetch.address << 2);
+    fetch.size_words = GetU32(fetch_object, "size_words");
+    fetch.size_bytes =
+        GetU32(fetch_object, "size_bytes", fetch.size_words << 2);
+    fetch.endian = GetU32(fetch_object, "endian");
+    fetch.stride_words = GetU32(fetch_object, "stride_words");
+    fetch.stride_bytes =
+        GetU32(fetch_object, "stride_bytes", fetch.stride_words << 2);
+    fetch.attribute_count = GetU32(fetch_object, "attribute_count");
+    fetch.captured_attribute_count =
+        GetU32(fetch_object, "captured_attribute_count");
+    fetch.attributes = ParseVertexAttributes(fetch_object);
+    if (fetch.captured_attribute_count == 0 && !fetch.attributes.empty()) {
+      fetch.captured_attribute_count =
+          static_cast<uint32_t>(fetch.attributes.size());
+    }
+    fetch.payload_byte_count = GetU32(fetch_object, "payload_byte_count");
+    fetch.payload_bytes = GetU8Array(fetch_object, "payload_bytes");
+    if (fetch.payload_byte_count == 0 && !fetch.payload_bytes.empty()) {
+      fetch.payload_byte_count =
+          static_cast<uint32_t>(fetch.payload_bytes.size());
+    }
+    fetch.payload_truncated = GetBool(fetch_object, "payload_truncated");
+    fetch.payload_missing =
+        GetBool(fetch_object, "payload_missing",
+                !FindValue(fetch_object, "payload_bytes"));
+    if (!fetch.payload_bytes.empty()) {
+      fetch.payload_missing = false;
+    }
+    fetches.push_back(std::move(fetch));
+  }
+  return fetches;
 }
 
 bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
@@ -498,6 +735,21 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
             !FindValue(object, "index_payload_bytes"));
     if (!event.draw.index_bytes.empty()) {
       event.draw.index_payload_missing = false;
+    }
+    event.draw.vertex_fetch_count = GetU32(object, "vertex_fetch_count");
+    event.draw.vertex_fetch_truncated =
+        GetBool(object, "vertex_fetch_truncated");
+    event.draw.vertex_fetch_state_present =
+        FindValue(object, "vertex_fetch_count") ||
+        FindValue(object, "vertex_fetches");
+    event.draw.vertex_fetches = ParseVertexFetches(object);
+    if (event.draw.vertex_fetch_count == 0 &&
+        !event.draw.vertex_fetches.empty()) {
+      event.draw.vertex_fetch_count =
+          static_cast<uint32_t>(event.draw.vertex_fetches.size());
+    }
+    if (event.draw.vertex_fetches.size() < event.draw.vertex_fetch_count) {
+      event.draw.vertex_fetch_truncated = true;
     }
     event.draw.major_mode = GetU32(object, "major_mode");
     event.draw.explicit_major_mode = GetBool(object, "explicit_major_mode");
@@ -787,6 +1039,26 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
           ++capture.summary.index_payload_truncated;
         }
       }
+      if (!event.draw.vertex_fetch_state_present) {
+        ++capture.summary.draws_missing_vertex_fetch_state;
+      } else if (event.draw.vertex_fetches.empty()) {
+        ++capture.summary.draws_missing_vertex_fetch;
+      } else {
+        ++capture.summary.draws_with_vertex_fetch;
+        capture.summary.vertex_fetch_records +=
+            event.draw.vertex_fetches.size();
+        for (const VertexFetchRecord &fetch : event.draw.vertex_fetches) {
+          if (fetch.payload_missing || fetch.payload_bytes.empty()) {
+            ++capture.summary.vertex_buffer_snapshots_missing;
+          } else {
+            ++capture.summary.vertex_buffer_snapshots;
+            capture.summary.vertex_payload_bytes += fetch.payload_bytes.size();
+          }
+          if (fetch.payload_truncated) {
+            ++capture.summary.vertex_payload_truncated;
+          }
+        }
+      }
 
       ++capture.summary.draw_opcode_counts[event.draw.opcode];
       ++capture.summary.primitive_counts[event.draw.primitive_type];
@@ -840,6 +1112,11 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
     capture.errors.push_back(
         "indexed draws missing index snapshots: " +
         std::to_string(capture.summary.index_buffer_snapshots_missing));
+  }
+  if (capture.summary.draws_missing_vertex_fetch_state != 0) {
+    capture.errors.push_back(
+        "draws missing vertex fetch state fields: " +
+        std::to_string(capture.summary.draws_missing_vertex_fetch_state));
   }
 
   capture.shader_usage.reserve(shader_usage.size());
@@ -933,6 +1210,20 @@ std::string IndexPayloadStatus(const PM4DrawRecord &draw) {
   os << "payload=" << draw.index_bytes.size() << "/" << draw.index_length
      << " bytes";
   if (draw.index_payload_truncated) {
+    os << " truncated";
+  }
+  return os.str();
+}
+
+std::string VertexPayloadStatus(const VertexFetchRecord &fetch) {
+  std::ostringstream os;
+  if (fetch.payload_missing || fetch.payload_bytes.empty()) {
+    os << "payload=missing";
+    return os.str();
+  }
+  os << "payload=" << fetch.payload_bytes.size() << "/" << fetch.size_bytes
+     << " bytes";
+  if (fetch.payload_truncated) {
     os << " truncated";
   }
   return os.str();
@@ -1295,6 +1586,19 @@ void PrintReplaySummary(const ReplayCapture &capture) {
             << " payload_bytes=" << capture.summary.index_payload_bytes
             << " truncated=" << capture.summary.index_payload_truncated
             << "\n";
+  std::cout << "Vertex fetch: draws_with="
+            << capture.summary.draws_with_vertex_fetch
+            << " draws_no_fetch="
+            << capture.summary.draws_missing_vertex_fetch
+            << " state_missing="
+            << capture.summary.draws_missing_vertex_fetch_state
+            << " records=" << capture.summary.vertex_fetch_records
+            << " snapshots=" << capture.summary.vertex_buffer_snapshots
+            << " missing="
+            << capture.summary.vertex_buffer_snapshots_missing
+            << " payload_bytes=" << capture.summary.vertex_payload_bytes
+            << " truncated=" << capture.summary.vertex_payload_truncated
+            << "\n";
 
   std::cout << "\nEvent counts:\n";
   for (const auto &[type, count] : capture.summary.event_counts) {
@@ -1416,6 +1720,8 @@ void PrintDrawDump(const ReplayCapture &capture,
               << " constants_total=" << state.constants_seen_total
               << " constants_frame=" << state.constants_seen_in_frame
               << " last_constant_seq=" << state.last_constant_seq
+              << " vertex_fetches=" << draw.vertex_fetches.size() << "/"
+              << draw.vertex_fetch_count
               << " state=" << DrawStateFlags(state) << "\n";
     if (!state.recent_constants.empty()) {
       std::cout << "    recent_constants:";
@@ -1546,6 +1852,10 @@ void PrintBoundStateDump(const ReplayCapture &capture, std::size_t draw_index) {
             << " last_constant_seq=" << state.last_constant_seq
             << " bound_ranges=" << state.bound_constants.size()
             << " state=" << DrawStateFlags(state) << "\n";
+  std::cout << "  vertex_fetches=" << draw.vertex_fetches.size() << "/"
+            << draw.vertex_fetch_count
+            << " truncated="
+            << (draw.vertex_fetch_truncated ? "yes" : "no") << "\n";
 
   if (state.bound_constants.empty()) {
     std::cout << "  bound_constants: none captured before this draw\n";
@@ -1627,27 +1937,75 @@ void PrintVertexDump(const ReplayCapture &capture, std::size_t draw_index) {
   }
 
   const ReplayDrawState &state = capture.draws[draw_index];
+  const PM4DrawRecord &draw = state.draw;
   std::cout << "Vertex/fetch dump for draw[" << draw_index
             << "] seq=" << state.seq << "\n";
   std::cout << "  VS=" << FormatHex64(state.vertex_shader.hash)
             << " PS=" << FormatHex64(state.pixel_shader.hash)
             << " bound_constant_ranges=" << state.bound_constants.size()
             << "\n";
+  std::cout << "  vertex_fetches=" << draw.vertex_fetches.size() << "/"
+            << draw.vertex_fetch_count
+            << " truncated="
+            << (draw.vertex_fetch_truncated ? "yes" : "no") << "\n";
 
-  uint64_t fetch_like_ranges = 0;
-  for (const PM4ConstantRecord &constant : state.bound_constants) {
-    if (constant.constant_type == 1) {
-      ++fetch_like_ranges;
-      PrintConstantLine(constant, "  fetch_candidate ");
+  if (draw.vertex_fetches.empty()) {
+    uint64_t fetch_like_ranges = 0;
+    for (const PM4ConstantRecord &constant : state.bound_constants) {
+      if (constant.constant_type == 1) {
+        ++fetch_like_ranges;
+        PrintConstantLine(constant, "  fetch_candidate ");
+      }
+    }
+    if (fetch_like_ranges == 0) {
+      std::cout << "  fetch constants: missing. This capture was produced "
+                   "before per-draw vertex fetch snapshots were added, or the "
+                   "active vertex shader had no decoded vertex bindings.\n";
+    }
+    return;
+  }
+
+  for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
+    std::cout << "  vf" << fetch.fetch_constant
+              << " raw=(" << FormatHex32(fetch.dword_0) << ","
+              << FormatHex32(fetch.dword_1) << ") type=" << fetch.type
+              << " addr=" << FormatHex32(fetch.address_bytes)
+              << " size=" << fetch.size_bytes
+              << " stride=" << fetch.stride_bytes
+              << " endian=" << fetch.endian << " "
+              << VertexPayloadStatus(fetch) << "\n";
+    if (fetch.attributes.empty()) {
+      std::cout << "    attributes: none captured\n";
+    } else {
+      for (std::size_t i = 0; i < fetch.attributes.size(); ++i) {
+        const VertexAttributeRecord &attribute = fetch.attributes[i];
+        std::cout << "    attr[" << i << "] format="
+                  << attribute.data_format
+                  << " offset=" << attribute.offset_bytes
+                  << " stride=" << attribute.stride_bytes
+                  << " exp_adjust=" << attribute.exp_adjust
+                  << " prefetch=" << attribute.prefetch_count
+                  << " signed=" << (attribute.is_signed ? "yes" : "no")
+                  << " integer=" << (attribute.is_integer ? "yes" : "no")
+                  << " rounded="
+                  << (attribute.is_index_rounded ? "yes" : "no") << "\n";
+      }
+    }
+    if (!fetch.payload_missing && !fetch.payload_bytes.empty()) {
+      std::cout << "    raw vertex bytes:";
+      const std::size_t raw_limit =
+          std::min<std::size_t>(fetch.payload_bytes.size(), 96);
+      for (std::size_t i = 0; i < raw_limit; ++i) {
+        std::cout << (i == 0 ? " " : ",")
+                  << FormatHex(static_cast<uint32_t>(fetch.payload_bytes[i]),
+                               2);
+      }
+      if (fetch.payload_bytes.size() > raw_limit) {
+        std::cout << ",...";
+      }
+      std::cout << "\n";
     }
   }
-  if (fetch_like_ranges == 0) {
-    std::cout << "  fetch constants: none identified in current normalized "
-                 "state\n";
-  }
-  std::cout << "  raw vertex snapshot: missing. Vertex buffer addresses, "
-               "stride, attribute format, and byte snapshots are not captured "
-               "yet, so no decoded vertices can be emitted.\n";
 }
 
 void PrintResourceSummary(const ReplayCapture &capture) {
@@ -1670,20 +2028,34 @@ void PrintResourceSummary(const ReplayCapture &capture) {
             << " payload_bytes=" << capture.summary.index_payload_bytes
             << " truncated=" << capture.summary.index_payload_truncated
             << "\n";
-  std::cout << "  vertex_buffer_snapshots=0\n";
+  std::cout << "  vertex_fetch_records="
+            << capture.summary.vertex_fetch_records
+            << " draws_with=" << capture.summary.draws_with_vertex_fetch
+            << " draws_no_fetch="
+            << capture.summary.draws_missing_vertex_fetch
+            << " state_missing="
+            << capture.summary.draws_missing_vertex_fetch_state << "\n";
+  std::cout << "  vertex_buffer_snapshots="
+            << capture.summary.vertex_buffer_snapshots
+            << " missing="
+            << capture.summary.vertex_buffer_snapshots_missing
+            << " payload_bytes=" << capture.summary.vertex_payload_bytes
+            << " truncated=" << capture.summary.vertex_payload_truncated
+            << "\n";
   std::cout << "  texture_snapshots=0\n";
   std::cout << "  render_target_snapshots=0\n";
   std::cout << "  sidecar_resource_manifest=missing\n";
-  if (capture.summary.index_buffer_snapshots == 0) {
+  if (capture.summary.index_buffer_snapshots == 0 ||
+      capture.summary.draws_missing_vertex_fetch_state != 0) {
     std::cout
         << "  real backend blocker: replay has draw/shader/constant metadata, "
-           "but no index, vertex, texture, or render-target resource "
+           "but no complete index/vertex/texture/render-target resource "
            "snapshots yet.\n";
   } else {
     std::cout
-        << "  real backend blocker: replay now has bounded index snapshots, "
-           "but still lacks vertex, texture, and render-target resource "
-           "snapshots.\n";
+        << "  real backend blocker: replay now has bounded index and vertex "
+           "snapshots, but still lacks texture and render-target resource "
+           "snapshots plus native shader replacements/translations.\n";
   }
 }
 void PrintMissingShaders(const ReplayCapture &capture) {
