@@ -49,6 +49,8 @@ Ghidra MCP pass: 2026-06-28, program `default.xex`.
 
 The XEX is stripped and has no useful `shader`, `material`, `pixel`, `vertex`, `render`, `draw`, `image`, or `texture` strings. Ghidra also misses or truncates several PowerPC functions that use save/restore thunks, so the most reliable evidence is packet construction in disassembly. Packet words use `0xC0000000 | ((count - 1) << 16) | (opcode << 8)`.
 
+Replay follow-up MCP check: 2026-06-28. `CoDMPServer_PC.exe` is the default loaded MCP program and has the PDB-backed renderer symbols. Explicit program `default.xex` exposes the stripped XEX function table. MCP instruction searches in `default.xex` re-confirmed `PM4_DRAW_INDX_2` (`ori ..., 0x3600`) at `0x825829AC`, `0x82582C8C`, `0x8258A6C4`, `0x8258CFA0`, and `0x82596440`; `PM4_IM_LOAD_IMMEDIATE` (`ori ..., 0x2B00`) at `0x8257D3A8`, `0x82582948`, `0x82582A84`, `0x82582AE0`, `0x82589A20`, `0x82589A64`, `0x8258CD20`, `0x82594474`, `0x825944D4`, and `0x82597E68`; and `PM4_SET_SHADER_CONSTANTS` (`ori ..., 0x5600`) at `0x8258CE80`. `0x825828D8` decompiles as `xex_render_draw_autoindex_shader_bootstrap_candidate`; the other thunked starts force-decompile as save/restore placeholders, so generated C++ plus instruction-level evidence remains authoritative there.
+
 ### High-confidence draw emitters
 
 | XEX function/range | Evidence | Likely role | Native renderer priority |
@@ -108,6 +110,8 @@ Important PC renderer symbols from `CoDMPServer_PC.exe`:
 - Draw/tessellation: `R_DrawIndexedPrimitive` `0x00A8DB70`, `R_FlushDirtyConstantBuffers` `0x00A8C670`, `RB_BeginSurface` `0x00A64D20`, `RB_DrawTessSurface` `0x00A64E80`, `RB_EndTessSurface` `0x00A64FD0`, `RB_SetTessTechnique` `0x00A65060`.
 - Material/shader loading: `Material_LoadPass` `0x00A4BC10`, `Material_LoadPassVertexShader` `0x00A4B730`, `Material_LoadPassPixelShader` `0x00A4B8A0`, `Material_RegisterVertexShader` `0x00A4AF70`, `Material_RegisterPixelShader` `0x00A4B0F0`, `Material_SetPassShaderArguments_DX` `0x00A4B490`, `Material_ParseShaderArguments` `0x00A4A6B0`.
 - Post/render passes: `RB_StandardRenderCommands` `0x00A269B0`, `RB_StandardDrawCommands` `0x00A27AE0`, `RB_DrawLitCommandBuffer` `0x00A26CB0`, `RB_DrawDepthPrepassCommandBuffer` `0x00A969C0`, `RB_SunShadowMaps` `0x00A95C40`, `RB_SpotShadowMaps` `0x00A96460`.
+
+MCP decompilation rechecked the key PC reference on 2026-06-28: `R_DrawIndexedPrimitive` gates draw-prim dvars, calls `RB_TrackDrawPrimCall`, calls `R_FlushDirtyConstantBuffers`, then dispatches through the D3D11 device-context vtable with `triCount * 3`, `baseIndex`, and vertex offset `0`. `R_FlushDirtyConstantBuffers` iterates four dirty constant buffers, maps each D3D11 constant buffer, copies the dirty payload, unmaps it, and clears the dirty flag.
 
 ### Instrumentation notes
 

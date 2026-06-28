@@ -65,10 +65,42 @@ The existing cache script writes `.xsh` files with:
 
 Full automatic native shader replacement is not implemented yet. The extracted microcode is structurally valid, but native pipeline variants require live render state. Existing `SHADERS.md` notes that directly seeding all extracted shaders into ReXGlue is unsafe and has hit unsupported Xenos operations such as export register `48`.
 
+## Runtime replay shader evidence
+
+`native_render_replay.exe` was run on `native-renderer-capture-limit.jsonl` on 2026-06-28. The capture contains `1011` shader-load events and `4388` draw events. Replay found `8` unique live shader hashes and `7` live shader pairs, with no draw missing a VS or PS hash.
+
+Top live shader hashes:
+
+| Stage | Runtime hash | Draws | Loads | Max dwords |
+|---|---|---:|---:|---:|
+| PS | `0xA4A965C189287B99` | 4268 | 403 | 9 |
+| VS | `0xB6C9863F710683EC` | 4008 | 167 | 24 |
+| VS | `0x1E6883FCCDE1F688` | 235 | 236 | 27 |
+| PS | `0x246E20EF10E0DDC7` | 100 | 50 | 117 |
+| VS | `0xAB1E86137A0240E8` | 85 | 85 | 15 |
+| VS | `0x81311AC4B1FBD082` | 50 | 50 | 39 |
+| PS | `0xC4ED2979F29C9139` | 20 | 10 | 72 |
+| VS | `0x5D918D91043B3ED0` | 10 | 10 | 63 |
+
+Top live shader pairs:
+
+| VS | PS | Draws |
+|---|---|---:|
+| `0xB6C9863F710683EC` | `0xA4A965C189287B99` | 4008 |
+| `0x1E6883FCCDE1F688` | `0xA4A965C189287B99` | 235 |
+| `0x81311AC4B1FBD082` | `0x246E20EF10E0DDC7` | 50 |
+| `0xAB1E86137A0240E8` | `0x246E20EF10E0DDC7` | 50 |
+| `0xAB1E86137A0240E8` | `0xA4A965C189287B99` | 25 |
+| `0x5D918D91043B3ED0` | `0xC4ED2979F29C9139` | 10 |
+| `0xAB1E86137A0240E8` | `0xC4ED2979F29C9139` | 10 |
+
+These runtime hashes are not the same IDs as `shader_work/shaders/index.json` container SHA-256 hashes. They come from the ReXGlue command-processor trace over loaded Xenos microcode. The replacement registry should therefore key first on `(stage, runtime_hash)` and later attach source container/microcode metadata when the hash relationship is proven.
+
 ## Native renderer path forward
 
-1. Log material pass/shader binding at runtime once the XEX material load and draw-call functions are mapped.
-2. Record the shader microcode hash, stage, material name or asset pointer, sampler bindings, and constant-buffer layout.
-3. Add a manual replacement table keyed by stage plus hash.
-4. Let the null/debug backend report missing shader mappings before a real backend attempts to draw.
-5. Prefer a backend-neutral shader IR or metadata layer so D3D12, Vulkan, Metal, and deko3d can share the same mapping database.
+1. Preserve the runtime `(stage, hash, guest_address, dword_count)` stream from replay as the first shader registry key.
+2. Extend capture with material/pass identity, sampler bindings, texture fetch constants, and full constant payload bytes.
+3. Map runtime hashes back to `shader_work` container/microcode records where possible.
+4. Add a manual replacement table keyed by stage plus runtime hash.
+5. Let the null/debug and replay backends report missing shader mappings before a real backend attempts to draw.
+6. Prefer a backend-neutral shader IR or metadata layer so D3D12, Vulkan, Metal, and deko3d can share the same mapping database.

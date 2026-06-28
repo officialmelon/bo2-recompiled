@@ -18,6 +18,9 @@ Last updated: 2026-06-28
 - ReXGlue's command processor now exposes a structured native-renderer trace sink for render-relevant PM4 packets. The BO2 native renderer receives live packet, draw, shader, constant, and swap events from that sink.
 - A backend-neutral JSONL capture writer is available through `native_renderer_capture_path`; it records replayable frame, present, PM4, shader, constant, draw, and backend-neutral command events.
 - Windows `default.exe` was rebuilt and run in `native` mode on 2026-06-28. The run logs prove the CP trace sink, generated-function detours, shader binds, draw packets, constants, swaps, and capture writer all fire.
+- `native_render_replay.exe` now builds as a standalone Windows console target from the `default` CMake project. It parses JSONL captures, reconstructs per-draw shader/constant state, validates captures, dumps frame/draw state, reports shader usage, and can run an offscreen D3D12 debug backend.
+- `native_render_replay.exe --backend d3d12` produced the first BO2-owned native GPU-output artifact from replayed draw events: `native-renderer-d3d12-replay.bmp`.
+- Backend bring-up plan now lives in `docs/native_renderer_backend_plan.md`; replay format and verified results live in `docs/native_renderer_replay.md`.
 - Runtime renderer selection is controlled by the ReXGlue cvar `native_renderer_mode`.
 
 ## Renderer modes
@@ -36,6 +39,14 @@ Last updated: 2026-06-28
 
 The capture format is line-delimited JSON. Important event types are `pm4_packet`, `pm4_shader`, `pm4_draw`, `pm4_constants`, `pm4_swap`, `render_command`, `vd_swap`, `present_snapshot`, `begin_frame`, and `end_frame`.
 
+Offline replay:
+
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --summary --shader-usage --top-shaders 20
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --frame 2 --dump-draws --max-draws 24
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --backend d3d12 --d3d12-output default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-replay.bmp --d3d12-draws 4096 --no-summary
+```
+
 ## Files changed for native renderer
 
 - `src/native_renderer/NativeRenderer.h/.cpp`
@@ -50,6 +61,9 @@ The capture format is line-delimited JSON. Important event types are `pm4_packet
 - `src/native_renderer/DebugRenderLog.h/.cpp`
 - `src/native_renderer/HostDetour.h/.cpp`
 - `src/native_renderer/backend_null/NullRendererBackend.h/.cpp`
+- `src/native_renderer/replay/NativeRenderReplay.h/.cpp`
+- `src/native_renderer/replay/D3D12ReplayBackend.cpp`
+- `src/native_renderer/replay/NativeRenderReplayTool.cpp`
 - `src/native_renderer/shader_translation/ShaderTranslation.h/.cpp`
 - `default/src/native_renderer_hooks.cpp`
 - `default_mp/src/native_renderer_hooks.cpp`
@@ -96,6 +110,10 @@ Runtime verification:
 - `native-renderer-capture-limit.jsonl`: 20-second bounded capture, intentionally force-stopped after the capture hit its own limit. It contains exactly `20000` complete JSONL events: `8601` `pm4_packet`, `1011` `pm4_shader`, `4388` `pm4_draw`, `170` `pm4_constants`, `85` `pm4_swap`, `5399` `render_command`, plus `vd_swap`, `present_snapshot`, and frame markers.
 - `native-renderer-final-smoke.jsonl`: final rebuilt binary smoke run with `native_renderer_capture_limit=100`. It contains exactly `100` complete JSONL events and the log confirms `BO2 native renderer capture reached event limit 100`.
 - All Windows runs had empty redirected stdout/stderr. `ExitCode=-1` is expected for these verification runs because the process was intentionally stopped after capture/log collection.
+- `native_render_replay.exe`: built successfully from the Windows `default` build. Verified size `888320` bytes, last write `2026-06-28 16:44:28`.
+- Replay summary on `native-renderer-capture-limit.jsonl`: `20000` events, `0` parse errors, `86` frames, `4388` draws, `8` unique live shader hashes, `7` shader pairs, `0` missing VS/PS draws, and `1209` draws before any captured constants.
+- Replay validation on `native-renderer-final-smoke.jsonl`: `Validation OK: 100 events, 2 frames, 24 draws`.
+- D3D12 replay output on `native-renderer-capture-limit.jsonl`: `native-renderer-d3d12-replay.bmp`, exit code `0`, size `3686454` bytes, SHA-256 `D82EED84E69EED945B8DA0FF70D7F97B80FCCB35392D5E1E822809231DA03E37`. The BMP was visually checked and is nonblank.
 
 ## What works
 
@@ -107,12 +125,19 @@ Runtime verification:
 - ReXGlue CP execution now submits structured `PM4_DRAW_INDX`, `PM4_DRAW_INDX_2`, shader-load, constant-upload, and swap events to the backend-neutral renderer.
 - Parsed draw packets are submitted to the backend as `RenderCommandType::DrawIndexed`; shader loads are submitted as `RenderCommandType::BindShader`.
 - JSONL capture can record the live render stream for replay/backend bring-up.
+- Offline replay reconstructs draw state enough to list draw opcode, packet pointer, index/primitive/source fields, bound VS/PS hashes, constant history, and missing-state flags per draw.
+- Offline D3D12 replay creates a native D3D12 render target, emits draw-derived clear rectangles, copies the target to CPU memory, and writes a BMP without using ReXGlue/Xenia final rendering.
+- Ghidra MCP is usable for both programs: `CoDMPServer_PC.exe` provides PDB-backed renderer symbols, and `default.xex` instruction searches verify the XEX packet emitter addresses even where Ghidra's PPC function boundaries are broken.
 
 ## What does not work yet
 
 - There is not yet a real Vulkan/D3D12/Metal/deko3d backend.
-- Draw calls, render target changes, shader bindings, texture bindings, and buffer uploads are not translated into a real backend yet.
+- There is a D3D12 debug replay backend, but it renders diagnostic draw tiles with clear calls. It does not yet submit BO2 indexed geometry, shader replacements, textures, or render-target/depth state.
+- Runtime draw calls, render target changes, shader bindings, texture bindings, and buffer uploads are not translated into a real in-game backend yet.
 - The selected draw-candidate hook and CP trace sink submit backend-neutral commands, but the null backend only logs/captures them and no separate BO2-owned GPU backend consumes them yet.
+- Replay currently has constant upload metadata but not constant payload bytes. A real backend needs payload capture.
+- Replay currently has draw/index metadata but not complete vertex fetch, texture fetch, sampler, render-target, or depth/stencil state.
+- Frame markers are present/swap-derived. Most current PM4 work in the verified capture is pre-frame from replay's perspective, so backend frame grouping must use CP stream plus present packets rather than only current `begin_frame` / `end_frame`.
 - Android/ARM64 direct generated calls can still bypass dispatcher hooks. An ARM64-safe generated-function detour or generated-call rewrite is still needed before every logged candidate is guaranteed to fire on Android.
 - The XEX equivalents for the static material asset-load functions are not fully mapped. The current map is strongest for runtime packet emitters and shader/material binding.
 - The cleanest XEX draw-packet target is now `0x8258CF68` (`PM4_DRAW_INDX_2` with variable initiator).
@@ -121,7 +146,8 @@ Runtime verification:
 ## Next highest-impact targets
 
 1. Add an ARM64-safe generated-call interception path or generated-call rewrite, so Android direct calls cannot bypass dispatcher hooks.
-2. Add a replay reader for `native_renderer_capture_path` JSONL so backend development can be driven without booting the game every time.
-3. Compare parsed `PM4_DRAW_INDX` / `PM4_DRAW_INDX_2` packets to Windows `R_DrawIndexedPrimitive` inputs: index count, primitive type, source select, base index, index-buffer address, and index endianness.
-4. Connect runtime shader/microcode hashes from `shader_work/shaders/index.json` to material/shader binding logs.
-5. Replace the null backend with the first real backend implementation, probably D3D12 on Windows because ReXGlue already emits D3D12 pipeline cache artifacts.
+2. Extend the CP trace sink/capture writer with constant payload bytes, vertex fetch state, texture fetch state, render target binds, and depth/stencil state.
+3. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends.
+4. Extend the D3D12 replay backend from clear-rectangle output to window/swapchain output and synthetic indexed geometry.
+5. Connect runtime shader/microcode hashes from `shader_work/shaders/index.json` to a replacement shader registry keyed by `(stage, hash)`.
+6. Replace the null runtime backend with a `D3D12Debug` backend once the replay D3D12 path proves device/swapchain/indexed draw submission.

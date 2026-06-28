@@ -46,6 +46,12 @@ set(NATIVE_RENDERER_SOURCES
     ../src/native_renderer/shader_translation/ShaderTranslation.cpp
 )
 
+set(NATIVE_RENDER_REPLAY_SOURCES
+    ../src/native_renderer/replay/NativeRenderReplay.cpp
+    ../src/native_renderer/replay/D3D12ReplayBackend.cpp
+    ../src/native_renderer/replay/NativeRenderReplayTool.cpp
+)
+
 set(DEFAULT_SOURCES
     src/main.cpp
     src/native_renderer_hooks.cpp
@@ -62,6 +68,16 @@ elseif(ANDROID)
     add_library(default SHARED ${DEFAULT_SOURCES})
 else()
     add_executable(default ${DEFAULT_SOURCES})
+endif()
+
+add_executable(native_render_replay ${NATIVE_RENDER_REPLAY_SOURCES})
+target_include_directories(native_render_replay PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../src/native_renderer/replay"
+)
+target_compile_features(native_render_replay PRIVATE cxx_std_23)
+if(WIN32)
+    target_compile_definitions(native_render_replay PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(native_render_replay PRIVATE d3d12)
 endif()
 
 rexglue_setup_target(default)
