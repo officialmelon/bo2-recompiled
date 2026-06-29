@@ -20,6 +20,7 @@ Last updated: 2026-06-28
 - Windows `default.exe` was rebuilt and run in `native` mode on 2026-06-28. The run logs prove the CP trace sink, generated-function detours, shader binds, draw packets, constants, swaps, and capture writer all fire.
 - `native_render_replay.exe` now builds as a standalone Windows console target from the `default` CMake project. It parses JSONL captures, reconstructs per-draw shader/constant state, validates captures, dumps frame/draw state, reports shader usage, reports missing real resource snapshots, and can run an offscreen D3D12 diagnostic backend.
 - `native_render_replay.exe --backend d3d12-diagnostic` produced BO2-owned native GPU-output artifacts from replayed draw events: first clear tiles, then a shader-pipeline synthetic geometry pass.
+- `native_render_replay.exe --backend d3d12` now produces a BO2-owned native GPU-output artifact from captured draw `1004` using real replayed vertex/index payloads, D3D12 upload buffers, and `DrawIndexedInstanced`. This is captured BO2 geometry with a diagnostic native shader, not shader-correct scene rendering.
 - `native_shader_inspect.exe` has been added as a standalone shader index inspection target. The current implementation loads `shader_work/shaders/index.json`, prints summary counts, previews first pixel/vertex containers, and searches static container/microcode records by hash substring.
 - Backend bring-up plan now lives in `docs/native_renderer_backend_plan.md`; replay format and verified results live in `docs/native_renderer_replay.md`.
 - Runtime renderer selection is controlled by the ReXGlue cvar `native_renderer_mode`.
@@ -130,7 +131,7 @@ Runtime verification:
 - Fresh vertex-fetch capture `C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl` was taken from the rebuilt `default.exe` with `native_renderer_capture_limit=12000`. It contains `12000` complete JSONL events, `2646` PM4 draws, `84` constant uploads with payload, `31` indexed draw snapshots, `222` vertex fetch records, and `222` bounded vertex-buffer snapshots containing `16892` raw vertex bytes. Validation result: `Validation OK: 12000 events, 53 frames, 2646 draws`.
 - First indexed target with both index and vertex bytes is draw `1004`: `PM4_DRAW_INDX`, `index_base=0x050082B0`, `index_len=12`, `index_format=0`, `endian=1`, VS `0x5D918D91043B3ED0`, PS `0xC4ED2979F29C9139`, two constant ranges with payload, decoded indices `3,0,2,2,0,1`, and `vf95` at `0x05008230` with stride `32`, Xenos formats `38`, `6`, `37`, and `128/128` vertex bytes.
 - D3D12 diagnostic replay on `vertex_fetch_capture_001` succeeded and wrote `C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\native-renderer-d3d12-vertex-fetch-diagnostic.bmp`, size `3686454` bytes, SHA-256 `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`.
-- Real `--backend d3d12` still fails closed because replay has bounded index bytes, constant payloads, and vertex snapshots, but still has no native input-layout conversion, texture/sampler state, render-target/depth/blend/raster state, or replacement/translated BO2 shaders.
+- Real `--backend d3d12 --draw 1004` now succeeds for the first supported captured draw and wrote `C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\native-renderer-d3d12-real-draw1004-final.bmp`, size `3686454` bytes, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`. Pixel validation found `921600/921600` non-clear pixels at `1280x720`. This path still uses a diagnostic shader and lacks texture/sampler, render-target/depth/blend/raster state, and replacement/translated BO2 shaders.
 - `--backend vulkan-diagnostic` and `--backend vulkan` fail closed because no Vulkan backend exists in this tree yet.
 - `native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --summary` succeeds: `142` zones, `36769` occurrences, `33950` unique containers, `33355` unique microcode blobs, `0` invalid bounds.
 - The interrupted Ninja run was repaired by regenerating the CMake build graph with Visual Studio CMake. Target-specific `native_render_replay` and `native_shader_inspect` builds now succeed through Ninja under `VsDevCmd`.
@@ -152,12 +153,14 @@ Runtime verification:
 - Offline replay now has explicit `--dump-indices`, `--dump-vertices`, and `--resource-summary` reports. Index dumps can show real decoded BO2 indices for fresh captures; vertex/fetch dumps can show real fetch constants, stream base/size/stride, shader-decoded attribute formats, and bounded raw vertex bytes.
 - Offline replay now decodes captured vertex payload bytes for the observed Xenos fetch formats. Draw `1004` decodes to a real `1280x720` indexed quad with position/color/UV attributes, and draw `24` decodes non-indexed position data from format `57`.
 - Offline D3D12 replay creates a native D3D12 render target, emits draw-derived clear rectangles, compiles a tiny HLSL VS/PS pair, submits synthetic triangle draw calls, copies the target to CPU memory, and writes a BMP without using ReXGlue/Xenia final rendering.
+- Offline real D3D12 replay can bind decoded captured BO2 vertex/index data for draw `1004`, submit `DrawIndexedInstanced`, copy the target to CPU memory, and write a BMP. The shader is still diagnostic.
 - Ghidra MCP is usable for both programs: `CoDMPServer_PC.exe` provides PDB-backed renderer symbols, and `default.xex` instruction searches verify the XEX packet emitter addresses even where Ghidra's PPC function boundaries are broken.
 
 ## What does not work yet
 
-- There is not yet a real Vulkan/D3D12/Metal/deko3d backend.
-- There is a D3D12 debug replay backend, but it renders diagnostic draw tiles and synthetic shader-pipeline rectangles. It does not yet submit BO2 indexed geometry, shader replacements, textures, or render-target/depth state.
+- There is not yet a complete real Vulkan/D3D12/Metal/deko3d backend.
+- There is a D3D12 debug replay backend that renders diagnostic draw tiles and synthetic shader-pipeline rectangles.
+- There is a first D3D12 resource-backed replay path that submits one captured BO2 indexed draw with real vertex/index buffers, but it still uses a diagnostic shader and does not yet bind BO2 shader replacements, textures, constants, or render-target/depth state.
 - Runtime draw calls, render target changes, shader bindings, texture bindings, and buffer uploads are not translated into a real in-game backend yet.
 - The selected draw-candidate hook and CP trace sink submit backend-neutral commands, but the null backend only logs/captures them and no separate BO2-owned GPU backend consumes them yet.
 - Old captures have constant/index metadata but no raw index bytes. Fresh captures after ReXGlue commit `3ed291c` plus the index payload trace update carry bounded constant payload dwords and bounded indexed-draw byte snapshots.
@@ -171,8 +174,8 @@ Runtime verification:
 ## Next highest-impact targets
 
 1. Add an ARM64-safe generated-call interception path or generated-call rewrite, so Android direct calls cannot bypass dispatcher hooks.
-2. Extend the D3D12 replay backend from offscreen diagnostic output to captured-state indexed geometry using decoded vertex/index payloads.
-3. Extend the CP trace sink/capture writer with texture fetch state, render target binds, depth/stencil state, and sidecar resource manifests for large snapshots.
-4. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends.
-5. Connect runtime shader/microcode hashes from `shader_work/shaders/index.json` to a replacement shader registry keyed by `(stage, hash)`.
+2. Connect runtime shader/microcode hashes from `shader_work/shaders/index.json` to a replacement shader registry keyed by `(stage, hash)`, starting with VS `0x5D918D91043B3ED0` and PS `0xC4ED2979F29C9139`.
+3. Bind captured constant payloads into the D3D12 real path for draw `1004`.
+4. Extend the CP trace sink/capture writer with texture fetch state, render target binds, depth/stencil state, and sidecar resource manifests for large snapshots.
+5. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends.
 6. Replace the null runtime backend with a `D3D12Debug` backend once the replay D3D12 path proves device/swapchain/indexed draw submission.

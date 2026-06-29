@@ -152,11 +152,18 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 - Size: `3686454` bytes
 - SHA-256: `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`
 
-Real D3D12 fail-closed check:
+Resource-backed D3D12 geometry replay:
 
-```text
-D3D12 real replay unavailable: capture/replay now has bounded index and vertex snapshots where the command stream provides them, but d3d12-real still lacks translated input layouts, native shader replacements/translations, texture/sampler state, and render-target/depth state. Refusing to synthesize output in d3d12-real; use d3d12-diagnostic for the current debug renderer. constant_payloads=84 vertex_snapshots=222 index_snapshots=31
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --backend d3d12 --draw 1004 --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\native-renderer-d3d12-real-draw1004-final.bmp --no-summary
 ```
+
+- Exit code: `0`
+- Output: `C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\native-renderer-d3d12-real-draw1004-final.bmp`
+- SHA-256: `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
+- Pixel check: `1280x720`, `921600/921600` non-clear pixels, RGB ranges `r=64..255`, `g=64..255`, `b=255..255`
+- This is resource-backed captured BO2 geometry: D3D12 upload buffers are created from draw `1004` vertex/index snapshots and submitted with `DrawIndexedInstanced`.
+- This is still not full BO2 native rendering: the shader is a diagnostic native HLSL shader, constants are not bound into the shader interface, and texture/sampler/render-target/depth state is not replayed.
 
 ## Commands run in this pass
 
@@ -267,7 +274,7 @@ XEX:
 
 ## Current hard blocker
 
-The current fresh capture can feed real index buffers and bounded raw vertex-buffer payloads for the first indexed draws, but it still cannot feed a real D3D12/Vulkan scene backend because it lacks decoded native input layouts, texture/sampler state, render-target/depth state, and replacement/translated shaders. Real backends intentionally fail closed rather than synthesize missing data.
+The current fresh capture can feed real index buffers and bounded raw vertex-buffer payloads for the first indexed draws, and D3D12 now renders draw `1004` from those captured resources. It still cannot feed a real D3D12/Vulkan scene backend because it lacks shader-correct native shaders, texture/sampler state, render-target/depth state, constant-buffer binding, and full-frame sequencing.
 
 ## Next required work
 

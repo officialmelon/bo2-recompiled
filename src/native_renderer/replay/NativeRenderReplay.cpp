@@ -2580,6 +2580,12 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       std::cerr << "D3D12 real replay unavailable: " << backend_error << "\n";
       return 1;
     }
+    const std::filesystem::path output =
+        cli.d3d12_output_path.empty()
+            ? capture.path.parent_path() / "native-renderer-d3d12-replay.bmp"
+            : cli.d3d12_output_path;
+    std::cout << "D3D12 real replay output: "
+              << std::filesystem::absolute(output).string() << "\n";
   } else if (backend_kind == ReplayBackendKind::VulkanDiagnostic ||
              backend_kind == ReplayBackendKind::VulkanReal) {
     std::cerr << "Vulkan replay backend unavailable: no Vulkan backend is "

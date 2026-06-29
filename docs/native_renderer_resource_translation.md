@@ -59,4 +59,6 @@ Verified draw `1004` from `native_captures\vertex_fetch_capture_001\events.jsonl
 
 ## Hard blocker
 
-The current verified capture can replay real index values and decode bounded vertex-buffer bytes for the first useful indexed draws, but it still cannot produce real BO2 scene output because it lacks backend input-layout conversion, shaders, textures/samplers, and render-target/depth/blend/raster state. Any real backend draw would still have to synthesize those pieces, which is intentionally rejected by `--backend d3d12`.
+The current verified capture can replay real index values and decode bounded vertex-buffer bytes for the first useful indexed draws. `--backend d3d12` can now bind a canonical D3D12 vertex/index layout for draw `1004` and issue `DrawIndexedInstanced` from captured BO2 data.
+
+It still cannot produce real BO2 scene output because it lacks translated/overridden BO2 shaders, texture/sampler resources, render-target/depth/blend/raster state, and full-frame state sequencing. The visible D3D12 real output is therefore captured BO2 geometry with a diagnostic native shader, not shader-correct BO2 rendering.

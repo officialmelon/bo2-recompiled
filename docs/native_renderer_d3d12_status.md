@@ -47,14 +47,16 @@ Result:
 
 ## Real backend
 
-`--backend d3d12` is present as a fail-closed command path. It does not draw until decoded replay resources can be bound with real native shaders and render state.
+`--backend d3d12` now has a first offline resource-backed geometry path. It selects a captured indexed draw with real index and vertex snapshots, canonicalizes the decoded Xenos vertex data into a native D3D12 input layout, binds upload-buffer vertex/index resources, and submits `DrawIndexedInstanced`.
+
+This is still not full BO2 scene rendering. The shader used by this path is a diagnostic native shader that visualizes captured color/UV data; translated BO2 shaders, texture/sampler state, render-target/depth state, and full command-stream replay are still missing.
 
 Current missing pieces:
 
-- Backend input layouts and D3D12 vertex/index buffer binding for decoded Xenos vertex data
 - Replacement or translated native shaders
 - Texture/sampler state
 - Render target/depth/blend/raster state
+- Multi-draw/full-frame state sequencing for all captured draw types
 
 Current captured pieces from `native_captures\vertex_fetch_capture_001`:
 
@@ -63,7 +65,9 @@ Current captured pieces from `native_captures\vertex_fetch_capture_001`:
 - Vertex fetch records: `222`, all with bounded raw vertex payloads, `16892` raw vertex bytes total
 - First indexed draw `1004`: decoded indices `3,0,2,2,0,1`, `vf95`, stride `32`, attributes `(format=38, offset=0)`, `(format=6, offset=16)`, `(format=37, offset=20)`, `128/128` vertex bytes, and decoded position/color/UV vertices for a `1280x720` quad
 - Replay-side vertex decoding covers the observed formats `57`, `38`, `37`, and `6`, plus the common packed/integer/half/float variants implemented in `native_render_replay`
-- Real D3D12 still fails closed with: `translated input layouts, native shader replacements/translations, texture/sampler state, and render-target/depth state`
+- Real D3D12 output for draw `1004`: `native_captures\vertex_fetch_capture_001\native-renderer-d3d12-real-draw1004-final.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`, `1280x720`, `921600/921600` non-clear pixels
+- Auto-selected real D3D12 output: `native_captures\vertex_fetch_capture_001\native-renderer-d3d12-real-auto-final.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
+- Diagnostic D3D12 after the real path remains working: `native-renderer-d3d12-diagnostic-final.bmp`, SHA-256 `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`
 
 ## Build note
 

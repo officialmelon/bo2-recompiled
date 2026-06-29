@@ -4,7 +4,7 @@ Last updated: 2026-06-28
 
 `native_render_replay.exe` is the first offline replay executable for the BO2 native renderer work. It reads the JSONL written by `native_renderer_capture_path`, reconstructs frame/draw/shader/constant state, and reports enough state per draw to drive backend bring-up without booting the game for every iteration.
 
-The tool also has a first D3D12 diagnostic backend. That backend renders an offscreen BMP from replayed draw events using BO2-owned D3D12 commands, including a small HLSL shader pipeline and synthetic triangle draws. It is a diagnostic native output path, not a full BO2 scene renderer yet. The `d3d12` backend name is now reserved for the real resource-backed D3D12 path and fails closed until captured BO2 index/vertex/shader/resource state exists.
+The tool also has D3D12 replay backends. `d3d12-diagnostic` renders an offscreen BMP from replayed draw events using BO2-owned D3D12 commands, including a small HLSL shader pipeline and synthetic triangle draws. `d3d12` now renders the first supported captured indexed draw with real replayed vertex/index data and a diagnostic native shader. Neither path is a full BO2 scene renderer yet.
 
 ## Build
 
@@ -42,7 +42,7 @@ Options:
 - `--dump-vertices`: report fetch/vertex state coverage for the selected draw, including decoded vertex component previews for known Xenos formats.
 - `--resource-summary`: report current replay resource snapshot coverage.
 - `--shader-usage --top-shaders <n>`: show shader hash and shader-pair draw usage.
-- `--backend null|offline|d3d12-diagnostic|d3d12|vulkan-diagnostic|vulkan`: backend selector. `d3d12-diagnostic` runs the offscreen D3D12 debug renderer. `d3d12` and `vulkan*` fail closed until real backends exist.
+- `--backend null|offline|d3d12-diagnostic|d3d12|vulkan-diagnostic|vulkan`: backend selector. `d3d12-diagnostic` runs the offscreen D3D12 debug renderer. `d3d12` runs the current resource-backed captured-geometry path when a supported indexed draw is available. `vulkan*` fails closed until a Vulkan backend exists.
 - `--d3d12-output <path>`: BMP output path for the D3D12 replay backend.
 - `--d3d12-draws <count>`: number of replay draw tiles to render; default is `4096`.
 - `--validate`: parse/analyze only and return non-zero on parse errors or strict replay validation errors such as indexed draws with missing index snapshots.
@@ -182,12 +182,19 @@ Results:
 - Draw `1004` decoded vertex preview: positions `(0,0,0,1)`, `(1280,0,0,1)`, `(1280,720,0,1)`, `(0,720,0,1)`, colors `(1,1,1,1)`, and UVs `(0,0)`, `(1,0)`, `(1,1)`, `(0,1)`
 - Draw `24` decoded vertex preview: three non-indexed vertices with format `57` positions `(-0.5,-0.5,0)`, `(639.5,-0.5,0)`, `(639.5,359.5,0)` and format `38` zero vectors
 
-The real D3D12 backend currently fails closed:
+Current resource-backed D3D12 real replay:
 
-```text
-Native replay backend: d3d12 (resource-backed D3D12 renderer)
-D3D12 real replay unavailable: capture/replay now has bounded index and vertex snapshots where the command stream provides them, but d3d12-real still lacks translated input layouts, native shader replacements/translations, texture/sampler state, and render-target/depth state. Refusing to synthesize output in d3d12-real; use d3d12-diagnostic for the current debug renderer.
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\vertex_fetch_capture_001\events.jsonl --backend d3d12 --draw 1004 --d3d12-output native_captures\vertex_fetch_capture_001\native-renderer-d3d12-real-draw1004-final.bmp --no-summary
 ```
+
+Result:
+
+- Output: `native_captures\vertex_fetch_capture_001\native-renderer-d3d12-real-draw1004-final.bmp`
+- SHA-256: `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
+- Pixel check: `1280x720`, `921600/921600` non-clear pixels, RGB ranges `r=64..255`, `g=64..255`, `b=255..255`
+- Drawn data: captured draw `1004` indices `3,0,2,2,0,1` and decoded position/color/UV vertices
+- Shader status: diagnostic native shader only; BO2 shader translation/override is still missing
 
 The Vulkan backend names are accepted but fail closed because no Vulkan backend is implemented in this tree yet.
 
