@@ -734,6 +734,25 @@ bool CreateUploadBuffer(ID3D12Device *device, const void *data,
   return true;
 }
 
+uint32_t AlignUpU32(uint32_t value, uint32_t alignment) {
+  return alignment == 0 ? value
+                        : ((value + alignment - 1) / alignment) * alignment;
+}
+
+uint32_t XenosTiledOffset2D(uint32_t x, uint32_t y, uint32_t pitch,
+                            uint32_t bytes_per_block_log2) {
+  pitch = AlignUpU32(pitch, 32);
+  const uint32_t macro =
+      ((x >> 5) + (y >> 5) * (pitch >> 5)) << (bytes_per_block_log2 + 7);
+  const uint32_t micro =
+      ((x & 7) + ((y & 0xE) << 2)) << bytes_per_block_log2;
+  const uint32_t offset =
+      macro + ((micro & ~0xFu) << 1) + (micro & 0xFu) + ((y & 1) << 4);
+  return ((offset & ~0x1FFu) << 3) + ((y & 16) << 7) +
+         ((offset & 0x1C0u) << 2) +
+         (((((y & 8) >> 2) + (x >> 3)) & 3) << 6) + (offset & 0x3Fu);
+}
+
 bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
                         std::vector<uint8_t> &rgba, std::string &reason) {
   rgba.clear();
@@ -750,28 +769,50 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
     reason = "texture dimensions are zero";
     return false;
   }
-  if (fetch.tiled && (fetch.width != 1 || fetch.height != 1)) {
-    reason = "tiled texture decode is only implemented for 1x1 format 6";
-    return false;
-  }
 
   const std::size_t pixel_count =
       static_cast<std::size_t>(fetch.width) * fetch.height;
-  const std::size_t source_bytes = pixel_count * 4;
-  if (source_bytes > fetch.payload_bytes.size()) {
-    reason = "texture payload is smaller than the decoded 32bpp footprint";
-    return false;
+  const std::size_t output_bytes = pixel_count * 4;
+  const uint32_t pitch_texels =
+      fetch.pitch != 0 ? fetch.pitch << 5 : fetch.width;
+  if (!fetch.tiled) {
+    const std::size_t linear_footprint =
+        (static_cast<std::size_t>(pitch_texels) * (fetch.height - 1) +
+         fetch.width) *
+        4;
+    if (linear_footprint > fetch.payload_bytes.size()) {
+      reason =
+          "linear texture payload is smaller than the decoded 32bpp footprint";
+      return false;
+    }
   }
 
-  rgba.resize(source_bytes);
-  for (std::size_t pixel = 0; pixel < pixel_count; ++pixel) {
-    const uint32_t word =
-        GpuSwap32(LoadLittleEndian32(fetch.payload_bytes, pixel * 4),
-                  fetch.endian);
-    rgba[pixel * 4 + 0] = static_cast<uint8_t>(word & 0xFF);
-    rgba[pixel * 4 + 1] = static_cast<uint8_t>((word >> 8) & 0xFF);
-    rgba[pixel * 4 + 2] = static_cast<uint8_t>((word >> 16) & 0xFF);
-    rgba[pixel * 4 + 3] = static_cast<uint8_t>((word >> 24) & 0xFF);
+  rgba.resize(output_bytes);
+  for (uint32_t y = 0; y < fetch.height; ++y) {
+    for (uint32_t x = 0; x < fetch.width; ++x) {
+      const std::size_t pixel =
+          static_cast<std::size_t>(y) * fetch.width + x;
+      const std::size_t source_offset =
+          fetch.tiled
+              ? XenosTiledOffset2D(x, y, pitch_texels, 2)
+              : (static_cast<std::size_t>(y) * pitch_texels + x) * 4;
+      if (source_offset + 4 > fetch.payload_bytes.size()) {
+        reason =
+            "texture payload is smaller than the tiled 32bpp footprint";
+        return false;
+      }
+      const uint32_t word =
+          GpuSwap32(LoadLittleEndian32(fetch.payload_bytes, source_offset),
+                    fetch.endian);
+      rgba[pixel * 4 + 0] = static_cast<uint8_t>(word & 0xFF);
+      rgba[pixel * 4 + 1] = static_cast<uint8_t>((word >> 8) & 0xFF);
+      rgba[pixel * 4 + 2] = static_cast<uint8_t>((word >> 16) & 0xFF);
+      rgba[pixel * 4 + 3] = static_cast<uint8_t>((word >> 24) & 0xFF);
+    }
+  }
+  if (rgba.empty()) {
+    reason = "decoded texture is empty";
+    return false;
   }
   reason.clear();
   return true;
