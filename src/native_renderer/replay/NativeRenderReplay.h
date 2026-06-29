@@ -158,9 +158,12 @@ struct TextureFetchRecord {
   uint32_t dimension = 0;
   bool packed_mips = false;
   uint32_t payload_byte_count = 0;
+  uint32_t payload_resource_byte_count = 0;
+  std::string payload_resource_path;
   std::vector<uint8_t> payload_bytes;
   bool payload_truncated = false;
   bool payload_missing = true;
+  bool payload_loaded_from_resource = false;
 };
 
 struct RenderStateRecord {
@@ -458,6 +461,8 @@ struct ReplaySummary {
   uint64_t texture_snapshots = 0;
   uint64_t texture_snapshots_missing = 0;
   uint64_t texture_payload_bytes = 0;
+  uint64_t texture_payload_sidecars = 0;
+  uint64_t texture_payload_sidecar_bytes = 0;
   uint64_t texture_payload_truncated = 0;
   uint64_t draws_with_render_state = 0;
   uint64_t draws_missing_render_state = 0;

@@ -4,7 +4,7 @@ Last updated: 2026-06-29
 
 ## Current replay resource coverage
 
-The replay stream currently has real BO2 PM4 draw, shader, constant, swap, and present metadata. Fresh captures now include bounded raw index-buffer snapshots for indexed draws, per-draw vertex fetch constants decoded from the active vertex shader, bounded raw vertex-buffer snapshots, texture fetch constants with bounded texture payload prefixes, and decoded render-state register snapshots. They do not yet have sidecar resources, complete texture untile/format conversion, render-target/depth image snapshots, or shader-translation data needed for a real native scene draw.
+The replay stream currently has real BO2 PM4 draw, shader, constant, swap, and present metadata. Fresh captures now include bounded raw index-buffer snapshots for indexed draws, per-draw vertex fetch constants decoded from the active vertex shader, bounded raw vertex-buffer snapshots, texture fetch constants with inline previews plus sidecar payload resources for larger texture snapshots, and decoded render-state register snapshots. They do not yet have complete texture format/mip coverage, render-target/depth image snapshots, or shader-translation data needed for a real native scene draw.
 
 Verified draw `1209` from `native_captures\payload_capture_002\events.jsonl` is the first useful indexed draw after constants:
 
@@ -70,11 +70,13 @@ Verified draw `799` from `native_captures\state_capture_004\events.jsonl` is the
 - Replay command `--draw <n> --dump-bound-state` reports texture bindings and render-state basics; draw `799` is the current combined texture/render-state target.
 - D3D12 real replay now uploads the first decodable captured texture fetch for each supported draw as an `R8G8B8A8_UNORM` texture, creates an SRV bound at `t0`, and binds a per-draw sampler descriptor at `s0` from captured texture-filter and clamp fields. This is currently implemented for texture format `6` (`k_8_8_8_8`) with Xenos 2D tiled address decoding; unsupported formats or payloads that do not contain the required tiled footprint bind a white fallback SRV/sampler pair and report the count. Old captures without clamp fields continue to use clamp-addressing fallback.
 - D3D12 real replay now consumes the first supported draw's captured render state when creating the replay PSO: rasterizer culling/front-face/fill/depth-clip bits, color write mask, blend factors/ops, disabled depth/stencil state, and bounded screen scissor. Depth-enabled draws still need real captured DSV resources before depth test/write can be enabled.
+- Texture payloads larger than `256` bytes are now written to sidecar files under `native_captures\<capture>\resources` and referenced from JSONL by `payload_resource_path` and `payload_resource_byte_count`. Replay loads the sidecar before summary/validation/backend upload, while the JSONL keeps a 64-byte preview for inspection. Captures also write both `resources\index.json` and a line-oriented `resources\index.jsonl`; the writer finalizes both when the capture event limit is reached.
+- Fresh sidecar capture `native_captures\sidecar_capture_002\events.jsonl` validates `12000` events, `52` frames, and `2628` draws. It has `412` texture fetch records, `372` sidecar texture payloads, `3999744` sidecar bytes, `4004864` replay-loaded texture payload bytes, and no missing texture snapshots.
 
 ## Required next capture fields
 
-1. Sidecar resource manifests for larger vertex, texture, and render-target snapshots so JSONL stays bounded.
-2. Add sidecar/full-payload texture snapshots for larger tiled footprints and expand conversion beyond format `6` to the next runtime-used formats.
+1. Add sidecar resource payloads for larger vertex and render-target/depth snapshots so JSONL stays bounded.
+2. Expand sidecar-backed texture snapshots beyond the current bounded base payloads: mip footprints and conversion beyond format `6` to the next runtime-used formats.
 3. Render-target/depth resource snapshots and resolve/frontbuffer mapping.
 4. Shader identity metadata: material/shader record pointers, stripped/aligned payload hashes, and source container/microcode mapping evidence.
 5. Shader microcode: raw PM4-loaded microcode bytes or stable sidecar resource references for runtime-used shaders.

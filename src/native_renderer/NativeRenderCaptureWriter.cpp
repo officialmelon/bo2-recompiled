@@ -117,6 +117,14 @@ bool NativeRenderCaptureWriter::Initialize(const RendererConfig &config) {
       return false;
     }
   }
+  resource_dir_ = parent / "resources";
+  std::filesystem::create_directories(resource_dir_, ec);
+  if (ec) {
+    REXLOG_ERROR(
+        "BO2 native renderer could not create capture resource directory {}: {}",
+        resource_dir_.string(), ec.message());
+    return false;
+  }
 
   file_.open(path_, std::ios::out | std::ios::trunc);
   if (!file_) {
@@ -124,10 +132,31 @@ bool NativeRenderCaptureWriter::Initialize(const RendererConfig &config) {
                  path_.string());
     return false;
   }
+  resource_index_file_.open(resource_dir_ / "index.json",
+                            std::ios::out | std::ios::trunc);
+  if (!resource_index_file_) {
+    REXLOG_ERROR("BO2 native renderer could not open capture resource index {}",
+                 (resource_dir_ / "index.json").string());
+    file_.close();
+    return false;
+  }
+  resource_index_file_ << "{\"resources\":[\n";
+  resource_index_jsonl_file_.open(resource_dir_ / "index.jsonl",
+                                  std::ios::out | std::ios::trunc);
+  if (!resource_index_jsonl_file_) {
+    REXLOG_ERROR(
+        "BO2 native renderer could not open capture resource index {}",
+        (resource_dir_ / "index.jsonl").string());
+    file_.close();
+    resource_index_file_.close();
+    return false;
+  }
 
   enabled_ = true;
   limited_ = false;
   event_count_ = 0;
+  resource_count_ = 0;
+  resource_index_first_ = true;
 
   if (BeginEvent("capture_start")) {
     WriteStringField("app", app_name_);
@@ -149,11 +178,14 @@ void NativeRenderCaptureWriter::Shutdown() {
     file_.flush();
     file_.close();
   }
+  FinalizeResourceIndex();
   enabled_ = false;
   limited_ = false;
   event_count_ = 0;
   event_limit_ = 0;
+  resource_count_ = 0;
   path_.clear();
+  resource_dir_.clear();
 }
 
 bool NativeRenderCaptureWriter::BeginEvent(std::string_view type) {
@@ -181,6 +213,10 @@ bool NativeRenderCaptureWriter::BeginEvent(std::string_view type) {
 void NativeRenderCaptureWriter::EndEvent() {
   file_ << "}\n";
   MaybeFlush();
+  if (event_limit_ && event_count_ >= event_limit_) {
+    file_.flush();
+    FinalizeResourceIndex();
+  }
 }
 
 void NativeRenderCaptureWriter::MaybeFlush() {
@@ -229,6 +265,70 @@ void NativeRenderCaptureWriter::WriteHexSizeField(std::string_view name,
                                                   uintptr_t value) {
   WriteStringField(name, HexValue(static_cast<uint64_t>(value),
                                   sizeof(uintptr_t) == 8 ? 16 : 8));
+}
+
+void NativeRenderCaptureWriter::FinalizeResourceIndex() {
+  if (resource_index_file_.is_open()) {
+    resource_index_file_ << "\n]}\n";
+    resource_index_file_.flush();
+    resource_index_file_.close();
+  }
+  if (resource_index_jsonl_file_.is_open()) {
+    resource_index_jsonl_file_.flush();
+    resource_index_jsonl_file_.close();
+  }
+}
+
+bool NativeRenderCaptureWriter::WriteBinaryResource(
+    std::string_view type, const uint8_t* data, uint32_t byte_count,
+    std::string& relative_path_out) {
+  if (!data || byte_count == 0 || resource_dir_.empty()) {
+    return false;
+  }
+
+  const uint64_t resource_id = ++resource_count_;
+  std::ostringstream file_name;
+  file_name << type << '_' << std::setw(8) << std::setfill('0')
+            << resource_id << ".bin";
+  const std::filesystem::path relative_path =
+      std::filesystem::path("resources") / file_name.str();
+  const std::filesystem::path full_path = path_.parent_path() / relative_path;
+
+  std::ofstream resource_file(full_path,
+                              std::ios::out | std::ios::binary |
+                                  std::ios::trunc);
+  if (!resource_file) {
+    REXLOG_WARN("BO2 native renderer could not open resource sidecar {}",
+                full_path.string());
+    return false;
+  }
+  resource_file.write(reinterpret_cast<const char*>(data), byte_count);
+  if (!resource_file) {
+    REXLOG_WARN("BO2 native renderer could not write resource sidecar {}",
+                full_path.string());
+    return false;
+  }
+
+  relative_path_out = relative_path.generic_string();
+  if (resource_index_file_) {
+    if (!resource_index_first_) {
+      resource_index_file_ << ",\n";
+    }
+    resource_index_first_ = false;
+    resource_index_file_ << "{\"id\":" << resource_id << ",\"type\":\""
+                         << EscapeJson(type) << "\",\"path\":\""
+                         << EscapeJson(relative_path_out)
+                         << "\",\"byte_count\":" << byte_count << "}";
+    resource_index_file_.flush();
+  }
+  if (resource_index_jsonl_file_) {
+    resource_index_jsonl_file_ << "{\"id\":" << resource_id << ",\"type\":\""
+                               << EscapeJson(type) << "\",\"path\":\""
+                               << EscapeJson(relative_path_out)
+                               << "\",\"byte_count\":" << byte_count << "}\n";
+    resource_index_jsonl_file_.flush();
+  }
+  return true;
 }
 
 void NativeRenderCaptureWriter::WriteBeginFrame(uint64_t frame_index) {
@@ -459,10 +559,10 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
     fetch_u64("payload_byte_count", fetch.payload_byte_count);
     fetch_bool("payload_truncated", fetch.payload_truncated);
     fetch_bool("payload_missing", fetch.payload_missing);
-    fetch_prefix();
-    file_ << "\"payload_bytes\":[";
     const uint32_t payload_count = std::min<uint32_t>(
         fetch.payload_byte_count, fetch.payload_bytes.size());
+    fetch_prefix();
+    file_ << "\"payload_bytes\":[";
     for (uint32_t j = 0; j < payload_count; ++j) {
       if (j) {
         file_ << ',';
@@ -561,11 +661,28 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
     fetch_u64("payload_byte_count", fetch.payload_byte_count);
     fetch_bool("payload_truncated", fetch.payload_truncated);
     fetch_bool("payload_missing", fetch.payload_missing);
-    fetch_prefix();
-    file_ << "\"payload_bytes\":[";
     const uint32_t payload_count = std::min<uint32_t>(
         fetch.payload_byte_count, fetch.payload_bytes.size());
-    for (uint32_t j = 0; j < payload_count; ++j) {
+    constexpr uint32_t kInlineTexturePayloadLimit = 256;
+    constexpr uint32_t kTexturePayloadPreviewBytes = 64;
+    std::string payload_resource_path;
+    const bool payload_sidecar =
+        payload_count > kInlineTexturePayloadLimit &&
+        WriteBinaryResource("texture_payload", fetch.payload_bytes.data(),
+                            payload_count, payload_resource_path);
+    if (payload_sidecar) {
+      fetch_u64("payload_resource_byte_count", payload_count);
+      fetch_prefix();
+      file_ << "\"payload_resource_path\":\""
+            << EscapeJson(payload_resource_path) << '"';
+    }
+    fetch_prefix();
+    file_ << "\"payload_bytes\":[";
+    const uint32_t inline_payload_count =
+        payload_sidecar ? std::min<uint32_t>(payload_count,
+                                             kTexturePayloadPreviewBytes)
+                        : payload_count;
+    for (uint32_t j = 0; j < inline_payload_count; ++j) {
       if (j) {
         file_ << ',';
       }

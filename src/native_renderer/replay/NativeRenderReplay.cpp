@@ -717,6 +717,10 @@ std::vector<TextureFetchRecord> ParseTextureFetches(const JsonObject &object) {
     fetch.dimension = GetU32(fetch_object, "dimension");
     fetch.packed_mips = GetBool(fetch_object, "packed_mips");
     fetch.payload_byte_count = GetU32(fetch_object, "payload_byte_count");
+    fetch.payload_resource_byte_count =
+        GetU32(fetch_object, "payload_resource_byte_count");
+    fetch.payload_resource_path =
+        GetString(fetch_object, "payload_resource_path");
     fetch.payload_bytes = GetU8Array(fetch_object, "payload_bytes");
     if (fetch.payload_byte_count == 0 && !fetch.payload_bytes.empty()) {
       fetch.payload_byte_count =
@@ -1087,6 +1091,91 @@ void AddWarning(ReplayCapture &capture, const ReplayLoadOptions &options,
   }
 }
 
+bool ReadSidecarResource(const std::filesystem::path &path,
+                         std::vector<uint8_t> &bytes,
+                         std::string &error) {
+  bytes.clear();
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  if (!file) {
+    error = "could not open " + path.string();
+    return false;
+  }
+
+  const std::streamoff size = file.tellg();
+  if (size < 0) {
+    error = "could not size " + path.string();
+    return false;
+  }
+
+  constexpr std::streamoff kMaxSidecarResourceBytes = 64ll * 1024ll * 1024ll;
+  if (size > kMaxSidecarResourceBytes) {
+    error = "sidecar too large " + path.string() + " size=" +
+            std::to_string(static_cast<uint64_t>(size));
+    return false;
+  }
+
+  bytes.resize(static_cast<std::size_t>(size));
+  file.seekg(0, std::ios::beg);
+  if (!bytes.empty() &&
+      !file.read(reinterpret_cast<char *>(bytes.data()), size)) {
+    error = "could not read " + path.string();
+    bytes.clear();
+    return false;
+  }
+  return true;
+}
+
+void LoadTexturePayloadSidecars(ReplayCapture &capture,
+                                const ReplayLoadOptions &options) {
+  const std::filesystem::path base_dir = capture.path.parent_path();
+  for (CaptureEvent &event : capture.events) {
+    if (event.type != CaptureEventType::PM4Draw) {
+      continue;
+    }
+
+    for (TextureFetchRecord &fetch : event.draw.texture_fetches) {
+      if (fetch.payload_resource_path.empty()) {
+        continue;
+      }
+
+      std::filesystem::path resource_path(fetch.payload_resource_path);
+      if (resource_path.is_relative()) {
+        resource_path = base_dir / resource_path;
+      }
+
+      std::vector<uint8_t> bytes;
+      std::string error;
+      if (!ReadSidecarResource(resource_path, bytes, error)) {
+        AddWarning(capture, options,
+                   "texture payload sidecar load failed for seq " +
+                       std::to_string(event.seq) + ": " + error);
+        continue;
+      }
+
+      if (fetch.payload_resource_byte_count != 0 &&
+          fetch.payload_resource_byte_count != bytes.size()) {
+        AddWarning(capture, options,
+                   "texture payload sidecar byte count mismatch for seq " +
+                       std::to_string(event.seq) + ": expected " +
+                       std::to_string(fetch.payload_resource_byte_count) +
+                       " got " + std::to_string(bytes.size()));
+      }
+
+      fetch.payload_bytes = std::move(bytes);
+      fetch.payload_loaded_from_resource = true;
+      fetch.payload_missing = false;
+      if (fetch.payload_resource_byte_count == 0) {
+        fetch.payload_resource_byte_count =
+            static_cast<uint32_t>(fetch.payload_bytes.size());
+      }
+      if (fetch.payload_byte_count == 0) {
+        fetch.payload_byte_count =
+            static_cast<uint32_t>(fetch.payload_bytes.size());
+      }
+    }
+  }
+}
+
 std::string FrameLabel(const ReplayDrawState &draw_state) {
   if (!draw_state.frame_index) {
     return "pre";
@@ -1328,6 +1417,11 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
           } else {
             ++capture.summary.texture_snapshots;
             capture.summary.texture_payload_bytes += fetch.payload_bytes.size();
+          }
+          if (!fetch.payload_resource_path.empty()) {
+            ++capture.summary.texture_payload_sidecars;
+            capture.summary.texture_payload_sidecar_bytes +=
+                fetch.payload_bytes.size();
           }
           if (fetch.payload_truncated) {
             ++capture.summary.texture_payload_truncated;
@@ -2121,6 +2215,7 @@ bool LoadReplayCapture(const std::filesystem::path &path,
     capture.events.push_back(std::move(event));
   }
 
+  LoadTexturePayloadSidecars(capture, options);
   AnalyzeReplayCapture(capture, options);
   if (!options.keep_events) {
     capture.events.clear();
@@ -2347,6 +2442,9 @@ void PrintReplaySummary(const ReplayCapture &capture) {
             << " snapshots=" << capture.summary.texture_snapshots
             << " missing=" << capture.summary.texture_snapshots_missing
             << " payload_bytes=" << capture.summary.texture_payload_bytes
+            << " sidecars=" << capture.summary.texture_payload_sidecars
+            << " sidecar_bytes="
+            << capture.summary.texture_payload_sidecar_bytes
             << " truncated=" << capture.summary.texture_payload_truncated
             << "\n";
   std::cout << "Render state: draws_with="
@@ -2636,6 +2734,7 @@ void PrintBoundStateDump(const ReplayCapture &capture, std::size_t draw_index) {
               << fetch.clamp_z << " filter=" << fetch.mag_filter << ","
               << fetch.min_filter << "," << fetch.mip_filter
               << " payload=" << fetch.payload_bytes.size()
+              << (fetch.payload_loaded_from_resource ? " sidecar" : "")
               << (fetch.payload_missing ? " missing" : "")
               << (fetch.payload_truncated ? " truncated" : "") << "\n";
   }
@@ -2924,6 +3023,9 @@ void PrintResourceSummary(const ReplayCapture &capture) {
   std::cout << "  texture_snapshots=" << capture.summary.texture_snapshots
             << " missing=" << capture.summary.texture_snapshots_missing
             << " payload_bytes=" << capture.summary.texture_payload_bytes
+            << " sidecars=" << capture.summary.texture_payload_sidecars
+            << " sidecar_bytes="
+            << capture.summary.texture_payload_sidecar_bytes
             << " truncated=" << capture.summary.texture_payload_truncated
             << "\n";
   std::cout << "  render_state_draws="
@@ -2932,7 +3034,17 @@ void PrintResourceSummary(const ReplayCapture &capture) {
             << "\n";
   std::cout << "  shader_record_probes=" << shader_record_probes << "\n";
   std::cout << "  render_target_snapshots=0\n";
-  std::cout << "  sidecar_resource_manifest=missing\n";
+  const std::filesystem::path resource_dir =
+      capture.path.parent_path() / "resources";
+  const bool sidecar_json_present =
+      std::filesystem::exists(resource_dir / "index.json");
+  const bool sidecar_jsonl_present =
+      std::filesystem::exists(resource_dir / "index.jsonl");
+  std::cout << "  sidecar_resource_manifest="
+            << ((sidecar_json_present || sidecar_jsonl_present) ? "present"
+                                                                : "missing")
+            << " json=" << (sidecar_json_present ? "yes" : "no")
+            << " jsonl=" << (sidecar_jsonl_present ? "yes" : "no") << "\n";
   if (capture.summary.index_buffer_snapshots == 0 ||
       capture.summary.draws_missing_vertex_fetch_state != 0) {
     std::cout
