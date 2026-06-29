@@ -1781,6 +1781,9 @@ void PrintHelp() {
       << "  --shader-override-root <path>\n"
          "                          Root containing native shader overrides "
          "(default shader_work/native_overrides)\n"
+      << "  --shader-cache-root <path>\n"
+         "                          Root for compiled native shader cache "
+         "(default shader_work/cache)\n"
       << "  --d3d12-draws <count>  Replay draw tiles to render (default 4096)\n"
       << "  --allow-diagnostic-shader\n"
          "                          Permit --backend d3d12 to use the "
@@ -1921,6 +1924,137 @@ bool LoadReplayCapture(const std::filesystem::path &path,
 std::string FormatHex32(uint32_t value) { return FormatHex(value, 8); }
 
 std::string FormatHex64(uint64_t value) { return FormatHex(value, 16); }
+
+bool LoadShaderOverrideManifest(const std::filesystem::path &path,
+                                std::vector<ShaderOverrideRecord> &records,
+                                std::string &error) {
+  records.clear();
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    error = "could not open shader override manifest " + path.string();
+    return false;
+  }
+
+  file.seekg(0, std::ios::end);
+  const std::ifstream::pos_type size = file.tellg();
+  if (size == std::ifstream::pos_type(-1)) {
+    error = "could not size shader override manifest " + path.string();
+    return false;
+  }
+
+  std::string text;
+  text.resize(static_cast<std::size_t>(size));
+  file.seekg(0, std::ios::beg);
+  if (!text.empty()) {
+    file.read(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file) {
+      error = "could not read shader override manifest " + path.string();
+      return false;
+    }
+  }
+
+  JsonObject root;
+  JsonLineParser parser(text);
+  if (!parser.ParseObject(root, error)) {
+    error = "could not parse shader override manifest " + path.string() +
+            ": " + error;
+    return false;
+  }
+
+  const JsonValue *overrides = FindValue(root, "overrides");
+  if (!overrides || overrides->type != JsonValueType::Array) {
+    error = "shader override manifest has no overrides array: " +
+            path.string();
+    return false;
+  }
+
+  for (const JsonValue &element : overrides->array_value) {
+    if (element.type != JsonValueType::Object) {
+      continue;
+    }
+
+    const auto &object = element.object_value;
+    ShaderOverrideRecord record;
+    record.backend = GetString(object, "backend");
+    record.stage = GetString(object, "stage");
+    record.runtime_hash = GetU64(object, "runtime_hash");
+    record.entry = GetString(object, "entry");
+    record.profile = GetString(object, "profile");
+    record.path = GetString(object, "path");
+    record.source = GetString(object, "source");
+    if (!record.backend.empty() && !record.stage.empty() &&
+        record.runtime_hash != 0 && !record.path.empty()) {
+      records.push_back(std::move(record));
+    }
+  }
+
+  return true;
+}
+
+bool LoadShaderCacheIndex(const std::filesystem::path &path,
+                          std::vector<ShaderCacheRecord> &records,
+                          std::string &error) {
+  records.clear();
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    error = "could not open shader cache index " + path.string();
+    return false;
+  }
+
+  file.seekg(0, std::ios::end);
+  const std::ifstream::pos_type size = file.tellg();
+  if (size == std::ifstream::pos_type(-1)) {
+    error = "could not size shader cache index " + path.string();
+    return false;
+  }
+
+  std::string text;
+  text.resize(static_cast<std::size_t>(size));
+  file.seekg(0, std::ios::beg);
+  if (!text.empty()) {
+    file.read(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file) {
+      error = "could not read shader cache index " + path.string();
+      return false;
+    }
+  }
+
+  JsonObject root;
+  JsonLineParser parser(text);
+  if (!parser.ParseObject(root, error)) {
+    error = "could not parse shader cache index " + path.string() + ": " +
+            error;
+    return false;
+  }
+
+  const JsonValue *records_value = FindValue(root, "records");
+  if (!records_value || records_value->type != JsonValueType::Array) {
+    error = "shader cache index has no records array: " + path.string();
+    return false;
+  }
+
+  for (const JsonValue &element : records_value->array_value) {
+    if (element.type != JsonValueType::Object) {
+      continue;
+    }
+
+    const auto &object = element.object_value;
+    ShaderCacheRecord record;
+    record.backend = GetString(object, "backend");
+    record.stage = GetString(object, "stage");
+    record.runtime_hash = GetU64(object, "runtime_hash");
+    record.profile = GetString(object, "profile");
+    record.compiler = GetString(object, "compiler");
+    record.cache_key = GetString(object, "cache_key");
+    record.path = GetString(object, "path");
+    record.source = GetString(object, "source");
+    if (!record.backend.empty() && !record.stage.empty() &&
+        record.runtime_hash != 0 && !record.path.empty()) {
+      records.push_back(std::move(record));
+    }
+  }
+  return true;
+}
 
 std::vector<std::string> ExtractAsciiRunsFromDwords(
     const std::vector<uint32_t> &dwords) {
@@ -2753,6 +2887,12 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
         return 2;
       }
       cli.shader_override_root = value;
+    } else if (arg == "--shader-cache-root") {
+      const char *value = require_value("--shader-cache-root");
+      if (!value) {
+        return 2;
+      }
+      cli.shader_cache_root = value;
     } else if (arg == "--d3d12-draws") {
       const char *value = require_value("--d3d12-draws");
       if (!value || !ParseSizeArgument(value, cli.d3d12_draw_limit)) {
@@ -2831,7 +2971,9 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       return 1;
     }
     if (!cli.allow_diagnostic_shader) {
-      std::cout << "D3D12 real replay note: used native shader override root "
+      std::cout << "D3D12 real replay note: used native shader cache root "
+                << std::filesystem::absolute(cli.shader_cache_root).string()
+                << " and override root "
                 << std::filesystem::absolute(cli.shader_override_root).string()
                 << "\n";
     }

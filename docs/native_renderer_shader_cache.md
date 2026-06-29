@@ -12,7 +12,29 @@ A first manual D3D12 override pair exists for the draw `1209` runtime shader has
 - Vertex override: `shader_work\native_overrides\d3d12\vs_5D918D91043B3ED0.hlsl`
 - Pixel override: `shader_work\native_overrides\d3d12\ps_C4ED2979F29C9139.hlsl`
 
-The D3D12 replay backend currently resolves overrides by deterministic runtime-hash filenames under `shader_work\native_overrides\d3d12` and compiles them through `D3DCompile` at replay time. The manifest is not parsed yet, and compiled DXIL is not persisted yet.
+The D3D12 replay backend now resolves shaders in this order:
+
+1. `shader_work\cache\shader_cache_index.json` runtime-hash cache hit.
+2. Parsed `shader_work\native_overrides\overrides.json`.
+3. Deterministic runtime-hash filenames under `shader_work\native_overrides\d3d12`.
+4. Explicit diagnostic shader only when `--allow-diagnostic-shader` is supplied.
+5. Fail closed.
+
+The compiled cache currently stores D3DCompile output (`.dxbc`) because `dxc.exe` is not available on the current PATH. DXC/DXIL is still required for the final shader pipeline.
+
+Verified cache artifacts for draw `1209`:
+
+- `shader_work\cache\shader_cache_index.json`
+- `shader_work\cache\d3d12\manual_vs_5D918D91043B3ED0_vs_5_0_src7E9F55F7C18FD853.dxbc`
+- `shader_work\cache\d3d12\manual_ps_C4ED2979F29C9139_ps_5_0_src32791D60D2A98EFB.dxbc`
+- `shader_work\cache\logs\manual_vs_5D918D91043B3ED0_vs_5_0_src7E9F55F7C18FD853.log`
+- `shader_work\cache\logs\manual_ps_C4ED2979F29C9139_ps_5_0_src32791D60D2A98EFB.log`
+
+Verified behavior:
+
+- Empty cache root plus default override root compiles from `overrides.json`, writes `.dxbc` blobs/logs/index, and renders draw `1209`.
+- Default cache root plus empty override root renders draw `1209` from cache only.
+- Empty cache root plus empty override root fails closed with the missing VS/PS runtime hashes.
 
 Current supported commands:
 
@@ -74,7 +96,8 @@ Top/target payload hash examples from `shader_payload_capture_001`:
 - HLSL/SPIR-V generation.
 - DXC integration.
 - Persistent compiled shader cache.
-- Parsed manual override table and persistent compiled override cache.
+- DXC/DXIL compiler integration.
+- Cache entries for automatically translated Xenos shaders.
 
 ## Current matching rule
 

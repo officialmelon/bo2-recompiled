@@ -45,6 +45,7 @@ Options:
 - `--backend null|offline|d3d12-diagnostic|d3d12|vulkan-diagnostic|vulkan`: backend selector. `d3d12-diagnostic` runs the offscreen D3D12 debug renderer. `d3d12` is the real resource-backed path and fails closed unless real translated/cached/override shaders are available or `--allow-diagnostic-shader` is explicitly supplied. `vulkan*` fails closed until a Vulkan backend exists.
 - `--d3d12-output <path>`: BMP output path for the D3D12 replay backend.
 - `--shader-override-root <path>`: root containing native shader overrides. Default: `shader_work\native_overrides`. The current D3D12 resolver looks under `<root>\d3d12` for filenames keyed by runtime shader hash, such as `vs_5D918D91043B3ED0.hlsl` and `ps_C4ED2979F29C9139.hlsl`.
+- `--shader-cache-root <path>`: root containing compiled shader cache entries. Default: `shader_work\cache`. In strict D3D12 mode the current order is cache index hit, parsed override manifest, deterministic override filename, then fail-closed unless `--allow-diagnostic-shader` is present.
 - `--d3d12-draws <count>`: number of replay draw tiles to render; default is `4096`.
 - `--allow-diagnostic-shader`: permits `--backend d3d12` to use the temporary diagnostic shader fallback for resource-backed geometry bring-up. Output with this flag is not shader-correct BO2 rendering.
 - `--validate`: parse/analyze only and return non-zero on parse errors or strict replay validation errors such as indexed draws with missing index snapshots.
@@ -83,8 +84,9 @@ Decoded resources:
 
 D3D12 behavior:
 
-- `--backend d3d12 --draw 1209` loads manual overrides from `shader_work\native_overrides\d3d12` and writes `native-renderer-d3d12-real-draw1209-manual-override.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
-- `--backend d3d12 --draw 1209 --shader-override-root native_captures\empty_shader_overrides` fails closed without a real shader pair and reports the missing `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139` pair.
+- `--backend d3d12 --draw 1209` loads manual overrides from `shader_work\native_overrides\overrides.json`, compiles/cache-writes D3D12 shader blobs if needed, and writes `native-renderer-d3d12-real-draw1209-manual-override.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
+- `--backend d3d12 --draw 1209 --shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache` succeeds from `shader_work\cache\shader_cache_index.json` and compiled `.dxbc` blobs without override source.
+- `--backend d3d12 --draw 1209 --shader-override-root native_captures\empty_shader_overrides --shader-cache-root native_captures\empty_shader_cache` fails closed without a cached or override shader pair and reports the missing `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139` pair.
 - `--backend d3d12 --draw 1209 --allow-diagnostic-shader` writes `native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
 
 ## Verified index-payload capture

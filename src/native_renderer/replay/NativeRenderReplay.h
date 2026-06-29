@@ -380,6 +380,8 @@ struct ReplayCliOptions {
   std::filesystem::path d3d12_output_path;
   std::filesystem::path shader_override_root =
       std::filesystem::path("shader_work") / "native_overrides";
+  std::filesystem::path shader_cache_root =
+      std::filesystem::path("shader_work") / "cache";
   bool show_summary = true;
   bool dump_draws = false;
   bool dump_constants = false;
@@ -400,6 +402,27 @@ struct ReplayCliOptions {
   std::string backend = "null";
 };
 
+struct ShaderOverrideRecord {
+  std::string backend;
+  std::string stage;
+  uint64_t runtime_hash = 0;
+  std::string entry;
+  std::string profile;
+  std::filesystem::path path;
+  std::string source;
+};
+
+struct ShaderCacheRecord {
+  std::string backend;
+  std::string stage;
+  uint64_t runtime_hash = 0;
+  std::string profile;
+  std::string compiler;
+  std::string cache_key;
+  std::filesystem::path path;
+  std::filesystem::path source;
+};
+
 const char *ToString(CaptureEventType type);
 CaptureEventType ParseCaptureEventType(std::string_view type);
 
@@ -409,6 +432,13 @@ bool LoadReplayCapture(const std::filesystem::path &path,
 
 std::string FormatHex32(uint32_t value);
 std::string FormatHex64(uint64_t value);
+
+bool LoadShaderOverrideManifest(const std::filesystem::path &path,
+                                std::vector<ShaderOverrideRecord> &records,
+                                std::string &error);
+bool LoadShaderCacheIndex(const std::filesystem::path &path,
+                          std::vector<ShaderCacheRecord> &records,
+                          std::string &error);
 
 void PrintReplaySummary(const ReplayCapture &capture);
 void PrintFrameSummary(const ReplayCapture &capture, std::size_t frame_index);

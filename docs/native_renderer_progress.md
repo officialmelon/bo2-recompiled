@@ -143,7 +143,9 @@ Runtime verification:
 - Runtime shader direct static-index matches remain `0/8` on the shader-payload capture. `native_shader_inspect.exe` now computes raw little-endian, raw big-endian, trailing-zero-trimmed little-endian, and trailing-zero-trimmed big-endian SHA-256 values for each captured runtime shader payload. All eight runtime shaders have stable payload hashes across repeated uploads, but all four payload-hash match rules report `no` against `shader_work/shaders/index.json`.
 - `--backend d3d12` now fails closed unless a real translated/cached/override shader is available. The temporary resource-backed diagnostic shader path requires explicit `--allow-diagnostic-shader`; with that flag, draw `1209` writes `native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
 - A first manual D3D12 override pair for draw `1209` is present under `shader_work\native_overrides`: `vs_5D918D91043B3ED0.hlsl` and `ps_C4ED2979F29C9139.hlsl`, with a documenting `overrides.json`. `--backend d3d12 --draw 1209` now compiles those overrides and writes `native-renderer-d3d12-real-draw1209-manual-override.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`. This is still one real-resource draw with manual interface-compatible shaders, not automatic Xenos shader translation or full scene rendering.
-- The strict missing-shader path was rechecked with `--shader-override-root native_captures\empty_shader_overrides`: exit code `1`, with the expected missing `VS=0x5D918D91043B3ED0` and `PS=0xC4ED2979F29C9139` message.
+- The override manifest is now parsed by replay, and compiled D3D12 override blobs are cached under `shader_work\cache`: `shader_cache_index.json`, two `.dxbc` blobs, and two compile logs for draw `1209`.
+- Cache-only strict replay was verified with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache`: exit code `0`, output SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
+- The strict missing-shader path was rechecked with empty override and empty cache roots: exit code `1`, with the expected missing `VS=0x5D918D91043B3ED0` and `PS=0xC4ED2979F29C9139` message.
 - The earlier 180-second full-build timeout was superseded by the shader-payload rebuild above. The current known build state is successful for `default`, `native_render_replay`, and `native_shader_inspect`.
 - Shader-record probe rebuild completed successfully after Ninja recovered a damaged build log. Build exit file `default\out\build\win-amd64-clangmsvc-debug\native-renderer-shader-probe-rebuild.exit.txt` is `0`. Future iterations should prefer narrow `-j8` Ninja targets because this recovery pass rebuilt the large `default` target with `-j1`.
 - Fresh shader-record capture `C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_003\events.jsonl` contains `4514` events, `22` frames, `1026` draws, `190/190` shader uploads with payload, `66` vertex fetch snapshots, and `2` `shader_record_probe` events. Validation result: `Validation OK: 4514 events, 22 frames, 1026 draws`.
@@ -186,14 +188,13 @@ Runtime verification:
 - Android/ARM64 direct generated calls can still bypass dispatcher hooks. An ARM64-safe generated-function detour or generated-call rewrite is still needed before every logged candidate is guaranteed to fire on Android.
 - The XEX equivalents for the static material asset-load functions are not fully mapped. The current map is strongest for runtime packet emitters and shader/material binding.
 - The cleanest XEX draw-packet target is now `0x8258CF68` (`PM4_DRAW_INDX_2` with variable initiator).
-- Shader replacement now exists for one runtime pair as deterministic D3D12 override files loaded by replay. The `overrides.json` manifest is documentation only so far; it is not parsed into a cache-backed override table. Runtime shader ranking and reproducible payload-hash evidence now exist, but runtime-to-static shader identity is still unproven.
+- Shader replacement now exists for one runtime pair as D3D12 override files loaded through a parsed manifest or deterministic filename fallback. The compiled override pair is cached and can satisfy strict replay without override source. Runtime shader ranking and reproducible payload-hash evidence now exist, but runtime-to-static shader identity is still unproven.
 
 ## Next highest-impact targets
 
 1. Add an ARM64-safe generated-call interception path or generated-call rewrite, so Android direct calls cannot bypass dispatcher hooks.
-2. Parse `shader_work\native_overrides\overrides.json` and persist compiled D3D12 override outputs in the shader cache.
-3. Capture material shader record metadata and use Ghidra-backed shader/material records so runtime hashes can be matched to static shader containers or explicit overrides.
-4. Bind captured constant payloads into the D3D12 real path for draw `1209`.
-5. Extend the CP trace sink/capture writer with texture fetch state, render target binds, depth/stencil state, and sidecar resource manifests for large snapshots.
-6. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends.
-7. Replace the null runtime backend with a `D3D12Debug` backend once the replay D3D12 path proves device/swapchain/indexed draw submission.
+2. Capture material shader record metadata and use Ghidra-backed shader/material records so runtime hashes can be matched to static shader containers or explicit overrides.
+3. Bind captured constant payloads into the D3D12 real path for draw `1209`.
+4. Extend the CP trace sink/capture writer with texture fetch state, render target binds, depth/stencil state, and sidecar resource manifests for large snapshots.
+5. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends.
+6. Replace the null runtime backend with a `D3D12Debug` backend once the replay D3D12 path proves device/swapchain/indexed draw submission.

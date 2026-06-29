@@ -7,7 +7,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #if defined(_WIN32)
@@ -34,6 +36,11 @@ using Microsoft::WRL::ComPtr;
 bool CompileShader(const char *source, const char *entry, const char *target,
                    const char *source_name, ComPtr<ID3DBlob> &blob,
                    std::string &error);
+bool CompileShaderWithCache(const char *source, const char *entry,
+                            const char *target, const char *source_name,
+                            const std::filesystem::path &cache_path,
+                            const std::filesystem::path &log_path,
+                            ComPtr<ID3DBlob> &blob, std::string &error);
 
 std::string HrError(const char *what, HRESULT hr) {
   return std::string(what) + " failed with HRESULT 0x" +
@@ -286,8 +293,18 @@ struct PreparedRealDraw {
 struct NativeShaderOverridePair {
   std::filesystem::path vertex_path;
   std::filesystem::path pixel_path;
+  std::string vertex_entry = "VSMain";
+  std::string pixel_entry = "PSMain";
+  std::string vertex_profile = "vs_5_0";
+  std::string pixel_profile = "ps_5_0";
   std::string vertex_source;
   std::string pixel_source;
+  std::string vertex_cache_key;
+  std::string pixel_cache_key;
+  std::filesystem::path vertex_cache_path;
+  std::filesystem::path pixel_cache_path;
+  std::filesystem::path vertex_log_path;
+  std::filesystem::path pixel_log_path;
 };
 
 bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
@@ -468,8 +485,16 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
                                 DXGI_FORMAT format,
                                 const char *vertex_shader_source,
                                 const char *vertex_shader_name,
+                                const char *vertex_shader_entry,
+                                const char *vertex_shader_profile,
+                                const std::filesystem::path &vertex_cache_path,
+                                const std::filesystem::path &vertex_log_path,
                                 const char *pixel_shader_source,
                                 const char *pixel_shader_name,
+                                const char *pixel_shader_entry,
+                                const char *pixel_shader_profile,
+                                const std::filesystem::path &pixel_cache_path,
+                                const std::filesystem::path &pixel_log_path,
                                 std::string &error) {
   D3D12_ROOT_PARAMETER root_parameter{};
   root_parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -510,10 +535,14 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
 
   ComPtr<ID3DBlob> vertex_shader;
   ComPtr<ID3DBlob> pixel_shader;
-  if (!CompileShader(vertex_shader_source, "VSMain", "vs_5_0",
-                     vertex_shader_name, vertex_shader, error) ||
-      !CompileShader(pixel_shader_source, "PSMain", "ps_5_0",
-                     pixel_shader_name, pixel_shader, error)) {
+  if (!CompileShaderWithCache(vertex_shader_source, vertex_shader_entry,
+                              vertex_shader_profile, vertex_shader_name,
+                              vertex_cache_path, vertex_log_path,
+                              vertex_shader, error) ||
+      !CompileShaderWithCache(pixel_shader_source, pixel_shader_entry,
+                              pixel_shader_profile, pixel_shader_name,
+                              pixel_cache_path, pixel_log_path, pixel_shader,
+                              error)) {
     return false;
   }
 
@@ -629,6 +658,108 @@ std::string ShaderHashFileKey(uint64_t hash) {
                                                           : hex;
 }
 
+uint64_t Fnv1a64(std::string_view text) {
+  uint64_t value = 14695981039346656037ull;
+  for (const char ch : text) {
+    value ^= static_cast<uint8_t>(ch);
+    value *= 1099511628211ull;
+  }
+  return value;
+}
+
+std::string LowerAscii(std::string text) {
+  for (char &ch : text) {
+    if (ch >= 'A' && ch <= 'Z') {
+      ch = static_cast<char>(ch - 'A' + 'a');
+    }
+  }
+  return text;
+}
+
+bool StageMatches(std::string stage, const char *short_stage,
+                  const char *long_stage) {
+  stage = LowerAscii(std::move(stage));
+  return stage == short_stage || stage == long_stage;
+}
+
+std::filesystem::path ResolveOverridePath(const std::filesystem::path &root,
+                                          const std::filesystem::path &path) {
+  return path.is_absolute() ? path : root / path;
+}
+
+bool FindManifestOverridePath(const std::filesystem::path &root,
+                              const char *short_stage,
+                              const char *long_stage, uint64_t hash,
+                              std::filesystem::path &path, std::string &entry,
+                              std::string &profile, std::string &error) {
+  const std::filesystem::path manifest = root / "overrides.json";
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(manifest, ec) || ec) {
+    return false;
+  }
+
+  std::vector<ShaderOverrideRecord> records;
+  if (!LoadShaderOverrideManifest(manifest, records, error)) {
+    return false;
+  }
+
+  for (const ShaderOverrideRecord &record : records) {
+    if (LowerAscii(record.backend) != "d3d12" ||
+        record.runtime_hash != hash ||
+        !StageMatches(record.stage, short_stage, long_stage)) {
+      continue;
+    }
+    path = ResolveOverridePath(root, record.path);
+    if (!record.entry.empty()) {
+      entry = record.entry;
+    }
+    if (!record.profile.empty()) {
+      profile = record.profile;
+    }
+    return true;
+  }
+  return false;
+}
+
+bool FindCacheShaderPath(const std::filesystem::path &root,
+                         const char *short_stage, const char *long_stage,
+                         uint64_t hash, std::filesystem::path &path,
+                         std::filesystem::path &source,
+                         std::string &profile, std::string &cache_key,
+                         std::string &error) {
+  const std::filesystem::path index = root / "shader_cache_index.json";
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(index, ec) || ec) {
+    return false;
+  }
+
+  std::vector<ShaderCacheRecord> records;
+  if (!LoadShaderCacheIndex(index, records, error)) {
+    return false;
+  }
+
+  for (const ShaderCacheRecord &record : records) {
+    if (LowerAscii(record.backend) != "d3d12" ||
+        record.runtime_hash != hash ||
+        !StageMatches(record.stage, short_stage, long_stage)) {
+      continue;
+    }
+    path = record.path;
+    source = record.source;
+    profile = record.profile;
+    cache_key = record.cache_key;
+    return true;
+  }
+  return false;
+}
+
+std::string MakeOverrideCacheKey(const char *short_stage, uint64_t hash,
+                                 const std::string &profile,
+                                 const std::string &source) {
+  return std::string("manual_") + short_stage + "_" + ShaderHashFileKey(hash) +
+         "_" + profile + "_src" + ShaderHashFileKey(Fnv1a64(source));
+}
+
 std::filesystem::path FindShaderOverridePath(
     const std::filesystem::path &root, const char *short_stage,
     const char *long_stage, uint64_t hash) {
@@ -654,12 +785,48 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
                                   const ReplayCliOptions &options,
                                   NativeShaderOverridePair &pair,
                                   std::string &error) {
-  pair.vertex_path =
-      FindShaderOverridePath(options.shader_override_root, "vs", "vertex",
-                             draw_state.vertex_shader.hash);
-  pair.pixel_path =
-      FindShaderOverridePath(options.shader_override_root, "ps", "pixel",
-                             draw_state.pixel_shader.hash);
+  std::string cache_error;
+  if (FindCacheShaderPath(options.shader_cache_root, "vs", "vertex",
+                          draw_state.vertex_shader.hash,
+                          pair.vertex_cache_path, pair.vertex_path,
+                          pair.vertex_profile, pair.vertex_cache_key,
+                          cache_error) &&
+      FindCacheShaderPath(options.shader_cache_root, "ps", "pixel",
+                          draw_state.pixel_shader.hash, pair.pixel_cache_path,
+                          pair.pixel_path, pair.pixel_profile,
+                          pair.pixel_cache_key, cache_error)) {
+    return true;
+  }
+  if (!cache_error.empty()) {
+    error = cache_error;
+    return false;
+  }
+
+  std::string manifest_error;
+  if (!FindManifestOverridePath(options.shader_override_root, "vs", "vertex",
+                                draw_state.vertex_shader.hash,
+                                pair.vertex_path, pair.vertex_entry,
+                                pair.vertex_profile, manifest_error)) {
+    if (!manifest_error.empty()) {
+      error = manifest_error;
+      return false;
+    }
+    pair.vertex_path =
+        FindShaderOverridePath(options.shader_override_root, "vs", "vertex",
+                               draw_state.vertex_shader.hash);
+  }
+  if (!FindManifestOverridePath(options.shader_override_root, "ps", "pixel",
+                                draw_state.pixel_shader.hash, pair.pixel_path,
+                                pair.pixel_entry, pair.pixel_profile,
+                                manifest_error)) {
+    if (!manifest_error.empty()) {
+      error = manifest_error;
+      return false;
+    }
+    pair.pixel_path =
+        FindShaderOverridePath(options.shader_override_root, "ps", "pixel",
+                               draw_state.pixel_shader.hash);
+  }
   if (pair.vertex_path.empty() || pair.pixel_path.empty()) {
     error = "no translated, cached, or override shader pair is available for "
             "draw " +
@@ -672,13 +839,133 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
     return false;
   }
 
-  return ReadTextFile(pair.vertex_path, pair.vertex_source, error) &&
-         ReadTextFile(pair.pixel_path, pair.pixel_source, error);
+  if (!ReadTextFile(pair.vertex_path, pair.vertex_source, error) ||
+      !ReadTextFile(pair.pixel_path, pair.pixel_source, error)) {
+    return false;
+  }
+
+  pair.vertex_cache_key =
+      MakeOverrideCacheKey("vs", draw_state.vertex_shader.hash,
+                           pair.vertex_profile, pair.vertex_source);
+  pair.pixel_cache_key =
+      MakeOverrideCacheKey("ps", draw_state.pixel_shader.hash,
+                           pair.pixel_profile, pair.pixel_source);
+  pair.vertex_cache_path =
+      options.shader_cache_root / "d3d12" / (pair.vertex_cache_key + ".dxbc");
+  pair.pixel_cache_path =
+      options.shader_cache_root / "d3d12" / (pair.pixel_cache_key + ".dxbc");
+  pair.vertex_log_path =
+      options.shader_cache_root / "logs" / (pair.vertex_cache_key + ".log");
+  pair.pixel_log_path =
+      options.shader_cache_root / "logs" / (pair.pixel_cache_key + ".log");
+  return true;
+}
+
+bool ReadCachedShaderBlob(const std::filesystem::path &path,
+                          ComPtr<ID3DBlob> &blob, std::string &error) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return false;
+  }
+  file.seekg(0, std::ios::end);
+  const std::ifstream::pos_type size = file.tellg();
+  if (size <= std::ifstream::pos_type(0)) {
+    error = "cached shader blob is empty: " + path.string();
+    return false;
+  }
+  if (!CheckHr(D3DCreateBlob(static_cast<SIZE_T>(size), &blob),
+               "D3DCreateBlob(cache)", error)) {
+    return false;
+  }
+  file.seekg(0, std::ios::beg);
+  file.read(static_cast<char *>(blob->GetBufferPointer()),
+            static_cast<std::streamsize>(blob->GetBufferSize()));
+  if (!file) {
+    error = "could not read cached shader blob " + path.string();
+    return false;
+  }
+  return true;
+}
+
+bool WriteBlobFile(const std::filesystem::path &path, ID3DBlob *blob,
+                   std::string &error) {
+  std::error_code ec;
+  if (!path.parent_path().empty()) {
+    std::filesystem::create_directories(path.parent_path(), ec);
+    if (ec) {
+      error = "could not create shader cache directory " +
+              path.parent_path().string() + ": " + ec.message();
+      return false;
+    }
+  }
+
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  if (!file) {
+    error = "could not open shader cache blob for write " + path.string();
+    return false;
+  }
+  file.write(static_cast<const char *>(blob->GetBufferPointer()),
+             static_cast<std::streamsize>(blob->GetBufferSize()));
+  if (!file) {
+    error = "could not write shader cache blob " + path.string();
+    return false;
+  }
+  return true;
+}
+
+bool WriteTextFile(const std::filesystem::path &path, const std::string &text,
+                   std::string &error) {
+  std::error_code ec;
+  if (!path.parent_path().empty()) {
+    std::filesystem::create_directories(path.parent_path(), ec);
+    if (ec) {
+      error = "could not create shader log directory " +
+              path.parent_path().string() + ": " + ec.message();
+      return false;
+    }
+  }
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  if (!file) {
+    error = "could not open shader log for write " + path.string();
+    return false;
+  }
+  file << text;
+  if (!file) {
+    error = "could not write shader log " + path.string();
+    return false;
+  }
+  return true;
 }
 
 bool CompileShader(const char *source, const char *entry, const char *target,
                    const char *source_name, ComPtr<ID3DBlob> &blob,
                    std::string &error) {
+  return CompileShaderWithCache(source, entry, target, source_name, {}, {},
+                                blob, error);
+}
+
+bool CompileShaderWithCache(const char *source, const char *entry,
+                            const char *target, const char *source_name,
+                            const std::filesystem::path &cache_path,
+                            const std::filesystem::path &log_path,
+                            ComPtr<ID3DBlob> &blob, std::string &error) {
+  if (!cache_path.empty()) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(cache_path, ec) && !ec &&
+        ReadCachedShaderBlob(cache_path, blob, error)) {
+      return true;
+    }
+    if (!error.empty()) {
+      return false;
+    }
+  }
+
+  if (!source || source[0] == '\0') {
+    error = "shader cache miss and no source is available for " +
+            std::string(source_name ? source_name : "<unknown>");
+    return false;
+  }
+
   UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
 #if defined(_DEBUG)
   flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
@@ -688,6 +975,20 @@ bool CompileShader(const char *source, const char *entry, const char *target,
       D3DCompile(source, std::strlen(source), source_name, nullptr, nullptr,
                  entry, target, flags, 0, &blob, &errors);
   if (SUCCEEDED(hr)) {
+    if (!cache_path.empty() && !WriteBlobFile(cache_path, blob.Get(), error)) {
+      return false;
+    }
+    if (!log_path.empty()) {
+      std::ostringstream log;
+      log << "compiler=D3DCompile\n"
+          << "source=" << source_name << "\n"
+          << "entry=" << entry << "\n"
+          << "target=" << target << "\n"
+          << "cache=" << cache_path.string() << "\n";
+      if (!WriteTextFile(log_path, log.str(), error)) {
+        return false;
+      }
+    }
     return true;
   }
 
@@ -698,6 +999,63 @@ bool CompileShader(const char *source, const char *entry, const char *target,
                  errors->GetBufferSize());
   }
   return false;
+}
+
+bool WriteOverrideCacheIndex(const ReplayDrawState &draw_state,
+                             const ReplayCliOptions &options,
+                             const NativeShaderOverridePair &pair,
+                             std::string &error) {
+  const std::filesystem::path index_path =
+      options.shader_cache_root / "shader_cache_index.json";
+  std::error_code ec;
+  std::filesystem::create_directories(options.shader_cache_root, ec);
+  if (ec) {
+    error = "could not create shader cache root " +
+            options.shader_cache_root.string() + ": " + ec.message();
+    return false;
+  }
+
+  std::ofstream file(index_path, std::ios::binary | std::ios::trunc);
+  if (!file) {
+    error = "could not write shader cache index " + index_path.string();
+    return false;
+  }
+
+  file << "{\n"
+       << "  \"version\": 1,\n"
+       << "  \"records\": [\n"
+       << "    {\n"
+       << "      \"backend\": \"d3d12\",\n"
+       << "      \"stage\": \"vertex\",\n"
+       << "      \"runtime_hash\": \"" << FormatHex64(draw_state.vertex_shader.hash)
+       << "\",\n"
+       << "      \"profile\": \"" << pair.vertex_profile << "\",\n"
+       << "      \"compiler\": \"D3DCompile\",\n"
+       << "      \"cache_key\": \"" << pair.vertex_cache_key << "\",\n"
+       << "      \"path\": \"" << pair.vertex_cache_path.generic_string()
+       << "\",\n"
+       << "      \"source\": \"" << pair.vertex_path.generic_string()
+       << "\"\n"
+       << "    },\n"
+       << "    {\n"
+       << "      \"backend\": \"d3d12\",\n"
+       << "      \"stage\": \"pixel\",\n"
+       << "      \"runtime_hash\": \"" << FormatHex64(draw_state.pixel_shader.hash)
+       << "\",\n"
+       << "      \"profile\": \"" << pair.pixel_profile << "\",\n"
+       << "      \"compiler\": \"D3DCompile\",\n"
+       << "      \"cache_key\": \"" << pair.pixel_cache_key << "\",\n"
+       << "      \"path\": \"" << pair.pixel_cache_path.generic_string()
+       << "\",\n"
+       << "      \"source\": \"" << pair.pixel_path.generic_string() << "\"\n"
+       << "    }\n"
+       << "  ]\n"
+       << "}\n";
+  if (!file) {
+    error = "could not finish shader cache index " + index_path.string();
+    return false;
+  }
+  return true;
 }
 
 bool CreateDebugPipeline(ID3D12Device *device,
@@ -1205,13 +1563,23 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   NativeShaderOverridePair override_pair;
   const char *vertex_shader_source = nullptr;
   const char *pixel_shader_source = nullptr;
+  const char *vertex_shader_entry = "VSMain";
+  const char *pixel_shader_entry = "PSMain";
+  const char *vertex_shader_profile = "vs_5_0";
+  const char *pixel_shader_profile = "ps_5_0";
   std::string vertex_shader_name_storage = "NativeRenderReplayDiagnostic.hlsl";
   std::string pixel_shader_name_storage = "NativeRenderReplayDiagnostic.hlsl";
+  bool using_shader_override = false;
   if (LoadNativeShaderOverridePair(draw_state, options, override_pair, error)) {
     vertex_shader_source = override_pair.vertex_source.c_str();
     pixel_shader_source = override_pair.pixel_source.c_str();
+    vertex_shader_entry = override_pair.vertex_entry.c_str();
+    pixel_shader_entry = override_pair.pixel_entry.c_str();
+    vertex_shader_profile = override_pair.vertex_profile.c_str();
+    pixel_shader_profile = override_pair.pixel_profile.c_str();
     vertex_shader_name_storage = override_pair.vertex_path.string();
     pixel_shader_name_storage = override_pair.pixel_path.string();
+    using_shader_override = true;
   } else if (options.allow_diagnostic_shader) {
     vertex_shader_source = DiagnosticRealGeometryShaderSource();
     pixel_shader_source = DiagnosticRealGeometryShaderSource();
@@ -1309,8 +1677,18 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   if (!CreateRealGeometryPipeline(device.Get(), root_signature, pipeline_state,
                                   format, vertex_shader_source,
                                   vertex_shader_name_storage.c_str(),
+                                  vertex_shader_entry, vertex_shader_profile,
+                                  override_pair.vertex_cache_path,
+                                  override_pair.vertex_log_path,
                                   pixel_shader_source,
-                                  pixel_shader_name_storage.c_str(), error)) {
+                                  pixel_shader_name_storage.c_str(),
+                                  pixel_shader_entry, pixel_shader_profile,
+                                  override_pair.pixel_cache_path,
+                                  override_pair.pixel_log_path, error)) {
+    return false;
+  }
+  if (using_shader_override &&
+      !WriteOverrideCacheIndex(draw_state, options, override_pair, error)) {
     return false;
   }
 
