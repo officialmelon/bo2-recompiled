@@ -67,6 +67,7 @@ Verified draw `799` from `native_captures\state_capture_004\events.jsonl` is the
 - BO2 JSONL capture writes structured `texture_fetches` and `render_state` objects on `pm4_draw` events.
 - Replay parses and summarizes texture fetch/resource payload coverage and render-state coverage. `state_capture_004` validates `344` texture fetch snapshots with `1409024` payload bytes and render state on all `2475` draws.
 - Replay command `--draw <n> --dump-bound-state` reports texture bindings and render-state basics; draw `799` is the current combined texture/render-state target.
+- D3D12 real replay now uploads the first decodable captured texture fetch for each supported draw as an `R8G8B8A8_UNORM` texture, creates an SRV bound at `t0`, and exposes a static sampler at `s0`. This is currently implemented for texture format `6` (`k_8_8_8_8`) and the observed 1x1 tiled case; unsupported or absent texture fetches bind a white fallback SRV and report the count.
 
 ## Required next capture fields
 
@@ -80,4 +81,4 @@ Verified draw `799` from `native_captures\state_capture_004\events.jsonl` is the
 
 The current verified capture can replay real index values, decode bounded vertex-buffer bytes, list texture fetches, and decode render-state registers for the first useful indexed draws. `--backend d3d12` can now bind a canonical D3D12 vertex/index layout for the supported shader pair and issue `DrawIndexedInstanced` from captured BO2 data.
 
-It still cannot produce real BO2 scene output because it lacks automatic translated BO2 shaders, complete texture/sampler decode and binding, render-target/depth resource snapshots, D3D12 application of blend/raster/depth state, and full-frame state sequencing. The visible D3D12 real output is therefore captured BO2 geometry with a manual override or explicit diagnostic shader path, not shader-correct BO2 rendering.
+It still cannot produce real BO2 scene output because it lacks automatic translated BO2 shaders, complete Xenos texture tiling/format coverage, sampler-state mapping, render-target/depth resource snapshots, D3D12 application of blend/raster/depth state, and full-frame state sequencing. The visible D3D12 real output is therefore captured BO2 geometry with a manual override or explicit diagnostic shader path, not shader-correct BO2 rendering.

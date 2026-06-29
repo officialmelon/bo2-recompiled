@@ -301,8 +301,16 @@ struct UploadedRealDraw {
   PreparedCapturedConstants constants;
   ComPtr<ID3D12Resource> vertex_buffer;
   ComPtr<ID3D12Resource> index_buffer;
+  ComPtr<ID3D12Resource> texture;
+  ComPtr<ID3D12Resource> texture_upload;
   uint64_t vertex_bytes = 0;
   uint64_t index_bytes = 0;
+  uint32_t texture_srv_index = 0;
+  uint32_t texture_width = 1;
+  uint32_t texture_height = 1;
+  uint32_t texture_format = 0;
+  bool texture_from_capture = false;
+  std::string texture_note;
 };
 
 struct NativeShaderOverridePair {
@@ -544,6 +552,165 @@ bool CreateUploadBuffer(ID3D12Device *device, const void *data,
   return true;
 }
 
+bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
+                        std::vector<uint8_t> &rgba, std::string &reason) {
+  rgba.clear();
+  if (fetch.payload_missing || fetch.payload_truncated ||
+      fetch.payload_bytes.empty()) {
+    reason = "texture payload is missing or truncated";
+    return false;
+  }
+  if (fetch.format != 6) {
+    reason = "unsupported texture format " + std::to_string(fetch.format);
+    return false;
+  }
+  if (fetch.width == 0 || fetch.height == 0) {
+    reason = "texture dimensions are zero";
+    return false;
+  }
+  if (fetch.tiled && (fetch.width != 1 || fetch.height != 1)) {
+    reason = "tiled texture decode is only implemented for 1x1 format 6";
+    return false;
+  }
+
+  const std::size_t pixel_count =
+      static_cast<std::size_t>(fetch.width) * fetch.height;
+  const std::size_t source_bytes = pixel_count * 4;
+  if (source_bytes > fetch.payload_bytes.size()) {
+    reason = "texture payload is smaller than the decoded 32bpp footprint";
+    return false;
+  }
+
+  rgba.resize(source_bytes);
+  for (std::size_t pixel = 0; pixel < pixel_count; ++pixel) {
+    const uint32_t word =
+        GpuSwap32(LoadLittleEndian32(fetch.payload_bytes, pixel * 4),
+                  fetch.endian);
+    rgba[pixel * 4 + 0] = static_cast<uint8_t>(word & 0xFF);
+    rgba[pixel * 4 + 1] = static_cast<uint8_t>((word >> 8) & 0xFF);
+    rgba[pixel * 4 + 2] = static_cast<uint8_t>((word >> 16) & 0xFF);
+    rgba[pixel * 4 + 3] = static_cast<uint8_t>((word >> 24) & 0xFF);
+  }
+  reason.clear();
+  return true;
+}
+
+bool CreateTexture2DRgba8(ID3D12Device *device, ID3D12GraphicsCommandList *list,
+                          const uint8_t *rgba, uint32_t width,
+                          uint32_t height,
+                          ComPtr<ID3D12Resource> &texture,
+                          ComPtr<ID3D12Resource> &upload,
+                          std::string &error) {
+  if (!rgba || width == 0 || height == 0) {
+    error = "CreateTexture2DRgba8 called with empty texture data";
+    return false;
+  }
+
+  D3D12_HEAP_PROPERTIES default_heap{};
+  default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+  default_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+  default_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+  default_heap.CreationNodeMask = 1;
+  default_heap.VisibleNodeMask = 1;
+
+  D3D12_RESOURCE_DESC texture_desc{};
+  texture_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  texture_desc.Width = width;
+  texture_desc.Height = height;
+  texture_desc.DepthOrArraySize = 1;
+  texture_desc.MipLevels = 1;
+  texture_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  texture_desc.SampleDesc.Count = 1;
+  texture_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+  if (!CheckHr(device->CreateCommittedResource(
+                   &default_heap, D3D12_HEAP_FLAG_NONE, &texture_desc,
+                   D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                   IID_PPV_ARGS(&texture)),
+               "ID3D12Device::CreateCommittedResource(texture)", error)) {
+    return false;
+  }
+
+  const uint32_t row_bytes = width * 4;
+  const uint32_t row_pitch =
+      (row_bytes + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
+      ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+  const uint64_t upload_size = static_cast<uint64_t>(row_pitch) * height;
+
+  D3D12_HEAP_PROPERTIES upload_heap{};
+  upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+  upload_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+  upload_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+  upload_heap.CreationNodeMask = 1;
+  upload_heap.VisibleNodeMask = 1;
+
+  D3D12_RESOURCE_DESC upload_desc{};
+  upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  upload_desc.Width = upload_size;
+  upload_desc.Height = 1;
+  upload_desc.DepthOrArraySize = 1;
+  upload_desc.MipLevels = 1;
+  upload_desc.SampleDesc.Count = 1;
+  upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+  if (!CheckHr(device->CreateCommittedResource(
+                   &upload_heap, D3D12_HEAP_FLAG_NONE, &upload_desc,
+                   D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                   IID_PPV_ARGS(&upload)),
+               "ID3D12Device::CreateCommittedResource(texture upload)",
+               error)) {
+    return false;
+  }
+
+  void *mapped = nullptr;
+  D3D12_RANGE read_range{0, 0};
+  if (!CheckHr(upload->Map(0, &read_range, &mapped),
+               "ID3D12Resource::Map(texture upload)", error)) {
+    return false;
+  }
+  uint8_t *mapped_bytes = static_cast<uint8_t *>(mapped);
+  for (uint32_t row = 0; row < height; ++row) {
+    std::memcpy(mapped_bytes + static_cast<std::size_t>(row) * row_pitch,
+                rgba + static_cast<std::size_t>(row) * row_bytes, row_bytes);
+  }
+  D3D12_RANGE written_range{0, static_cast<SIZE_T>(upload_size)};
+  upload->Unmap(0, &written_range);
+
+  D3D12_TEXTURE_COPY_LOCATION src{};
+  src.pResource = upload.Get();
+  src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  src.PlacedFootprint.Footprint.Width = width;
+  src.PlacedFootprint.Footprint.Height = height;
+  src.PlacedFootprint.Footprint.Depth = 1;
+  src.PlacedFootprint.Footprint.RowPitch = row_pitch;
+
+  D3D12_TEXTURE_COPY_LOCATION dst{};
+  dst.pResource = texture.Get();
+  dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  dst.SubresourceIndex = 0;
+  list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+  D3D12_RESOURCE_BARRIER barrier{};
+  barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  barrier.Transition.pResource = texture.Get();
+  barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+  barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+  list->ResourceBarrier(1, &barrier);
+  return true;
+}
+
+void CreateTextureSrv(ID3D12Device *device, ID3D12Resource *texture,
+                      D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
+  D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+  srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+  srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  srv_desc.Texture2D.MipLevels = 1;
+  device->CreateShaderResourceView(texture, &srv_desc, descriptor);
+}
+
 bool CreateRealGeometryPipeline(ID3D12Device *device,
                                 ComPtr<ID3D12RootSignature> &root_signature,
                                 ComPtr<ID3D12PipelineState> &pipeline_state,
@@ -561,7 +728,14 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
                                 const std::filesystem::path &pixel_cache_path,
                                 const std::filesystem::path &pixel_log_path,
                                 std::string &error) {
-  D3D12_ROOT_PARAMETER root_parameters[2]{};
+  D3D12_DESCRIPTOR_RANGE texture_srv_range{};
+  texture_srv_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+  texture_srv_range.NumDescriptors = 1;
+  texture_srv_range.BaseShaderRegister = 0;
+  texture_srv_range.RegisterSpace = 0;
+  texture_srv_range.OffsetInDescriptorsFromTableStart = 0;
+
+  D3D12_ROOT_PARAMETER root_parameters[3]{};
   root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
   root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
   root_parameters[0].Constants.ShaderRegister = 0;
@@ -572,11 +746,32 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
   root_parameters[1].Constants.ShaderRegister = 1;
   root_parameters[1].Constants.RegisterSpace = 0;
   root_parameters[1].Constants.Num32BitValues = 32;
+  root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+  root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
+  root_parameters[2].DescriptorTable.pDescriptorRanges = &texture_srv_range;
+
+  D3D12_STATIC_SAMPLER_DESC sampler{};
+  sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+  sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  sampler.MipLODBias = 0.0f;
+  sampler.MaxAnisotropy = 1;
+  sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+  sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+  sampler.MinLOD = 0.0f;
+  sampler.MaxLOD = D3D12_FLOAT32_MAX;
+  sampler.ShaderRegister = 0;
+  sampler.RegisterSpace = 0;
+  sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
   D3D12_ROOT_SIGNATURE_DESC root_desc{};
   root_desc.NumParameters =
       static_cast<UINT>(sizeof(root_parameters) / sizeof(root_parameters[0]));
   root_desc.pParameters = root_parameters;
+  root_desc.NumStaticSamplers = 1;
+  root_desc.pStaticSamplers = &sampler;
   root_desc.Flags =
       D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -693,13 +888,20 @@ VSOut VSMain(VSIn input)
   return output;
 }
 
+Texture2D native_texture0 : register(t0);
+SamplerState native_sampler0 : register(s0);
+
 float4 PSMain(VSOut input) : SV_Target0
 {
   float2 uv = saturate(input.uv);
   float3 tint = float3(0.25f + 0.75f * uv.x, 0.25f + 0.75f * uv.y, 1.0f);
   float constant_bias = saturate(abs(captured_constants[0].x) * 8.0f);
-  return float4(saturate(input.color.rgb * tint +
-                         float3(constant_bias, constant_bias * 0.25f, 0.0f)),
+  float4 captured_texture = native_texture0.Sample(native_sampler0, uv);
+  float3 base_color = saturate(input.color.rgb * tint +
+                               float3(constant_bias, constant_bias * 0.25f,
+                                      0.0f));
+  return float4(saturate(lerp(base_color, captured_texture.rgb, 0.35f) +
+                         captured_texture.aaa * 0.05f),
                 1.0f);
 }
 )";
@@ -835,7 +1037,7 @@ bool FindCacheShaderPath(const std::filesystem::path &root,
 std::string MakeOverrideCacheKey(const char *short_stage, uint64_t hash,
                                  const std::string &profile,
                                  const std::string &source) {
-  constexpr const char *kBindingLayoutVersion = "layout2";
+  constexpr const char *kBindingLayoutVersion = "layout3";
   return std::string("manual_") + short_stage + "_" + ShaderHashFileKey(hash) +
          "_" + profile + "_" + kBindingLayoutVersion + "_src" +
          ShaderHashFileKey(Fnv1a64(source));
@@ -1839,6 +2041,78 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     }
     uploaded_draws.push_back(std::move(uploaded));
   }
+
+  D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc{};
+  srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+  srv_heap_desc.NumDescriptors =
+      static_cast<UINT>(std::max<std::size_t>(1, uploaded_draws.size()));
+  srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  ComPtr<ID3D12DescriptorHeap> srv_heap;
+  if (!CheckHr(
+          device->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&srv_heap)),
+          "ID3D12Device::CreateDescriptorHeap(SRV)", error)) {
+    return false;
+  }
+  const UINT srv_descriptor_size = device->GetDescriptorHandleIncrementSize(
+      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  D3D12_CPU_DESCRIPTOR_HANDLE srv_cpu_start =
+      srv_heap->GetCPUDescriptorHandleForHeapStart();
+
+  uint32_t captured_texture_count = 0;
+  uint32_t fallback_texture_count = 0;
+  uint32_t unsupported_texture_count = 0;
+  const uint8_t white_texel[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+  for (std::size_t i = 0; i < uploaded_draws.size(); ++i) {
+    UploadedRealDraw &uploaded = uploaded_draws[i];
+    uploaded.texture_srv_index = static_cast<uint32_t>(i);
+    D3D12_CPU_DESCRIPTOR_HANDLE descriptor = srv_cpu_start;
+    descriptor.ptr += static_cast<SIZE_T>(i) * srv_descriptor_size;
+
+    const ReplayDrawState &uploaded_state =
+        capture.draws[uploaded.prepared.draw_index];
+    std::vector<uint8_t> texture_rgba;
+    std::string texture_reason;
+    const TextureFetchRecord *selected_fetch = nullptr;
+    for (const TextureFetchRecord &fetch : uploaded_state.draw.texture_fetches) {
+      if (DecodeTextureRgba8(fetch, texture_rgba, texture_reason)) {
+        selected_fetch = &fetch;
+        break;
+      }
+      ++unsupported_texture_count;
+      if (texture_reason.empty()) {
+        texture_reason = "texture decode failed";
+      }
+    }
+
+    if (selected_fetch) {
+      uploaded.texture_width = selected_fetch->width;
+      uploaded.texture_height = selected_fetch->height;
+      uploaded.texture_format = selected_fetch->format;
+      uploaded.texture_from_capture = true;
+      uploaded.texture_note = "captured";
+      if (!CreateTexture2DRgba8(device.Get(), list.Get(), texture_rgba.data(),
+                                uploaded.texture_width,
+                                uploaded.texture_height, uploaded.texture,
+                                uploaded.texture_upload, error)) {
+        return false;
+      }
+      ++captured_texture_count;
+    } else {
+      uploaded.texture_width = 1;
+      uploaded.texture_height = 1;
+      uploaded.texture_format = 6;
+      uploaded.texture_from_capture = false;
+      uploaded.texture_note =
+          texture_reason.empty() ? "no texture fetch" : texture_reason;
+      if (!CreateTexture2DRgba8(device.Get(), list.Get(), white_texel, 1, 1,
+                                uploaded.texture, uploaded.texture_upload,
+                                error)) {
+        return false;
+      }
+      ++fallback_texture_count;
+    }
+    CreateTextureSrv(device.Get(), uploaded.texture.Get(), descriptor);
+  }
   std::cout << "D3D12 real replay submitted " << uploaded_draws.size()
             << " supported draw(s) for shader pair VS="
             << FormatHex64(draw_state.vertex_shader.hash) << " PS="
@@ -1846,6 +2120,10 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             << CountDrawsForShaderPair(capture, draw_state.vertex_shader.hash,
                                        draw_state.pixel_shader.hash)
             << " captured draw(s) with that pair\n";
+  std::cout << "D3D12 real replay bound " << captured_texture_count
+            << " captured texture SRV(s), " << fallback_texture_count
+            << " fallback texture SRV(s), unsupported_texture_attempts="
+            << unsupported_texture_count << "\n";
 
   D3D12_VIEWPORT viewport{};
   viewport.Width = static_cast<float>(width);
@@ -1858,6 +2136,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   scissor.bottom = static_cast<LONG>(height);
 
   list->ClearRenderTargetView(rtv, clear_value.Color, 0, nullptr);
+  ID3D12DescriptorHeap *descriptor_heaps[] = {srv_heap.Get()};
+  list->SetDescriptorHeaps(1, descriptor_heaps);
   list->SetGraphicsRootSignature(root_signature.Get());
   list->SetPipelineState(pipeline_state.Get());
   list->RSSetViewports(1, &viewport);
@@ -1873,6 +2153,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     list->SetGraphicsRoot32BitConstants(
         1, static_cast<UINT>(uploaded.constants.dwords.size()),
         uploaded.constants.dwords.data(), 0);
+    D3D12_GPU_DESCRIPTOR_HANDLE texture_srv =
+        srv_heap->GetGPUDescriptorHandleForHeapStart();
+    texture_srv.ptr += static_cast<UINT64>(uploaded.texture_srv_index) *
+                       srv_descriptor_size;
+    list->SetGraphicsRootDescriptorTable(2, texture_srv);
 
     D3D12_VERTEX_BUFFER_VIEW vertex_view{};
     vertex_view.BufferLocation =

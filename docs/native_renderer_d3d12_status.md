@@ -98,7 +98,14 @@ Latest state-capture replay results:
 - Diagnostic result: exit code `0`, output `native-renderer-state-capture-004-d3d12-diagnostic.bmp`
 - Real command: `native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --backend d3d12 --d3d12-output native-renderer-state-capture-004-d3d12-real.bmp --d3d12-draws 256 --no-summary`
 - Real result: exit code `0`, `D3D12 real replay submitted 4 supported draw(s) for shader pair VS=0x5D918D91043B3ED0 PS=0xC4ED2979F29C9139 out of 4 captured draw(s) with that pair`.
-- Limitation: D3D12 real replay still ignores the captured texture fetches and render state for actual binding/state setup. The output remains the existing manual-override supported geometry path, not full BO2 scene rendering.
+- Limitation for that pre-texture-binding run: the output remained the existing manual-override supported geometry path and was not full BO2 scene rendering.
+- Texture-binding update: D3D12 real replay now creates a shader-visible SRV descriptor for the first decodable captured texture fetch per supported draw, binds it at `t0`, and exposes a static sampler at `s0`. The current implementation supports captured Xenos texture format `6` (`k_8_8_8_8`) directly, including the observed 1x1 tiled texture case from draw `799`; unsupported or absent texture fetches bind a white fallback texture and report the fallback count.
+- Texture-bound command: `native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --backend d3d12 --d3d12-output native-renderer-state-capture-004-d3d12-texture-bound.bmp --d3d12-draws 256 --no-summary`
+- Texture-bound result: exit code `0`, `D3D12 real replay bound 4 captured texture SRV(s), 0 fallback texture SRV(s), unsupported_texture_attempts=0`, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+- Cache-only texture-bound result with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache`: exit code `0`, `4` captured texture SRVs bound, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+- Regression command on older `shader_payload_capture_001`: `native_render_replay.exe --capture native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --d3d12-output native-renderer-shader-payload-d3d12-texture-binding-regression.bmp --d3d12-draws 64 --no-summary`
+- Regression result: exit code `0`, `D3D12 real replay bound 0 captured texture SRV(s), 11 fallback texture SRV(s), unsupported_texture_attempts=0`, output SHA-256 `49F99D11F992073E0DF9371E37EE57DC0522032336E44ADAAFC00CEDE12E3D2A`.
+- Remaining limitation: these SRVs are now real captured texture resources in the command stream, but the backend still lacks full Xenos tiling for larger textures, sampler-state mapping, render-target/depth resource snapshots, and render-state application.
 
 ## Build note
 

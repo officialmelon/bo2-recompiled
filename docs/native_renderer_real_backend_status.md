@@ -83,14 +83,16 @@ Draw `1209` in `native_captures\shader_payload_capture_001` has enough packet da
 - Real: draw packet, index metadata, raw index bytes, decoded indices `3,0,2,2,0,1`, shader hashes and uploaded shader payload dwords, two constant ranges with payload, `vf95` at guest physical `0x0501E030`, stride `32`, attributes with Xenos formats `38`, `6`, and `37`, `128/128` raw vertex bytes, and decoded position/color/UV components.
 - Implemented: D3D12 canonical input layout, upload-buffer vertex/index resources, and `DrawIndexedInstanced` for this draw.
 - Implemented for the draw-1209 shader pair: shader cache-index lookup, manifest override lookup, HLSL compilation/cache write, flattened captured constants at `b1`, canonical D3D12 input layout, upload-buffer vertex/index resources, and `DrawIndexedInstanced` for all `11/11` captured draws with that pair.
-- Latest capture-completeness evidence: `state_capture_004` validates `344` texture fetch snapshots, `1409024` texture payload bytes, and render-state records on `2475/2475` draws. Draw `799` carries the first complete packet set seen in replay: real indices, vertex fetch bytes, four texture fetch records, constants, and render state. D3D12 real replay on this capture still only submits the existing manual-override shader pair (`4/4` supported draws) and does not yet bind the captured textures or apply captured render state.
-- Missing: automatic Xenos shader translation, DXC/DXIL compilation, full constant-layout reconstruction, render-target/depth resource snapshots, D3D12 texture/sampler binding, D3D12 render-state application, and full-frame multi-draw replay.
+- Latest capture-completeness evidence: `state_capture_004` validates `344` texture fetch snapshots, `1409024` texture payload bytes, and render-state records on `2475/2475` draws. Draw `799` carries the first complete packet set seen in replay: real indices, vertex fetch bytes, four texture fetch records, constants, and render state.
+- Latest D3D12 texture-binding evidence: real replay on `state_capture_004` submits the existing manual-override shader pair (`4/4` supported draws) and reports `D3D12 real replay bound 4 captured texture SRV(s), 0 fallback texture SRV(s), unsupported_texture_attempts=0`. The manual pixel override samples `t0` with static sampler `s0`, so captured format-6 texture data is now in the D3D12 command stream.
+- Missing: automatic Xenos shader translation, DXC/DXIL compilation, full constant-layout reconstruction, render-target/depth resource snapshots, full Xenos texture tiling/format coverage, D3D12 sampler-state mapping, D3D12 render-state application, and full-frame multi-draw replay.
 
 ## Next implementation targets
 
-1. Bind captured texture fetches in D3D12 for draw `799`, starting with Xenos tiled texture format `6` and the observed pixel-shader sampler state.
-2. Apply the captured render state in D3D12: color/depth target descriptors, viewport/scissor, color mask, depth/stencil, cull/raster, and blend state.
-3. Replace flattened constant root data with layout-aware constant buffers from shader metadata.
-4. Expand D3D12 real replay from one selected draw to all supported draws in the captured frame.
-5. Add DXC/DXIL support and reuse the same cache index for translated shaders.
-6. Add sidecar resource manifests to keep larger buffers/textures out of JSONL.
+1. Expand texture decode beyond 1x1 tiled format `6`: full Xenos tiled addressing, linear row pitch, swizzle, and additional captured formats.
+2. Map captured sampler state to D3D12 sampler descriptors instead of the current static clamp/linear sampler.
+3. Apply the captured render state in D3D12: color/depth target descriptors, viewport/scissor, color mask, depth/stencil, cull/raster, and blend state.
+4. Replace flattened constant root data with layout-aware constant buffers from shader metadata.
+5. Expand D3D12 real replay from one selected draw to all supported draws in the captured frame.
+6. Add DXC/DXIL support and reuse the same cache index for translated shaders.
+7. Add sidecar resource manifests to keep larger buffers/textures out of JSONL.
