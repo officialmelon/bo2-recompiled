@@ -134,6 +134,10 @@ struct TextureFetchRecord {
   uint32_t num_format = 0;
   uint32_t swizzle = 0;
   int32_t exp_adjust = 0;
+  uint32_t clamp_x = 0;
+  uint32_t clamp_y = 0;
+  uint32_t clamp_z = 0;
+  bool clamp_modes_present = false;
   uint32_t mag_filter = 0;
   uint32_t min_filter = 0;
   uint32_t mip_filter = 0;
@@ -449,6 +453,8 @@ struct ReplaySummary {
   uint64_t draws_missing_texture_fetch = 0;
   uint64_t draws_missing_texture_fetch_state = 0;
   uint64_t texture_fetch_records = 0;
+  uint64_t texture_fetches_with_clamp_modes = 0;
+  uint64_t texture_fetches_missing_clamp_modes = 0;
   uint64_t texture_snapshots = 0;
   uint64_t texture_snapshots_missing = 0;
   uint64_t texture_payload_bytes = 0;

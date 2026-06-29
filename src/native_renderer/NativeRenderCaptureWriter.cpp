@@ -536,6 +536,9 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
     fetch_u64("num_format", fetch.num_format);
     fetch_hex("swizzle", fetch.swizzle, 4);
     fetch_i64("exp_adjust", fetch.exp_adjust);
+    fetch_u64("clamp_x", fetch.clamp_x);
+    fetch_u64("clamp_y", fetch.clamp_y);
+    fetch_u64("clamp_z", fetch.clamp_z);
     fetch_u64("mag_filter", fetch.mag_filter);
     fetch_u64("min_filter", fetch.min_filter);
     fetch_u64("mip_filter", fetch.mip_filter);

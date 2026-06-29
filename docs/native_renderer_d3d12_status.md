@@ -67,7 +67,7 @@ Current missing pieces:
 
 - Automatic Xenos shader translation and persistent DXIL shader cache
 - Complete captured constant-buffer layout binding beyond the current flattened `b1` root constants
-- Complete texture tiling/format coverage and serialized sampler clamp modes
+- Complete texture tiling/format coverage and full sampler LOD/mip validation
 - Render target/depth resources and full heterogeneous blend/raster/depth state
 - Multi-draw/full-frame state sequencing for all captured draw types
 
@@ -103,17 +103,22 @@ Latest state-capture replay results:
 - Texture-bound command: `native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --backend d3d12 --d3d12-output native-renderer-state-capture-004-d3d12-texture-bound.bmp --d3d12-draws 256 --no-summary`
 - Texture-bound result: exit code `0`, `D3D12 real replay bound 4 captured texture SRV(s), 0 fallback texture SRV(s), unsupported_texture_attempts=0`, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - Cache-only texture-bound result with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache`: exit code `0`, `4` captured texture SRVs bound, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
-- Sampler-binding update: D3D12 real replay now uses a shader-visible sampler descriptor table at `s0` and creates one sampler descriptor per uploaded draw from captured texture-filter fields. Xenos clamp modes are not serialized in BO2 JSONL yet, so all replay sampler descriptors still use clamp addressing.
+- Sampler-binding update: D3D12 real replay now uses a shader-visible sampler descriptor table at `s0` and creates one sampler descriptor per uploaded draw from captured texture-filter fields. Fresh captures also serialize Xenos clamp modes and map them to D3D12 address modes; old captures without those fields keep the previous clamp-addressing fallback.
 - Sampler-bound command: `native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --backend d3d12 --d3d12-output native-renderer-state-capture-004-d3d12-sampler-bound.bmp --d3d12-draws 256 --no-summary`
 - Sampler-bound result: exit code `0`, `D3D12 real replay bound 4 captured sampler descriptor(s), 0 fallback sampler descriptor(s)`, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - Cache-only sampler-bound result with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache`: exit code `0`, `4` captured texture SRVs and `4` captured sampler descriptors bound, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+- Clamp capture: `native_captures\clamp_capture_001\events.jsonl`
+- Clamp capture validation: `Validation OK: 12000 events, 47 frames, 2448 draws`; resource summary reports `texture_fetch_records=344 ... clamp_modes=344/344 missing_clamp_modes=0`.
+- Clamp-mapped D3D12 command: `native_render_replay.exe --capture native_captures\clamp_capture_001\events.jsonl --backend d3d12 --d3d12-output native-renderer-clamp-capture-001-d3d12-sampler-clamp.bmp --d3d12-draws 256 --no-summary`
+- Clamp-mapped D3D12 result: exit code `0`, `D3D12 real replay bound 4 captured sampler descriptor(s), 0 fallback sampler descriptor(s), exact_clamp_modes=4, clamp_addressing_fallbacks=0`, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+- Old-capture clamp fallback result on `state_capture_004`: exit code `0`, `exact_clamp_modes=0, clamp_addressing_fallbacks=4`, output `native-renderer-state-capture-004-d3d12-sampler-clamp-fallback.bmp`, SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - Render-state update: D3D12 real replay now builds the real replay PSO from the first supported draw's captured render state for rasterizer culling/front-face, fill mode, depth-clip, color write mask, blend factors/ops, and disabled depth/stencil state. It also applies captured screen scissor when a bounded scissor rectangle is present.
 - Render-state command: `native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --backend d3d12 --d3d12-output native-renderer-state-capture-004-d3d12-render-state.bmp --d3d12-draws 256 --no-summary`
 - Render-state result: exit code `0`, `D3D12 real replay applied render state from draw 799: color_mask=0x0000000F cull=2 depth_test=no depth_write=no stencil=no`, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - Cache-only render-state result with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache`: exit code `0`, same applied-state log and SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - Regression command on older `shader_payload_capture_001`: `native_render_replay.exe --capture native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --d3d12-output native-renderer-shader-payload-d3d12-texture-binding-regression.bmp --d3d12-draws 64 --no-summary`
 - Regression result: exit code `0`, `D3D12 real replay bound 0 captured texture SRV(s), 11 fallback texture SRV(s), unsupported_texture_attempts=0`, output SHA-256 `49F99D11F992073E0DF9371E37EE57DC0522032336E44ADAAFC00CEDE12E3D2A`.
-- Remaining limitation: these SRVs and sampler descriptors are now real captured resources/state in the command stream, and the first PSO-side render-state subset is applied. The backend still lacks full Xenos tiling for larger textures, serialized clamp modes for exact sampler addressing, render-target/depth resource snapshots, real DSV binding for depth-enabled draws, per-state PSO switching across heterogeneous draws, and full blend/depth/stencil coverage.
+- Remaining limitation: these SRVs and sampler descriptors are now real captured resources/state in the command stream, and the first PSO-side render-state subset is applied. The backend still lacks full Xenos tiling for larger textures, render-target/depth resource snapshots, real DSV binding for depth-enabled draws, per-state PSO switching across heterogeneous draws, and full blend/depth/stencil coverage.
 
 ## Build note
 

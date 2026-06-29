@@ -895,6 +895,29 @@ void CreateTextureSrv(ID3D12Device *device, ID3D12Resource *texture,
 
 bool IsLinearTextureFilter(uint32_t filter) { return filter == 1; }
 
+D3D12_TEXTURE_ADDRESS_MODE D3D12AddressModeFromXenosClamp(uint32_t clamp) {
+  switch (clamp) {
+  case 0:
+    return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+  case 1:
+    return D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+  case 2:
+    return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  case 3:
+    return D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE;
+  case 4:
+    return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  case 5:
+    return D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE;
+  case 6:
+    return D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+  case 7:
+    return D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE;
+  default:
+    return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  }
+}
+
 D3D12_FILTER D3D12FilterFromTextureFetch(const TextureFetchRecord *fetch) {
   if (!fetch) {
     return D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -920,9 +943,15 @@ void CreateSampler(ID3D12Device *device, const TextureFetchRecord *fetch,
                    D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
   D3D12_SAMPLER_DESC sampler{};
   sampler.Filter = D3D12FilterFromTextureFetch(fetch);
-  sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-  sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-  sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  if (fetch && fetch->clamp_modes_present) {
+    sampler.AddressU = D3D12AddressModeFromXenosClamp(fetch->clamp_x);
+    sampler.AddressV = D3D12AddressModeFromXenosClamp(fetch->clamp_y);
+    sampler.AddressW = D3D12AddressModeFromXenosClamp(fetch->clamp_z);
+  } else {
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  }
   sampler.MipLODBias = 0.0f;
   sampler.MaxAnisotropy =
       fetch && fetch->aniso_filter > 0 && fetch->aniso_filter <= 5
@@ -2329,6 +2358,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   uint32_t unsupported_texture_count = 0;
   uint32_t captured_sampler_count = 0;
   uint32_t fallback_sampler_count = 0;
+  uint32_t exact_sampler_clamp_count = 0;
+  uint32_t fallback_sampler_clamp_count = 0;
   const uint8_t white_texel[4] = {0xFF, 0xFF, 0xFF, 0xFF};
   for (std::size_t i = 0; i < uploaded_draws.size(); ++i) {
     UploadedRealDraw &uploaded = uploaded_draws[i];
@@ -2371,6 +2402,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       }
       ++captured_texture_count;
       ++captured_sampler_count;
+      if (selected_fetch->clamp_modes_present) {
+        ++exact_sampler_clamp_count;
+      } else {
+        ++fallback_sampler_clamp_count;
+      }
     } else {
       uploaded.texture_width = 1;
       uploaded.texture_height = 1;
@@ -2386,6 +2422,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       }
       ++fallback_texture_count;
       ++fallback_sampler_count;
+      ++fallback_sampler_clamp_count;
     }
     CreateTextureSrv(device.Get(), uploaded.texture.Get(), descriptor);
     CreateSampler(device.Get(), selected_fetch, sampler_descriptor);
@@ -2403,8 +2440,10 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             << unsupported_texture_count << "\n";
   std::cout << "D3D12 real replay bound " << captured_sampler_count
             << " captured sampler descriptor(s), " << fallback_sampler_count
-            << " fallback sampler descriptor(s); clamp capture is not yet "
-               "serialized, so replay uses clamp addressing\n";
+            << " fallback sampler descriptor(s), exact_clamp_modes="
+            << exact_sampler_clamp_count
+            << ", clamp_addressing_fallbacks="
+            << fallback_sampler_clamp_count << "\n";
   if (pipeline_render_state) {
     std::cout << "D3D12 real replay applied render state from draw "
               << prepared.draw_index << ": color_mask="

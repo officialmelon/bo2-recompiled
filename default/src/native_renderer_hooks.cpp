@@ -191,6 +191,9 @@ void CopyDrawTextureFetchesIfPresent(const DrawEvent *event,
       target.num_format = source.num_format;
       target.swizzle = source.swizzle;
       target.exp_adjust = source.exp_adjust;
+      target.clamp_x = source.clamp_x;
+      target.clamp_y = source.clamp_y;
+      target.clamp_z = source.clamp_z;
       target.mag_filter = source.mag_filter;
       target.min_filter = source.min_filter;
       target.mip_filter = source.mip_filter;

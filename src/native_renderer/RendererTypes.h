@@ -221,6 +221,9 @@ struct TextureFetchInfo {
   uint32_t num_format = 0;
   uint32_t swizzle = 0;
   int32_t exp_adjust = 0;
+  uint32_t clamp_x = 0;
+  uint32_t clamp_y = 0;
+  uint32_t clamp_z = 0;
   uint32_t mag_filter = 0;
   uint32_t min_filter = 0;
   uint32_t mip_filter = 0;

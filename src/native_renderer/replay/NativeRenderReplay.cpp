@@ -691,6 +691,12 @@ std::vector<TextureFetchRecord> ParseTextureFetches(const JsonObject &object) {
     fetch.num_format = GetU32(fetch_object, "num_format");
     fetch.swizzle = GetU32(fetch_object, "swizzle");
     fetch.exp_adjust = GetI32(fetch_object, "exp_adjust");
+    fetch.clamp_modes_present = FindValue(fetch_object, "clamp_x") != nullptr &&
+                                FindValue(fetch_object, "clamp_y") != nullptr &&
+                                FindValue(fetch_object, "clamp_z") != nullptr;
+    fetch.clamp_x = GetU32(fetch_object, "clamp_x");
+    fetch.clamp_y = GetU32(fetch_object, "clamp_y");
+    fetch.clamp_z = GetU32(fetch_object, "clamp_z");
     fetch.mag_filter = GetU32(fetch_object, "mag_filter");
     fetch.min_filter = GetU32(fetch_object, "min_filter");
     fetch.mip_filter = GetU32(fetch_object, "mip_filter");
@@ -1312,6 +1318,11 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
         capture.summary.texture_fetch_records +=
             event.draw.texture_fetches.size();
         for (const TextureFetchRecord &fetch : event.draw.texture_fetches) {
+          if (fetch.clamp_modes_present) {
+            ++capture.summary.texture_fetches_with_clamp_modes;
+          } else {
+            ++capture.summary.texture_fetches_missing_clamp_modes;
+          }
           if (fetch.payload_missing || fetch.payload_bytes.empty()) {
             ++capture.summary.texture_snapshots_missing;
           } else {
@@ -2330,6 +2341,9 @@ void PrintReplaySummary(const ReplayCapture &capture) {
             << " state_missing="
             << capture.summary.draws_missing_texture_fetch_state
             << " records=" << capture.summary.texture_fetch_records
+            << " clamp_modes="
+            << capture.summary.texture_fetches_with_clamp_modes << "/"
+            << capture.summary.texture_fetch_records
             << " snapshots=" << capture.summary.texture_snapshots
             << " missing=" << capture.summary.texture_snapshots_missing
             << " payload_bytes=" << capture.summary.texture_payload_bytes
@@ -2616,6 +2630,11 @@ void PrintBoundStateDump(const ReplayCapture &capture, std::size_t draw_index) {
               << " dim=" << fetch.dimension
               << " tiled=" << (fetch.tiled ? "yes" : "no")
               << " endian=" << fetch.endian
+              << " clamp="
+              << (fetch.clamp_modes_present ? "" : "missing:")
+              << fetch.clamp_x << "," << fetch.clamp_y << ","
+              << fetch.clamp_z << " filter=" << fetch.mag_filter << ","
+              << fetch.min_filter << "," << fetch.mip_filter
               << " payload=" << fetch.payload_bytes.size()
               << (fetch.payload_missing ? " missing" : "")
               << (fetch.payload_truncated ? " truncated" : "") << "\n";
@@ -2896,7 +2915,12 @@ void PrintResourceSummary(const ReplayCapture &capture) {
             << " draws_no_fetch="
             << capture.summary.draws_missing_texture_fetch
             << " state_missing="
-            << capture.summary.draws_missing_texture_fetch_state << "\n";
+            << capture.summary.draws_missing_texture_fetch_state
+            << " clamp_modes="
+            << capture.summary.texture_fetches_with_clamp_modes << "/"
+            << capture.summary.texture_fetch_records
+            << " missing_clamp_modes="
+            << capture.summary.texture_fetches_missing_clamp_modes << "\n";
   std::cout << "  texture_snapshots=" << capture.summary.texture_snapshots
             << " missing=" << capture.summary.texture_snapshots_missing
             << " payload_bytes=" << capture.summary.texture_payload_bytes
