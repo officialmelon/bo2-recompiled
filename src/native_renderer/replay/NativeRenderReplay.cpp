@@ -10,6 +10,7 @@
 #include <limits>
 #include <sstream>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace bo2::native::replay {
@@ -2331,6 +2332,11 @@ void PrintHelp() {
          "--frame or --draw\n"
       << "  --dump-indices         Dump decoded index data for --draw\n"
       << "  --dump-vertices        Dump decoded vertex/fetch data for --draw\n"
+      << "  --dump-frontbuffer     Export a PM4 swap frontbuffer BMP preview\n"
+      << "  --frontbuffer-index <index>\n"
+         "                          Select PM4 swap payload for --dump-frontbuffer\n"
+      << "  --frontbuffer-output <path>\n"
+         "                          BMP path for --dump-frontbuffer\n"
       << "  --resource-summary     Summarize replay resource snapshot "
          "coverage\n"
       << "  --max-draws <count>    Limit draw dump rows (default 64)\n"
@@ -3411,6 +3417,235 @@ void PrintResourceSummary(const ReplayCapture &capture) {
   }
 }
 
+void WriteLe16(std::ofstream &file, uint16_t value) {
+  file.put(static_cast<char>(value & 0xFF));
+  file.put(static_cast<char>((value >> 8) & 0xFF));
+}
+
+void WriteLe32(std::ofstream &file, uint32_t value) {
+  WriteLe16(file, static_cast<uint16_t>(value & 0xFFFF));
+  WriteLe16(file, static_cast<uint16_t>((value >> 16) & 0xFFFF));
+}
+
+bool WriteRawLinearRgbaBmpPreview(const std::filesystem::path &path,
+                                  const std::vector<uint8_t> &rgba,
+                                  uint32_t width, uint32_t height,
+                                  std::string &error) {
+  if (width == 0 || height == 0) {
+    error = "frontbuffer dimensions are zero";
+    return false;
+  }
+  const uint64_t pixel_count = static_cast<uint64_t>(width) * height;
+  const uint64_t required_bytes = pixel_count * 4u;
+  if (required_bytes > rgba.size()) {
+    error = "frontbuffer payload is smaller than width * height * 4";
+    return false;
+  }
+  if (required_bytes > UINT32_MAX) {
+    error = "frontbuffer BMP would exceed 4 GiB";
+    return false;
+  }
+
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  if (!file) {
+    error = "could not open frontbuffer BMP output: " + path.string();
+    return false;
+  }
+
+  const uint32_t pixel_bytes = static_cast<uint32_t>(required_bytes);
+  constexpr uint32_t file_header_size = 14;
+  constexpr uint32_t dib_header_size = 40;
+  constexpr uint32_t pixel_offset = file_header_size + dib_header_size;
+  const uint32_t file_size = pixel_offset + pixel_bytes;
+
+  file.put('B');
+  file.put('M');
+  WriteLe32(file, file_size);
+  WriteLe16(file, 0);
+  WriteLe16(file, 0);
+  WriteLe32(file, pixel_offset);
+
+  WriteLe32(file, dib_header_size);
+  WriteLe32(file, width);
+  WriteLe32(file, static_cast<uint32_t>(-static_cast<int32_t>(height)));
+  WriteLe16(file, 1);
+  WriteLe16(file, 32);
+  WriteLe32(file, 0);
+  WriteLe32(file, pixel_bytes);
+  WriteLe32(file, 2835);
+  WriteLe32(file, 2835);
+  WriteLe32(file, 0);
+  WriteLe32(file, 0);
+
+  std::array<uint8_t, 4> bgra{};
+  for (uint32_t y = 0; y < height; ++y) {
+    const std::size_t row_offset = static_cast<std::size_t>(y) * width * 4u;
+    for (uint32_t x = 0; x < width; ++x) {
+      const uint8_t *src =
+          rgba.data() + row_offset + static_cast<std::size_t>(x) * 4u;
+      bgra[0] = src[2];
+      bgra[1] = src[1];
+      bgra[2] = src[0];
+      bgra[3] = 0xFF;
+      file.write(reinterpret_cast<const char *>(bgra.data()), bgra.size());
+    }
+  }
+
+  return true;
+}
+
+bool DumpFrontbufferPreview(const ReplayCapture &capture,
+                            const ReplayCliOptions &options) {
+  const CaptureEvent *selected = nullptr;
+  std::size_t selected_index = 0;
+  const CaptureEvent *first_snapshot = nullptr;
+  std::size_t first_snapshot_index = 0;
+  const CaptureEvent *first_nonzero_snapshot = nullptr;
+  std::size_t first_nonzero_snapshot_index = 0;
+  std::size_t snapshot_index = 0;
+
+  for (const CaptureEvent &event : capture.events) {
+    if (event.type != CaptureEventType::PM4Swap || event.swap.width == 0 ||
+        event.swap.height == 0 || event.swap.frontbuffer_payload_missing ||
+        event.swap.frontbuffer_payload_bytes.empty()) {
+      continue;
+    }
+
+    if (!first_snapshot) {
+      first_snapshot = &event;
+      first_snapshot_index = snapshot_index;
+    }
+
+    bool any_nonzero = false;
+    bool any_rgb_nonzero = false;
+    const std::vector<uint8_t> &bytes = event.swap.frontbuffer_payload_bytes;
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+      if (bytes[i] == 0) {
+        continue;
+      }
+      any_nonzero = true;
+      if ((i & 3u) != 3u) {
+        any_rgb_nonzero = true;
+        break;
+      }
+    }
+    if (any_nonzero && !first_nonzero_snapshot) {
+      first_nonzero_snapshot = &event;
+      first_nonzero_snapshot_index = snapshot_index;
+    }
+    if (options.frontbuffer_index) {
+      if (snapshot_index == *options.frontbuffer_index) {
+        selected = &event;
+        selected_index = snapshot_index;
+        break;
+      }
+    } else if (any_rgb_nonzero) {
+      selected = &event;
+      selected_index = snapshot_index;
+      break;
+    }
+    ++snapshot_index;
+  }
+
+  if (!selected && !options.frontbuffer_index && first_nonzero_snapshot) {
+    selected = first_nonzero_snapshot;
+    selected_index = first_nonzero_snapshot_index;
+  }
+
+  if (!selected && !options.frontbuffer_index && first_snapshot) {
+    selected = first_snapshot;
+    selected_index = first_snapshot_index;
+  }
+
+  if (!selected) {
+    if (options.frontbuffer_index) {
+      std::cerr << "frontbuffer snapshot index " << *options.frontbuffer_index
+                << " was not found\n";
+    } else {
+      std::cerr << "no PM4 swap frontbuffer payloads are present\n";
+    }
+    return false;
+  }
+
+  const PM4SwapRecord &swap = selected->swap;
+  const uint64_t required_bytes =
+      static_cast<uint64_t>(swap.width) * swap.height * 4u;
+  std::size_t nonzero_count = 0;
+  std::size_t rgb_nonzero_pixels = 0;
+  std::size_t alpha_nonzero_pixels = 0;
+  std::optional<std::size_t> first_nonzero_offset;
+  for (std::size_t i = 0; i < swap.frontbuffer_payload_bytes.size(); ++i) {
+    if (swap.frontbuffer_payload_bytes[i] == 0) {
+      continue;
+    }
+    if (!first_nonzero_offset) {
+      first_nonzero_offset = i;
+    }
+    ++nonzero_count;
+  }
+  for (std::size_t i = 0; i + 3 < swap.frontbuffer_payload_bytes.size();
+       i += 4) {
+    if ((swap.frontbuffer_payload_bytes[i] |
+         swap.frontbuffer_payload_bytes[i + 1] |
+         swap.frontbuffer_payload_bytes[i + 2]) != 0) {
+      ++rgb_nonzero_pixels;
+    }
+    if (swap.frontbuffer_payload_bytes[i + 3] != 0) {
+      ++alpha_nonzero_pixels;
+    }
+  }
+
+  const std::filesystem::path output =
+      options.frontbuffer_output_path.empty()
+          ? capture.path.parent_path() /
+                ("frontbuffer-preview-" + std::to_string(selected_index) +
+                 ".bmp")
+          : options.frontbuffer_output_path;
+  if (!output.parent_path().empty()) {
+    std::error_code ec;
+    std::filesystem::create_directories(output.parent_path(), ec);
+    if (ec) {
+      std::cerr << "could not create frontbuffer output directory: "
+                << ec.message() << "\n";
+      return false;
+    }
+  }
+
+  std::string error;
+  if (!WriteRawLinearRgbaBmpPreview(output, swap.frontbuffer_payload_bytes,
+                                    swap.width, swap.height, error)) {
+    std::cerr << "frontbuffer BMP preview failed: " << error << "\n";
+    return false;
+  }
+
+  std::cout << "Frontbuffer dump snapshot=" << selected_index
+            << " seq=" << selected->seq
+            << " frontbuffer=" << FormatHex32(swap.frontbuffer_ptr)
+            << " size=" << swap.width << "x" << swap.height
+            << " payload=" << swap.frontbuffer_payload_bytes.size() << "/"
+            << swap.frontbuffer_payload_requested_byte_count
+            << (swap.frontbuffer_payload_loaded_from_resource ? " sidecar" : "")
+            << (swap.frontbuffer_payload_truncated ? " truncated" : "")
+            << " nonzero_bytes=" << nonzero_count
+            << " rgb_nonzero_pixels=" << rgb_nonzero_pixels
+            << " alpha_nonzero_pixels=" << alpha_nonzero_pixels;
+  if (first_nonzero_offset) {
+    std::cout << " first_nonzero_offset=" << *first_nonzero_offset;
+  } else {
+    std::cout << " all_zero";
+  }
+  if (required_bytes != swap.frontbuffer_payload_bytes.size()) {
+    std::cout << " expected_linear_bytes=" << required_bytes;
+  }
+  std::cout << "\n";
+  std::cout << "Frontbuffer BMP raw-linear preview: "
+            << std::filesystem::absolute(output).string() << "\n";
+  std::cout << "Frontbuffer note: this preview treats the payload as linear "
+               "RGBA8. Correct swap-texture decode still needs captured "
+               "fetch0 format, swizzle, tiling, and endian metadata.\n";
+  return true;
+}
+
 void PrintShaderRecordProbes(const ReplayCapture &capture,
                              std::size_t max_count) {
   std::cout << "Shader record probes:\n";
@@ -3590,6 +3825,8 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       cli.dump_indices = true;
     } else if (arg == "--dump-vertices") {
       cli.dump_vertices = true;
+    } else if (arg == "--dump-frontbuffer") {
+      cli.dump_frontbuffer = true;
     } else if (arg == "--resource-summary") {
       cli.show_resource_summary = true;
     } else if (arg == "--shader-usage") {
@@ -3618,6 +3855,15 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
         return 2;
       }
       cli.draw_index = parsed;
+    } else if (arg == "--frontbuffer-index") {
+      const char *value = require_value("--frontbuffer-index");
+      std::size_t parsed = 0;
+      if (!value || !ParseSizeArgument(value, parsed)) {
+        std::cerr << "--frontbuffer-index expects an integer\n";
+        return 2;
+      }
+      cli.frontbuffer_index = parsed;
+      cli.dump_frontbuffer = true;
     } else if (arg == "--max-draws") {
       const char *value = require_value("--max-draws");
       if (!value || !ParseSizeArgument(value, cli.max_draws)) {
@@ -3643,6 +3889,13 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
         return 2;
       }
       cli.d3d12_output_path = value;
+    } else if (arg == "--frontbuffer-output") {
+      const char *value = require_value("--frontbuffer-output");
+      if (!value) {
+        return 2;
+      }
+      cli.frontbuffer_output_path = value;
+      cli.dump_frontbuffer = true;
     } else if (arg == "--shader-override-root") {
       const char *value = require_value("--shader-override-root");
       if (!value) {
@@ -3770,6 +4023,12 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
   if (cli.show_resource_summary) {
     std::cout << "\n";
     PrintResourceSummary(capture);
+  }
+  if (cli.dump_frontbuffer) {
+    std::cout << "\n";
+    if (!DumpFrontbufferPreview(capture, cli)) {
+      return 1;
+    }
   }
   if (cli.dump_indices) {
     if (!cli.draw_index) {

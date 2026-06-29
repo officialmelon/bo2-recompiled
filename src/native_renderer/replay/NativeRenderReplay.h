@@ -534,6 +534,7 @@ struct ReplayLoadOptions {
 struct ReplayCliOptions {
   std::filesystem::path capture_path;
   std::filesystem::path d3d12_output_path;
+  std::filesystem::path frontbuffer_output_path;
   std::filesystem::path shader_override_root =
       std::filesystem::path("shader_work") / "native_overrides";
   std::filesystem::path shader_cache_root =
@@ -544,6 +545,7 @@ struct ReplayCliOptions {
   bool dump_bound_state = false;
   bool dump_indices = false;
   bool dump_vertices = false;
+  bool dump_frontbuffer = false;
   bool show_resource_summary = false;
   bool show_shader_usage = false;
   bool show_missing_shaders = false;
@@ -552,6 +554,7 @@ struct ReplayCliOptions {
   bool allow_diagnostic_shader = false;
   std::optional<std::size_t> frame_index;
   std::optional<std::size_t> draw_index;
+  std::optional<std::size_t> frontbuffer_index;
   std::size_t max_draws = 64;
   std::size_t top_shaders = 20;
   std::size_t d3d12_draw_limit = 4096;

@@ -26,6 +26,7 @@ Verified output:
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --summary --shader-usage --top-shaders 20
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --frame 2 --dump-draws --max-draws 24
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --draw 1209 --dump-bound-state --dump-constants --dump-indices --dump-vertices --resource-summary --no-summary
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\resolve_readback_capture_001\events.jsonl --dump-frontbuffer --frontbuffer-output native-renderer-resolve-readback-frontbuffer-preview-rgb.bmp --no-summary
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-capture-limit.jsonl --backend d3d12-diagnostic --d3d12-output default\out\build\win-amd64-clangmsvc-debug\native-renderer-d3d12-diagnostic-updated.bmp --d3d12-draws 4096 --no-summary
 default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture default\out\build\win-amd64-clangmsvc-debug\native-renderer-final-smoke.jsonl --validate
 ```
@@ -40,6 +41,7 @@ Options:
 - `--dump-constants`: list captured constant uploads; with `--draw`, lists constants known before that draw.
 - `--dump-indices`: report indexed-draw metadata, captured raw index bytes, and decoded index values when an index snapshot is available.
 - `--dump-vertices`: report fetch/vertex state coverage for the selected draw, including decoded vertex component previews for known Xenos formats.
+- `--dump-frontbuffer`: export a PM4 swap frontbuffer payload as a raw linear RGBA8 BMP preview. By default it picks the first payload with nonzero RGB pixels; use `--frontbuffer-index <n>` to force a zero-based PM4 swap payload and `--frontbuffer-output <path>` to set the BMP path. This is a payload sanity preview only until swap fetch0 format/swizzle/tiling/endian metadata is captured.
 - `--resource-summary`: report current replay resource snapshot coverage.
 - `--shader-usage --top-shaders <n>`: show shader hash and shader-pair draw usage.
 - `--backend null|offline|d3d12-diagnostic|d3d12|vulkan-diagnostic|vulkan`: backend selector. `d3d12-diagnostic` runs the offscreen D3D12 debug renderer. `d3d12` is the real resource-backed path and fails closed unless real translated/cached/override shaders are available or `--allow-diagnostic-shader` is explicitly supplied. `vulkan*` fails closed until a Vulkan backend exists.
@@ -49,6 +51,27 @@ Options:
 - `--d3d12-draws <count>`: number of replay draw tiles to render; default is `4096`.
 - `--allow-diagnostic-shader`: permits `--backend d3d12` to use the temporary diagnostic shader fallback for resource-backed geometry bring-up. Output with this flag is not shader-correct BO2 rendering.
 - `--validate`: parse/analyze only and return non-zero on parse errors or strict replay validation errors such as indexed draws with missing index snapshots.
+
+## Verified readback-resolve frontbuffer capture
+
+Input:
+
+`C:\Users\braxt\bo2-recompiled\native_captures\resolve_readback_capture_001\events.jsonl`
+
+Capture command:
+
+```powershell
+default.exe --native_renderer_mode native --native_renderer_shader_record_probe_mode off --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\resolve_readback_capture_001\events.jsonl --native_renderer_capture_limit 3000 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false --readback_resolve full
+```
+
+Replay result:
+
+- Validation: `Validation OK: 3000 events, 16 frames, 671 draws`.
+- Resource summary: `frontbuffer_snapshots=15`, `frontbuffer_payload_bytes=55296000`, all sidecar-backed and untruncated.
+- Sidecar scan: `13/15` frontbuffer payloads contain nonzero bytes; `9/15` contain nonzero RGB pixels. Color/depth target-base previews remain zero.
+- `--dump-frontbuffer` selects snapshot `3` by default because it is the first payload with nonzero RGB pixels: `seq=508`, `frontbuffer=0x1DD38000`, `1280x720`, `nonzero_bytes=1822720`, `rgb_nonzero_pixels=911360`, `alpha_nonzero_pixels=911360`.
+- Raw-linear BMP preview: `native-renderer-resolve-readback-frontbuffer-preview-rgb.bmp`, SHA-256 `8C5D3248BE49A258FFD111FFCA1E30D44FC758A1A8C557FC1F534E8EA5384B28`.
+- Interpretation: enabling ReXGlue `readback_resolve=full` makes resolved frontbuffer memory visible to CPU capture. The BMP preview is visibly nonblack but not a correct final decode yet because PM4 swap capture does not include fetch0 texture metadata used by ReXGlue's `RequestSwapTexture`.
 
 ## Verified shader-payload capture
 
