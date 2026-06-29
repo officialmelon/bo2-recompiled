@@ -486,10 +486,12 @@ struct UploadedRealDraw {
   uint64_t vertex_bytes = 0;
   uint64_t index_bytes = 0;
   uint32_t texture_srv_index = 0;
+  uint32_t sampler_descriptor_index = 0;
   uint32_t texture_width = 1;
   uint32_t texture_height = 1;
   uint32_t texture_format = 0;
   bool texture_from_capture = false;
+  bool sampler_from_capture = false;
   std::string texture_note;
 };
 
@@ -891,6 +893,73 @@ void CreateTextureSrv(ID3D12Device *device, ID3D12Resource *texture,
   device->CreateShaderResourceView(texture, &srv_desc, descriptor);
 }
 
+bool IsLinearTextureFilter(uint32_t filter) { return filter == 1; }
+
+D3D12_FILTER D3D12FilterFromTextureFetch(const TextureFetchRecord *fetch) {
+  if (!fetch) {
+    return D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+  }
+  if (fetch->aniso_filter > 0 && fetch->aniso_filter <= 5) {
+    return D3D12_FILTER_ANISOTROPIC;
+  }
+
+  const D3D12_FILTER_TYPE min_filter =
+      IsLinearTextureFilter(fetch->min_filter) ? D3D12_FILTER_TYPE_LINEAR
+                                               : D3D12_FILTER_TYPE_POINT;
+  const D3D12_FILTER_TYPE mag_filter =
+      IsLinearTextureFilter(fetch->mag_filter) ? D3D12_FILTER_TYPE_LINEAR
+                                               : D3D12_FILTER_TYPE_POINT;
+  const D3D12_FILTER_TYPE mip_filter =
+      IsLinearTextureFilter(fetch->mip_filter) ? D3D12_FILTER_TYPE_LINEAR
+                                               : D3D12_FILTER_TYPE_POINT;
+  return D3D12_ENCODE_BASIC_FILTER(min_filter, mag_filter, mip_filter,
+                                   D3D12_FILTER_REDUCTION_TYPE_STANDARD);
+}
+
+void CreateSampler(ID3D12Device *device, const TextureFetchRecord *fetch,
+                   D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
+  D3D12_SAMPLER_DESC sampler{};
+  sampler.Filter = D3D12FilterFromTextureFetch(fetch);
+  sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  sampler.MipLODBias = 0.0f;
+  sampler.MaxAnisotropy =
+      fetch && fetch->aniso_filter > 0 && fetch->aniso_filter <= 5
+          ? (1u << (fetch->aniso_filter - 1))
+          : 1u;
+  sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+  switch (fetch ? fetch->border_color : 0) {
+  case 1:
+    sampler.BorderColor[0] = 1.0f;
+    sampler.BorderColor[1] = 1.0f;
+    sampler.BorderColor[2] = 1.0f;
+    sampler.BorderColor[3] = 1.0f;
+    break;
+  case 2:
+    sampler.BorderColor[0] = 0.5f;
+    sampler.BorderColor[1] = 0.0f;
+    sampler.BorderColor[2] = 0.5f;
+    sampler.BorderColor[3] = 0.0f;
+    break;
+  case 3:
+    sampler.BorderColor[0] = 0.0f;
+    sampler.BorderColor[1] = 0.5f;
+    sampler.BorderColor[2] = 0.5f;
+    sampler.BorderColor[3] = 0.0f;
+    break;
+  default:
+    sampler.BorderColor[0] = 0.0f;
+    sampler.BorderColor[1] = 0.0f;
+    sampler.BorderColor[2] = 0.0f;
+    sampler.BorderColor[3] = 0.0f;
+    break;
+  }
+  sampler.MinLOD = 0.0f;
+  sampler.MaxLOD = D3D12_FLOAT32_MAX;
+  device->CreateSampler(&sampler, descriptor);
+}
+
 bool CreateRealGeometryPipeline(ID3D12Device *device,
                                 ComPtr<ID3D12RootSignature> &root_signature,
                                 ComPtr<ID3D12PipelineState> &pipeline_state,
@@ -916,7 +985,14 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
   texture_srv_range.RegisterSpace = 0;
   texture_srv_range.OffsetInDescriptorsFromTableStart = 0;
 
-  D3D12_ROOT_PARAMETER root_parameters[3]{};
+  D3D12_DESCRIPTOR_RANGE sampler_range{};
+  sampler_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+  sampler_range.NumDescriptors = 1;
+  sampler_range.BaseShaderRegister = 0;
+  sampler_range.RegisterSpace = 0;
+  sampler_range.OffsetInDescriptorsFromTableStart = 0;
+
+  D3D12_ROOT_PARAMETER root_parameters[4]{};
   root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
   root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
   root_parameters[0].Constants.ShaderRegister = 0;
@@ -931,28 +1007,17 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
   root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
   root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
   root_parameters[2].DescriptorTable.pDescriptorRanges = &texture_srv_range;
-
-  D3D12_STATIC_SAMPLER_DESC sampler{};
-  sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-  sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-  sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-  sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-  sampler.MipLODBias = 0.0f;
-  sampler.MaxAnisotropy = 1;
-  sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-  sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
-  sampler.MinLOD = 0.0f;
-  sampler.MaxLOD = D3D12_FLOAT32_MAX;
-  sampler.ShaderRegister = 0;
-  sampler.RegisterSpace = 0;
-  sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+  root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+  root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
+  root_parameters[3].DescriptorTable.pDescriptorRanges = &sampler_range;
 
   D3D12_ROOT_SIGNATURE_DESC root_desc{};
   root_desc.NumParameters =
       static_cast<UINT>(sizeof(root_parameters) / sizeof(root_parameters[0]));
   root_desc.pParameters = root_parameters;
-  root_desc.NumStaticSamplers = 1;
-  root_desc.pStaticSamplers = &sampler;
+  root_desc.NumStaticSamplers = 0;
+  root_desc.pStaticSamplers = nullptr;
   root_desc.Flags =
       D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -1218,7 +1283,7 @@ bool FindCacheShaderPath(const std::filesystem::path &root,
 std::string MakeOverrideCacheKey(const char *short_stage, uint64_t hash,
                                  const std::string &profile,
                                  const std::string &source) {
-  constexpr const char *kBindingLayoutVersion = "layout3";
+  constexpr const char *kBindingLayoutVersion = "layout4";
   return std::string("manual_") + short_stage + "_" + ShaderHashFileKey(hash) +
          "_" + profile + "_" + kBindingLayoutVersion + "_src" +
          ShaderHashFileKey(Fnv1a64(source));
@@ -2243,15 +2308,37 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   D3D12_CPU_DESCRIPTOR_HANDLE srv_cpu_start =
       srv_heap->GetCPUDescriptorHandleForHeapStart();
 
+  D3D12_DESCRIPTOR_HEAP_DESC sampler_heap_desc{};
+  sampler_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+  sampler_heap_desc.NumDescriptors =
+      static_cast<UINT>(std::max<std::size_t>(1, uploaded_draws.size()));
+  sampler_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  ComPtr<ID3D12DescriptorHeap> sampler_heap;
+  if (!CheckHr(device->CreateDescriptorHeap(&sampler_heap_desc,
+                                            IID_PPV_ARGS(&sampler_heap)),
+               "ID3D12Device::CreateDescriptorHeap(Sampler)", error)) {
+    return false;
+  }
+  const UINT sampler_descriptor_size =
+      device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+  D3D12_CPU_DESCRIPTOR_HANDLE sampler_cpu_start =
+      sampler_heap->GetCPUDescriptorHandleForHeapStart();
+
   uint32_t captured_texture_count = 0;
   uint32_t fallback_texture_count = 0;
   uint32_t unsupported_texture_count = 0;
+  uint32_t captured_sampler_count = 0;
+  uint32_t fallback_sampler_count = 0;
   const uint8_t white_texel[4] = {0xFF, 0xFF, 0xFF, 0xFF};
   for (std::size_t i = 0; i < uploaded_draws.size(); ++i) {
     UploadedRealDraw &uploaded = uploaded_draws[i];
     uploaded.texture_srv_index = static_cast<uint32_t>(i);
+    uploaded.sampler_descriptor_index = static_cast<uint32_t>(i);
     D3D12_CPU_DESCRIPTOR_HANDLE descriptor = srv_cpu_start;
     descriptor.ptr += static_cast<SIZE_T>(i) * srv_descriptor_size;
+    D3D12_CPU_DESCRIPTOR_HANDLE sampler_descriptor = sampler_cpu_start;
+    sampler_descriptor.ptr +=
+        static_cast<SIZE_T>(i) * sampler_descriptor_size;
 
     const ReplayDrawState &uploaded_state =
         capture.draws[uploaded.prepared.draw_index];
@@ -2274,6 +2361,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       uploaded.texture_height = selected_fetch->height;
       uploaded.texture_format = selected_fetch->format;
       uploaded.texture_from_capture = true;
+      uploaded.sampler_from_capture = true;
       uploaded.texture_note = "captured";
       if (!CreateTexture2DRgba8(device.Get(), list.Get(), texture_rgba.data(),
                                 uploaded.texture_width,
@@ -2282,11 +2370,13 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         return false;
       }
       ++captured_texture_count;
+      ++captured_sampler_count;
     } else {
       uploaded.texture_width = 1;
       uploaded.texture_height = 1;
       uploaded.texture_format = 6;
       uploaded.texture_from_capture = false;
+      uploaded.sampler_from_capture = false;
       uploaded.texture_note =
           texture_reason.empty() ? "no texture fetch" : texture_reason;
       if (!CreateTexture2DRgba8(device.Get(), list.Get(), white_texel, 1, 1,
@@ -2295,8 +2385,10 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         return false;
       }
       ++fallback_texture_count;
+      ++fallback_sampler_count;
     }
     CreateTextureSrv(device.Get(), uploaded.texture.Get(), descriptor);
+    CreateSampler(device.Get(), selected_fetch, sampler_descriptor);
   }
   std::cout << "D3D12 real replay submitted " << uploaded_draws.size()
             << " supported draw(s) for shader pair VS="
@@ -2309,6 +2401,10 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             << " captured texture SRV(s), " << fallback_texture_count
             << " fallback texture SRV(s), unsupported_texture_attempts="
             << unsupported_texture_count << "\n";
+  std::cout << "D3D12 real replay bound " << captured_sampler_count
+            << " captured sampler descriptor(s), " << fallback_sampler_count
+            << " fallback sampler descriptor(s); clamp capture is not yet "
+               "serialized, so replay uses clamp addressing\n";
   if (pipeline_render_state) {
     std::cout << "D3D12 real replay applied render state from draw "
               << prepared.draw_index << ": color_mask="
@@ -2336,8 +2432,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       ScissorRectFromRenderState(pipeline_render_state, width, height);
 
   list->ClearRenderTargetView(rtv, clear_value.Color, 0, nullptr);
-  ID3D12DescriptorHeap *descriptor_heaps[] = {srv_heap.Get()};
-  list->SetDescriptorHeaps(1, descriptor_heaps);
+  ID3D12DescriptorHeap *descriptor_heaps[] = {srv_heap.Get(),
+                                              sampler_heap.Get()};
+  list->SetDescriptorHeaps(2, descriptor_heaps);
   list->SetGraphicsRootSignature(root_signature.Get());
   list->SetPipelineState(pipeline_state.Get());
   list->RSSetViewports(1, &viewport);
@@ -2358,6 +2455,12 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     texture_srv.ptr += static_cast<UINT64>(uploaded.texture_srv_index) *
                        srv_descriptor_size;
     list->SetGraphicsRootDescriptorTable(2, texture_srv);
+    D3D12_GPU_DESCRIPTOR_HANDLE sampler_handle =
+        sampler_heap->GetGPUDescriptorHandleForHeapStart();
+    sampler_handle.ptr +=
+        static_cast<UINT64>(uploaded.sampler_descriptor_index) *
+        sampler_descriptor_size;
+    list->SetGraphicsRootDescriptorTable(3, sampler_handle);
 
     D3D12_VERTEX_BUFFER_VIEW vertex_view{};
     vertex_view.BufferLocation =

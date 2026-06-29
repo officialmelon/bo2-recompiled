@@ -30,21 +30,21 @@ Verified cache artifacts for draw `1209` with the original constant-only binding
 - `shader_work\cache\logs\manual_vs_5D918D91043B3ED0_vs_5_0_layout2_src7E9F55F7C18FD853.log`
 - `shader_work\cache\logs\manual_ps_C4ED2979F29C9139_ps_5_0_layout2_src43AD01F616D81230.log`
 
-The current D3D12 replay binding layout is `layout3`, which adds a captured texture SRV descriptor table at `t0` and a static sampler at `s0`. Verified current cache artifacts:
+The current D3D12 replay binding layout is `layout4`, which adds a captured texture SRV descriptor table at `t0` and a dynamic sampler descriptor table at `s0`. Verified current cache artifacts:
 
 - `shader_work\cache\shader_cache_index.json`
-- `shader_work\cache\d3d12\manual_vs_5D918D91043B3ED0_vs_5_0_layout3_src7E9F55F7C18FD853.dxbc`
-- `shader_work\cache\d3d12\manual_ps_C4ED2979F29C9139_ps_5_0_layout3_src629DEA58066BB4CE.dxbc`
-- `shader_work\cache\logs\manual_vs_5D918D91043B3ED0_vs_5_0_layout3_src7E9F55F7C18FD853.log`
-- `shader_work\cache\logs\manual_ps_C4ED2979F29C9139_ps_5_0_layout3_src629DEA58066BB4CE.log`
+- `shader_work\cache\d3d12\manual_vs_5D918D91043B3ED0_vs_5_0_layout4_src7E9F55F7C18FD853.dxbc`
+- `shader_work\cache\d3d12\manual_ps_C4ED2979F29C9139_ps_5_0_layout4_src629DEA58066BB4CE.dxbc`
+- `shader_work\cache\logs\manual_vs_5D918D91043B3ED0_vs_5_0_layout4_src7E9F55F7C18FD853.log`
+- `shader_work\cache\logs\manual_ps_C4ED2979F29C9139_ps_5_0_layout4_src629DEA58066BB4CE.log`
 
 Verified behavior:
 
 - Empty cache root plus default override root compiles from `overrides.json`, writes `.dxbc` blobs/logs/index, and renders draw `1209`.
 - Default cache root plus empty override root renders draw `1209` from cache only.
 - Empty cache root plus empty override root fails closed with the missing VS/PS runtime hashes.
-- `state_capture_004` real D3D12 replay compiles the layout3 override pair and reports `D3D12 real replay bound 4 captured texture SRV(s), 0 fallback texture SRV(s), unsupported_texture_attempts=0`.
-- Cache-only layout3 replay with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache` also succeeds on `state_capture_004`, binds the same `4` captured texture SRVs, and writes `native-renderer-state-capture-004-d3d12-texture-bound-cache-only.bmp`, SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+- `state_capture_004` real D3D12 replay compiles the layout4 override pair and reports `D3D12 real replay bound 4 captured texture SRV(s), 0 fallback texture SRV(s), unsupported_texture_attempts=0` and `D3D12 real replay bound 4 captured sampler descriptor(s), 0 fallback sampler descriptor(s)`.
+- Cache-only layout4 replay with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache` also succeeds on `state_capture_004`, binds the same `4` captured texture SRVs and `4` captured sampler descriptors, and writes `native-renderer-state-capture-004-d3d12-sampler-bound-cache-only.bmp`, SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 
 Current supported commands:
 

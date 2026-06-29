@@ -7,8 +7,8 @@
       "runtime_hash": "0x5D918D91043B3ED0",
       "profile": "vs_5_0",
       "compiler": "D3DCompile",
-      "cache_key": "manual_vs_5D918D91043B3ED0_vs_5_0_layout3_src7E9F55F7C18FD853",
-      "path": "shader_work/cache/d3d12/manual_vs_5D918D91043B3ED0_vs_5_0_layout3_src7E9F55F7C18FD853.dxbc",
+      "cache_key": "manual_vs_5D918D91043B3ED0_vs_5_0_layout4_src7E9F55F7C18FD853",
+      "path": "shader_work/cache/d3d12/manual_vs_5D918D91043B3ED0_vs_5_0_layout4_src7E9F55F7C18FD853.dxbc",
       "source": "shader_work/native_overrides/d3d12/vs_5D918D91043B3ED0.hlsl"
     },
     {
@@ -17,8 +17,8 @@
       "runtime_hash": "0xC4ED2979F29C9139",
       "profile": "ps_5_0",
       "compiler": "D3DCompile",
-      "cache_key": "manual_ps_C4ED2979F29C9139_ps_5_0_layout3_src629DEA58066BB4CE",
-      "path": "shader_work/cache/d3d12/manual_ps_C4ED2979F29C9139_ps_5_0_layout3_src629DEA58066BB4CE.dxbc",
+      "cache_key": "manual_ps_C4ED2979F29C9139_ps_5_0_layout4_src629DEA58066BB4CE",
+      "path": "shader_work/cache/d3d12/manual_ps_C4ED2979F29C9139_ps_5_0_layout4_src629DEA58066BB4CE.dxbc",
       "source": "shader_work/native_overrides/d3d12/ps_C4ED2979F29C9139.hlsl"
     }
   ]

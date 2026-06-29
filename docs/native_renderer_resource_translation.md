@@ -14,7 +14,7 @@ Verified draw `1209` from `native_captures\payload_capture_002\events.jsonl` is 
 - Decoded indices: `3,0,2,2,0,1`
 - Shaders: VS `0x5D918D91043B3ED0`, PS `0xC4ED2979F29C9139`
 - Constants: two ALU ranges at indices `1008` and `2032`, both with payload
-- Missing: decoded native input-layout conversion, texture/sampler state, render/depth/blend/raster state, and replacement shaders
+- Missing: decoded native input-layout conversion in older captures, texture clamp-mode serialization, render/depth/blend/raster state application, and replacement shaders
 
 Verified draw `1004` from `native_captures\vertex_fetch_capture_001\events.jsonl` is the first useful indexed draw with both index and vertex payloads:
 
@@ -43,7 +43,7 @@ Verified draw `799` from `native_captures\state_capture_004\events.jsonl` is the
 - Texture fetches: four pixel-shader bindings with raw six-dword fetch constants, decoded 1x1 tiled format `6` resources at `0x05B67000` and `0x05B6B000`, endian `2`, and `4096` captured payload bytes per binding
 - Constants: two ALU ranges at indices `1008` and `2032`, both with payload
 - Render state: `surface_pitch=1280`, `depth_base=608`, `depth_format=1`, color target base `1328`, color mask `0x0000000F`, depth test/write disabled, stencil disabled, and cull mode `2`
-- Missing: complete Xenos texture untile/format conversion, sampler-to-D3D12 mapping, render-target/depth resource snapshots, render-state application in D3D12, and shader-correct BO2 shaders
+- Missing: complete Xenos texture untile/format conversion, Xenos clamp-mode serialization for exact sampler addressing, render-target/depth resource snapshots, full heterogeneous render-state application in D3D12, and shader-correct BO2 shaders
 
 ## Implemented in this pass
 
@@ -67,7 +67,7 @@ Verified draw `799` from `native_captures\state_capture_004\events.jsonl` is the
 - BO2 JSONL capture writes structured `texture_fetches` and `render_state` objects on `pm4_draw` events.
 - Replay parses and summarizes texture fetch/resource payload coverage and render-state coverage. `state_capture_004` validates `344` texture fetch snapshots with `1409024` payload bytes and render state on all `2475` draws.
 - Replay command `--draw <n> --dump-bound-state` reports texture bindings and render-state basics; draw `799` is the current combined texture/render-state target.
-- D3D12 real replay now uploads the first decodable captured texture fetch for each supported draw as an `R8G8B8A8_UNORM` texture, creates an SRV bound at `t0`, and exposes a static sampler at `s0`. This is currently implemented for texture format `6` (`k_8_8_8_8`) and the observed 1x1 tiled case; unsupported or absent texture fetches bind a white fallback SRV and report the count.
+- D3D12 real replay now uploads the first decodable captured texture fetch for each supported draw as an `R8G8B8A8_UNORM` texture, creates an SRV bound at `t0`, and binds a per-draw sampler descriptor at `s0` from captured texture-filter fields. This is currently implemented for texture format `6` (`k_8_8_8_8`) and the observed 1x1 tiled case; unsupported or absent texture fetches bind a white fallback SRV/sampler pair and report the count. BO2 JSONL does not yet serialize Xenos clamp modes, so D3D12 replay uses clamp addressing.
 - D3D12 real replay now consumes the first supported draw's captured render state when creating the replay PSO: rasterizer culling/front-face/fill/depth-clip bits, color write mask, blend factors/ops, disabled depth/stencil state, and bounded screen scissor. Depth-enabled draws still need real captured DSV resources before depth test/write can be enabled.
 
 ## Required next capture fields
@@ -82,4 +82,4 @@ Verified draw `799` from `native_captures\state_capture_004\events.jsonl` is the
 
 The current verified capture can replay real index values, decode bounded vertex-buffer bytes, list texture fetches, and decode render-state registers for the first useful indexed draws. `--backend d3d12` can now bind a canonical D3D12 vertex/index layout for the supported shader pair and issue `DrawIndexedInstanced` from captured BO2 data.
 
-It still cannot produce real BO2 scene output because it lacks automatic translated BO2 shaders, complete Xenos texture tiling/format coverage, sampler-state mapping, render-target/depth resource snapshots, real DSV binding for depth-enabled draws, per-state PSO switching, and full-frame state sequencing. The visible D3D12 real output is therefore captured BO2 geometry with a manual override or explicit diagnostic shader path, not shader-correct BO2 rendering.
+It still cannot produce real BO2 scene output because it lacks automatic translated BO2 shaders, complete Xenos texture tiling/format coverage, exact sampler clamp mapping, render-target/depth resource snapshots, real DSV binding for depth-enabled draws, per-state PSO switching, and full-frame state sequencing. The visible D3D12 real output is therefore captured BO2 geometry with a manual override or explicit diagnostic shader path, not shader-correct BO2 rendering.

@@ -61,14 +61,14 @@ Result:
 
 `--backend d3d12` now has a first offline resource-backed geometry path. It selects a captured indexed draw with real index and vertex snapshots, canonicalizes the decoded Xenos vertex data into a native D3D12 input layout, binds upload-buffer vertex/index resources, compiles a hash-keyed manual HLSL override pair when present, and submits `DrawIndexedInstanced`.
 
-This is still not full BO2 scene rendering. Draw `1209` can now run without `--allow-diagnostic-shader` because a manual HLSL override pair exists under `shader_work\native_overrides`, and the pair can be reused through `shader_work\cache\shader_cache_index.json`. The override is interface-compatible with the currently canonicalized position/color/UV vertex stream and now consumes a flattened captured constant payload block at `b1`, but it is not an automatic Xenos shader translation and it does not bind textures or render state yet. Without a matching cache entry, override, translation, or explicit diagnostic fallback, `--backend d3d12` fails closed.
+This is still not full BO2 scene rendering. Draws using the `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139` pair can now run without `--allow-diagnostic-shader` because a manual HLSL override pair exists under `shader_work\native_overrides`, and the pair can be reused through `shader_work\cache\shader_cache_index.json`. The override is interface-compatible with the currently canonicalized position/color/UV vertex stream and consumes a flattened captured constant payload block at `b1`; on `state_capture_004` it also samples captured format-6 texture SRVs through dynamic sampler descriptors and uses the first captured PSO-side render-state subset. It is not an automatic Xenos shader translation. Without a matching cache entry, override, translation, or explicit diagnostic fallback, `--backend d3d12` fails closed.
 
 Current missing pieces:
 
 - Automatic Xenos shader translation and persistent DXIL shader cache
 - Complete captured constant-buffer layout binding beyond the current flattened `b1` root constants
-- Texture/sampler state
-- Render target/depth/blend/raster state
+- Complete texture tiling/format coverage and serialized sampler clamp modes
+- Render target/depth resources and full heterogeneous blend/raster/depth state
 - Multi-draw/full-frame state sequencing for all captured draw types
 
 Current captured pieces from `native_captures\vertex_fetch_capture_001`:
@@ -99,17 +99,21 @@ Latest state-capture replay results:
 - Real command: `native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --backend d3d12 --d3d12-output native-renderer-state-capture-004-d3d12-real.bmp --d3d12-draws 256 --no-summary`
 - Real result: exit code `0`, `D3D12 real replay submitted 4 supported draw(s) for shader pair VS=0x5D918D91043B3ED0 PS=0xC4ED2979F29C9139 out of 4 captured draw(s) with that pair`.
 - Limitation for that pre-texture-binding run: the output remained the existing manual-override supported geometry path and was not full BO2 scene rendering.
-- Texture-binding update: D3D12 real replay now creates a shader-visible SRV descriptor for the first decodable captured texture fetch per supported draw, binds it at `t0`, and exposes a static sampler at `s0`. The current implementation supports captured Xenos texture format `6` (`k_8_8_8_8`) directly, including the observed 1x1 tiled texture case from draw `799`; unsupported or absent texture fetches bind a white fallback texture and report the fallback count.
+- Texture-binding update: D3D12 real replay now creates a shader-visible SRV descriptor for the first decodable captured texture fetch per supported draw and binds it at `t0`. The current implementation supports captured Xenos texture format `6` (`k_8_8_8_8`) directly, including the observed 1x1 tiled texture case from draw `799`; unsupported or absent texture fetches bind a white fallback texture and report the fallback count.
 - Texture-bound command: `native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --backend d3d12 --d3d12-output native-renderer-state-capture-004-d3d12-texture-bound.bmp --d3d12-draws 256 --no-summary`
 - Texture-bound result: exit code `0`, `D3D12 real replay bound 4 captured texture SRV(s), 0 fallback texture SRV(s), unsupported_texture_attempts=0`, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - Cache-only texture-bound result with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache`: exit code `0`, `4` captured texture SRVs bound, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+- Sampler-binding update: D3D12 real replay now uses a shader-visible sampler descriptor table at `s0` and creates one sampler descriptor per uploaded draw from captured texture-filter fields. Xenos clamp modes are not serialized in BO2 JSONL yet, so all replay sampler descriptors still use clamp addressing.
+- Sampler-bound command: `native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --backend d3d12 --d3d12-output native-renderer-state-capture-004-d3d12-sampler-bound.bmp --d3d12-draws 256 --no-summary`
+- Sampler-bound result: exit code `0`, `D3D12 real replay bound 4 captured sampler descriptor(s), 0 fallback sampler descriptor(s)`, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+- Cache-only sampler-bound result with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache`: exit code `0`, `4` captured texture SRVs and `4` captured sampler descriptors bound, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - Render-state update: D3D12 real replay now builds the real replay PSO from the first supported draw's captured render state for rasterizer culling/front-face, fill mode, depth-clip, color write mask, blend factors/ops, and disabled depth/stencil state. It also applies captured screen scissor when a bounded scissor rectangle is present.
 - Render-state command: `native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --backend d3d12 --d3d12-output native-renderer-state-capture-004-d3d12-render-state.bmp --d3d12-draws 256 --no-summary`
 - Render-state result: exit code `0`, `D3D12 real replay applied render state from draw 799: color_mask=0x0000000F cull=2 depth_test=no depth_write=no stencil=no`, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - Cache-only render-state result with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache`: exit code `0`, same applied-state log and SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - Regression command on older `shader_payload_capture_001`: `native_render_replay.exe --capture native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --d3d12-output native-renderer-shader-payload-d3d12-texture-binding-regression.bmp --d3d12-draws 64 --no-summary`
 - Regression result: exit code `0`, `D3D12 real replay bound 0 captured texture SRV(s), 11 fallback texture SRV(s), unsupported_texture_attempts=0`, output SHA-256 `49F99D11F992073E0DF9371E37EE57DC0522032336E44ADAAFC00CEDE12E3D2A`.
-- Remaining limitation: these SRVs are now real captured texture resources in the command stream, and the first PSO-side render-state subset is applied. The backend still lacks full Xenos tiling for larger textures, sampler-state mapping, render-target/depth resource snapshots, real DSV binding for depth-enabled draws, per-state PSO switching across heterogeneous draws, and full blend/depth/stencil coverage.
+- Remaining limitation: these SRVs and sampler descriptors are now real captured resources/state in the command stream, and the first PSO-side render-state subset is applied. The backend still lacks full Xenos tiling for larger textures, serialized clamp modes for exact sampler addressing, render-target/depth resource snapshots, real DSV binding for depth-enabled draws, per-state PSO switching across heterogeneous draws, and full blend/depth/stencil coverage.
 
 ## Build note
 
