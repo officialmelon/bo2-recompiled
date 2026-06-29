@@ -1,6 +1,6 @@
 # Native Renderer Replay
 
-Last updated: 2026-06-28
+Last updated: 2026-06-29
 
 `native_render_replay.exe` is the first offline replay executable for the BO2 native renderer work. It reads the JSONL written by `native_renderer_capture_path`, reconstructs frame/draw/shader/constant state, and reports enough state per draw to drive backend bring-up without booting the game for every iteration.
 
@@ -42,10 +42,48 @@ Options:
 - `--dump-vertices`: report fetch/vertex state coverage for the selected draw, including decoded vertex component previews for known Xenos formats.
 - `--resource-summary`: report current replay resource snapshot coverage.
 - `--shader-usage --top-shaders <n>`: show shader hash and shader-pair draw usage.
-- `--backend null|offline|d3d12-diagnostic|d3d12|vulkan-diagnostic|vulkan`: backend selector. `d3d12-diagnostic` runs the offscreen D3D12 debug renderer. `d3d12` runs the current resource-backed captured-geometry path when a supported indexed draw is available. `vulkan*` fails closed until a Vulkan backend exists.
+- `--backend null|offline|d3d12-diagnostic|d3d12|vulkan-diagnostic|vulkan`: backend selector. `d3d12-diagnostic` runs the offscreen D3D12 debug renderer. `d3d12` is the real resource-backed path and fails closed unless real translated/cached/override shaders are available or `--allow-diagnostic-shader` is explicitly supplied. `vulkan*` fails closed until a Vulkan backend exists.
 - `--d3d12-output <path>`: BMP output path for the D3D12 replay backend.
 - `--d3d12-draws <count>`: number of replay draw tiles to render; default is `4096`.
+- `--allow-diagnostic-shader`: permits `--backend d3d12` to use the temporary diagnostic shader fallback for resource-backed geometry bring-up. Output with this flag is not shader-correct BO2 rendering.
 - `--validate`: parse/analyze only and return non-zero on parse errors or strict replay validation errors such as indexed draws with missing index snapshots.
+
+## Verified shader-payload capture
+
+Input:
+
+`C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl`
+
+Replay result:
+
+- Events: `12000`
+- Parse errors: `0`
+- Frames: `53`
+- Draws: `2654`
+- Shader uploads: `587`, all with payload, `13230` payload dwords
+- Constant uploads: `73`, all with payload
+- Indexed draw snapshots: `28`, all with payload
+- Vertex fetch records: `218`, all with bounded raw vertex payloads
+- Validation: `Validation OK: 12000 events, 53 frames, 2654 draws`
+
+Target draw `1209`:
+
+```text
+draw[1209] seq=5335 frame=pre PM4_DRAW_INDX opcode=0x00000022 packet=0xC0032201 packet_ptr=0x0501B700 indices=6 prim=4 src=0 indexed=yes index_base=0x0501E0B0 index_len=12 index_fmt=0 endian=1 payload=12/12 bytes
+  VS=0x5D918D91043B3ED0 PS=0xC4ED2979F29C9139 constants_total=2 constants_frame=2 last_constant_seq=5330 vertex_fetches=1/1 state= ok
+```
+
+Decoded resources:
+
+- Indices: `3,0,2,2,0,1`
+- Vertex fetch: `vf95`, raw words `0x0501E033,0x10000082`, address `0x0501E030`, `128/128` bytes, stride `32`, endian `2`
+- Attributes: `FMT_32_32_32_32_FLOAT` at offset `0`, `FMT_8_8_8_8` at offset `16`, `FMT_32_32_FLOAT` at offset `20`
+- Decoded vertices: a `1280x720` quad with position/color/UV components
+
+D3D12 behavior:
+
+- `--backend d3d12 --draw 1209` now fails closed without a real shader pair: no translated, cached, or override shader is available.
+- `--backend d3d12 --draw 1209 --allow-diagnostic-shader` writes `native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
 
 ## Verified index-payload capture
 

@@ -1097,6 +1097,14 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
                                const ReplayCliOptions &options,
                                std::string &error) {
 #if defined(_WIN32)
+  if (!options.allow_diagnostic_shader) {
+    error =
+        "no translated, cached, or override shader pair is available for the "
+        "selected draw. Re-run with --allow-diagnostic-shader only for the "
+        "temporary resource-backed geometry diagnostic path.";
+    return false;
+  }
+
   PreparedRealDraw prepared;
   if (!PrepareFirstRealDraw(capture, options, prepared, error)) {
     return false;

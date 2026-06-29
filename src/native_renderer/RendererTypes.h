@@ -186,6 +186,8 @@ struct PM4DrawInfo {
 };
 
 struct PM4ShaderInfo {
+  static constexpr std::size_t kMaxPayloadDwords = 512;
+
   uint64_t event_index = 0;
   uint32_t opcode = 0;
   uint32_t packet = 0;
@@ -198,6 +200,10 @@ struct PM4ShaderInfo {
   uintptr_t host_address = 0;
   uint32_t dword_count = 0;
   uint64_t shader_hash = 0;
+  uint32_t payload_dword_count = 0;
+  std::array<uint32_t, kMaxPayloadDwords> payload_dwords{};
+  bool payload_truncated = false;
+  bool payload_missing = true;
 };
 
 struct PM4ConstantInfo {

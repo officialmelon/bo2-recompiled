@@ -497,6 +497,20 @@ void NativeRenderCaptureWriter::WritePM4Shader(const PM4ShaderInfo &shader) {
   WriteHexSizeField("host_address", shader.host_address);
   WriteU64Field("dword_count", shader.dword_count);
   WriteHex64Field("shader_hash", shader.shader_hash);
+  WriteU64Field("payload_dword_count", shader.payload_dword_count);
+  WriteBoolField("payload_truncated", shader.payload_truncated);
+  WriteBoolField("payload_missing", shader.payload_missing);
+  WriteFieldPrefix("dwords");
+  file_ << '[';
+  for (uint32_t i = 0;
+       i < shader.payload_dword_count && i < shader.payload_dwords.size();
+       ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(shader.payload_dwords[i], 8) << '"';
+  }
+  file_ << ']';
   EndEvent();
 }
 

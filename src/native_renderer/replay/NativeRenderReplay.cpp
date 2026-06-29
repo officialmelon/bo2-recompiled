@@ -669,6 +669,23 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
     event.shader.host_address = GetU64(object, "host_address");
     event.shader.dword_count = GetU32(object, "dword_count");
     event.shader.shader_hash = GetU64(object, "shader_hash");
+    event.shader.payload_dword_count = GetU32(object, "payload_dword_count");
+    event.shader.dwords = GetU32Array(object, "dwords");
+    if (event.shader.dwords.empty()) {
+      event.shader.dwords = GetU32Array(object, "payload_dwords");
+    }
+    if (event.shader.payload_dword_count == 0 &&
+        !event.shader.dwords.empty()) {
+      event.shader.payload_dword_count =
+          static_cast<uint32_t>(event.shader.dwords.size());
+    }
+    event.shader.payload_truncated = GetBool(object, "payload_truncated");
+    event.shader.payload_missing = GetBool(
+        object, "payload_missing",
+        !FindValue(object, "dwords") && !FindValue(object, "payload_dwords"));
+    if (!event.shader.dwords.empty()) {
+      event.shader.payload_missing = false;
+    }
     break;
   case CaptureEventType::PM4Constants:
     event.constants.seq = event.seq;
@@ -950,6 +967,15 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
       usage.shader_type = event.shader.shader_type;
       ++usage.loads;
       usage.max_dwords = std::max(usage.max_dwords, event.shader.dword_count);
+      if (event.shader.payload_missing) {
+        ++capture.summary.shader_uploads_missing_payload;
+      } else {
+        ++capture.summary.shader_uploads_with_payload;
+        capture.summary.shader_payload_dwords += event.shader.dwords.size();
+      }
+      if (event.shader.payload_truncated) {
+        ++capture.summary.shader_payload_truncated;
+      }
       bind_shader(event.shader.shader_type, event.shader.shader_hash,
                   event.shader.guest_address, event.shader.dword_count,
                   event.seq);
@@ -1705,8 +1731,11 @@ void PrintHelp() {
       << "  --missing-shaders      Report draws missing runtime shader hashes\n"
       << "  --backend <name>       Replay backend selector: "
          "null/d3d12-diagnostic/d3d12/vulkan-diagnostic/vulkan\n"
-      << "  --d3d12-output <path>  BMP output for --backend d3d12-diagnostic\n"
+      << "  --d3d12-output <path>  BMP output for D3D12 replay backends\n"
       << "  --d3d12-draws <count>  Replay draw tiles to render (default 4096)\n"
+      << "  --allow-diagnostic-shader\n"
+         "                          Permit --backend d3d12 to use the "
+         "temporary diagnostic shader fallback\n"
       << "  --validate             Parse/analyze only; output errors decide "
          "exit code\n"
       << "  --help                 Show this help\n";
@@ -1852,6 +1881,13 @@ void PrintReplaySummary(const ReplayCapture &capture) {
             << "\n";
   std::cout << "Shaders: unique=" << capture.shader_usage.size()
             << " shader_pairs=" << capture.shader_pair_usage.size() << "\n";
+  std::cout << "Shader payloads: with_payload="
+            << capture.summary.shader_uploads_with_payload
+            << " missing_payload="
+            << capture.summary.shader_uploads_missing_payload
+            << " payload_dwords=" << capture.summary.shader_payload_dwords
+            << " truncated=" << capture.summary.shader_payload_truncated
+            << "\n";
   std::cout << "Constants: with_payload="
             << capture.summary.constant_uploads_with_payload
             << " missing_payload="
@@ -2330,6 +2366,12 @@ void PrintVertexDump(const ReplayCapture &capture, std::size_t draw_index) {
 }
 
 void PrintResourceSummary(const ReplayCapture &capture) {
+  const auto shader_count_it =
+      capture.summary.event_counts.find(CaptureEventType::PM4Shader);
+  const uint64_t shader_uploads =
+      shader_count_it == capture.summary.event_counts.end()
+          ? 0
+          : shader_count_it->second;
   const auto constant_count_it =
       capture.summary.event_counts.find(CaptureEventType::PM4Constants);
   const uint64_t constant_uploads =
@@ -2337,6 +2379,13 @@ void PrintResourceSummary(const ReplayCapture &capture) {
           ? 0
           : constant_count_it->second;
   std::cout << "Resource snapshot summary:\n";
+  std::cout << "  shader_uploads=" << shader_uploads
+            << " with_payload=" << capture.summary.shader_uploads_with_payload
+            << " missing_payload="
+            << capture.summary.shader_uploads_missing_payload
+            << " payload_dwords=" << capture.summary.shader_payload_dwords
+            << " truncated=" << capture.summary.shader_payload_truncated
+            << "\n";
   std::cout << "  constant_uploads=" << constant_uploads
             << " with_payload=" << capture.summary.constant_uploads_with_payload
             << " missing_payload="
@@ -2467,6 +2516,8 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       cli.show_missing_shaders = true;
     } else if (arg == "--validate") {
       cli.validate_only = true;
+    } else if (arg == "--allow-diagnostic-shader") {
+      cli.allow_diagnostic_shader = true;
     } else if (arg == "--frame") {
       const char *value = require_value("--frame");
       std::size_t parsed = 0;
@@ -2575,6 +2626,11 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
     std::cout << "D3D12 replay output: "
               << std::filesystem::absolute(output).string() << "\n";
   } else if (backend_kind == ReplayBackendKind::D3D12Real) {
+    if (cli.allow_diagnostic_shader) {
+      std::cout << "D3D12 real replay note: using explicit diagnostic shader "
+                   "fallback; output is resource-backed geometry, not "
+                   "shader-correct BO2 rendering.\n";
+    }
     std::string backend_error;
     if (!RunD3D12RealReplayBackend(capture, cli, backend_error)) {
       std::cerr << "D3D12 real replay unavailable: " << backend_error << "\n";

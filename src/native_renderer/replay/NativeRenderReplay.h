@@ -51,6 +51,10 @@ struct PM4ShaderRecord {
   uint64_t host_address = 0;
   uint32_t dword_count = 0;
   uint64_t shader_hash = 0;
+  uint32_t payload_dword_count = 0;
+  std::vector<uint32_t> dwords;
+  bool payload_truncated = false;
+  bool payload_missing = true;
 };
 
 struct PM4ConstantRecord {
@@ -294,6 +298,10 @@ struct ReplaySummary {
   uint64_t constant_uploads_missing_payload = 0;
   uint64_t constant_payload_dwords = 0;
   uint64_t constant_payload_truncated = 0;
+  uint64_t shader_uploads_with_payload = 0;
+  uint64_t shader_uploads_missing_payload = 0;
+  uint64_t shader_payload_dwords = 0;
+  uint64_t shader_payload_truncated = 0;
   uint64_t index_buffer_snapshots = 0;
   uint64_t index_buffer_snapshots_missing = 0;
   uint64_t index_payload_bytes = 0;
@@ -342,6 +350,7 @@ struct ReplayCliOptions {
   bool show_shader_usage = false;
   bool show_missing_shaders = false;
   bool validate_only = false;
+  bool allow_diagnostic_shader = false;
   std::optional<std::size_t> frame_index;
   std::optional<std::size_t> draw_index;
   std::size_t max_draws = 64;

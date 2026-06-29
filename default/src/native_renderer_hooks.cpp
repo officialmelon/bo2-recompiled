@@ -199,6 +199,23 @@ void OnNativeRendererShader(
   shader.host_address = event->host_address;
   shader.dword_count = event->dword_count;
   shader.shader_hash = event->shader_hash;
+  if constexpr (requires {
+                  event->payload_dword_count;
+                  event->payload_truncated;
+                  event->payload_missing;
+                  event->payload_dwords[0];
+                }) {
+    shader.payload_dword_count =
+        std::min<uint32_t>(event->payload_dword_count,
+                           shader.payload_dwords.size());
+    for (uint32_t i = 0; i < shader.payload_dword_count; ++i) {
+      shader.payload_dwords[i] = event->payload_dwords[i];
+    }
+    shader.payload_truncated = event->payload_truncated ||
+                               event->payload_dword_count >
+                                   shader.payload_dwords.size();
+    shader.payload_missing = event->payload_missing;
+  }
   bo2::native::NativeRenderer::Instance().OnPM4Shader(shader);
 }
 

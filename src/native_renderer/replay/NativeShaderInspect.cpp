@@ -31,6 +31,11 @@ struct RuntimeShaderUsage {
   uint64_t draw_count = 0;
   uint64_t load_count = 0;
   uint32_t max_dwords = 0;
+  uint64_t payload_load_count = 0;
+  uint64_t payload_missing_count = 0;
+  uint64_t payload_dwords = 0;
+  uint64_t payload_truncated_count = 0;
+  uint32_t max_payload_dwords = 0;
 };
 
 struct RuntimeShaderPairUsage {
@@ -44,6 +49,10 @@ struct RuntimeShaderCapture {
   uint64_t lines = 0;
   uint64_t shader_events = 0;
   uint64_t draw_events = 0;
+  uint64_t shader_payload_loads = 0;
+  uint64_t shader_payload_missing = 0;
+  uint64_t shader_payload_dwords = 0;
+  uint64_t shader_payload_truncated = 0;
   std::vector<RuntimeShaderUsage> shaders;
   std::vector<RuntimeShaderPairUsage> pairs;
 };
@@ -182,6 +191,31 @@ std::string ExtractJsonNumberText(std::string_view block,
   return std::string(block.substr(begin, pos - begin));
 }
 
+std::optional<bool> ExtractJsonBool(std::string_view block,
+                                    std::string_view key) {
+  const std::string needle = "\"" + std::string(key) + "\"";
+  std::size_t pos = block.find(needle);
+  if (pos == std::string_view::npos) {
+    return std::nullopt;
+  }
+  pos = block.find(':', pos + needle.size());
+  if (pos == std::string_view::npos) {
+    return std::nullopt;
+  }
+  ++pos;
+  while (pos < block.size() &&
+         std::isspace(static_cast<unsigned char>(block[pos]))) {
+    ++pos;
+  }
+  if (block.substr(pos, 4) == "true") {
+    return true;
+  }
+  if (block.substr(pos, 5) == "false") {
+    return false;
+  }
+  return std::nullopt;
+}
+
 uint64_t ExtractJsonHexU64(std::string_view block, std::string_view key) {
   if (auto value = ParseHexU64(ExtractJsonString(block, key))) {
     return *value;
@@ -284,11 +318,32 @@ bool LoadRuntimeShaderCapture(const std::filesystem::path &path,
       }
       const uint32_t dwords =
           ParseU32OrZero(ExtractJsonNumberText(line, "dword_count"));
+      const uint32_t payload_dwords =
+          ParseU32OrZero(ExtractJsonNumberText(line, "payload_dword_count"));
+      const bool payload_missing =
+          ExtractJsonBool(line, "payload_missing").value_or(true);
+      const bool payload_truncated =
+          ExtractJsonBool(line, "payload_truncated").value_or(false);
       auto &usage = shaders[{stage, hash}];
       usage.stage = stage;
       usage.hash = hash;
       ++usage.load_count;
       usage.max_dwords = std::max(usage.max_dwords, dwords);
+      if (payload_missing) {
+        ++usage.payload_missing_count;
+        ++capture.shader_payload_missing;
+      } else {
+        ++usage.payload_load_count;
+        usage.payload_dwords += payload_dwords;
+        usage.max_payload_dwords =
+            std::max(usage.max_payload_dwords, payload_dwords);
+        ++capture.shader_payload_loads;
+        capture.shader_payload_dwords += payload_dwords;
+      }
+      if (payload_truncated) {
+        ++usage.payload_truncated_count;
+        ++capture.shader_payload_truncated;
+      }
     } else if (line.find("\"type\":\"pm4_draw\"") != std::string::npos) {
       ++capture.draw_events;
       const uint64_t vs = ExtractJsonHexU64(line, "vertex_shader_hash");
@@ -360,6 +415,11 @@ void PrintRuntimeShaders(const RuntimeShaderCapture &capture,
             << " draw_events=" << capture.draw_events
             << " unique_shaders=" << capture.shaders.size()
             << " shader_pairs=" << capture.pairs.size() << "\n";
+  std::cout << "  shader_payloads with_payload="
+            << capture.shader_payload_loads
+            << " missing_payload=" << capture.shader_payload_missing
+            << " payload_dwords=" << capture.shader_payload_dwords
+            << " truncated=" << capture.shader_payload_truncated << "\n";
   std::cout << "\nRuntime shaders:\n";
   const std::size_t shader_count =
       std::min<std::size_t>(top_count, capture.shaders.size());
@@ -369,7 +429,13 @@ void PrintRuntimeShaders(const RuntimeShaderCapture &capture,
               << std::uppercase << usage.hash << std::dec
               << " draws=" << usage.draw_count
               << " loads=" << usage.load_count
-              << " max_dwords=" << usage.max_dwords << "\n";
+              << " max_dwords=" << usage.max_dwords
+              << " payload_loads=" << usage.payload_load_count
+              << " missing_payload=" << usage.payload_missing_count
+              << " payload_dwords=" << usage.payload_dwords
+              << " max_payload=" << usage.max_payload_dwords
+              << " payload_truncated=" << usage.payload_truncated_count
+              << "\n";
   }
 
   std::cout << "\nRuntime shader pairs:\n";
@@ -405,6 +471,8 @@ void MatchRuntimeShaders(std::string_view index_text,
               << std::uppercase << usage.hash << std::dec
               << " draws=" << usage.draw_count
               << " loads=" << usage.load_count
+              << " payload_loads=" << usage.payload_load_count
+              << " missing_payload=" << usage.payload_missing_count
               << " exact_substring_match="
               << (pos == std::string::npos ? "no" : "yes") << "\n";
     if (pos != std::string::npos) {

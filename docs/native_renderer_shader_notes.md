@@ -1,6 +1,6 @@
 # Native Renderer Shader Notes
 
-Evidence date: 2026-06-28
+Evidence date: 2026-06-29
 
 ## Existing shader work
 
@@ -113,7 +113,21 @@ Verified capture `vertex_fetch_capture_001`:
 - Unique runtime shaders: `8`
 - Runtime shader pairs: `7`
 
-Top runtime shader pairs in this capture:
+Verified capture `shader_payload_capture_001` after adding PM4 shader payload capture:
+
+- Lines: `12000`
+- Shader events: `587`
+- Draw events: `2654`
+- Unique runtime shaders: `8`
+- Runtime shader pairs: `7`
+- Shader payload coverage: `587/587`, `13230` payload dwords, no missing or truncated shader payloads
+- Target draw `1209`: VS `0x5D918D91043B3ED0`, PS `0xC4ED2979F29C9139`, both with captured PM4 shader payloads
+- Direct static-index matching remains `0/8`
+- SHA-256 of captured PM4 payload dwords in little-endian and big-endian byte order did not match `shader_work/shaders/index.json` for runtime hashes `0x5D918D91043B3ED0`, `0xC4ED2979F29C9139`, `0xB6C9863F710683EC`, or `0xA4A965C189287B99`
+
+Current shader identity conclusion: runtime 64-bit IDs and raw PM4 upload payload hashes are not enough to map directly to extracted container or microcode hashes. The next evidence target is shader record/material metadata from the XEX/PC PDB path, plus stripped/aligned/padded payload hash variants.
+
+Top runtime shader pairs in `vertex_fetch_capture_001`:
 
 | VS | PS | Draws |
 |---|---|---:|
@@ -125,7 +139,7 @@ Top runtime shader pairs in this capture:
 | `0x5D918D91043B3ED0` | `0xC4ED2979F29C9139` | 11 |
 | `0xAB1E86137A0240E8` | `0xC4ED2979F29C9139` | 11 |
 
-Direct static-index matching:
+Direct static-index matching on `vertex_fetch_capture_001`:
 
 - Exact substring matches in `shader_work/shaders/index.json`: `0/8`
 - Draw `1004` pair `VS=0x5D918D91043B3ED0`, `PS=0xC4ED2979F29C9139`: no direct match to static container or microcode hashes.

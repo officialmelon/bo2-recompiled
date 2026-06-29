@@ -45,11 +45,23 @@ Result:
 - Size: `3686454`
 - SHA-256: `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`
 
+Latest shader-payload capture diagnostic command:
+
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\shader_payload_capture_001\events.jsonl --backend d3d12-diagnostic --d3d12-output native_captures\shader_payload_capture_001\native-renderer-d3d12-diagnostic-shader-payload.bmp --d3d12-draws 512 --no-summary
+```
+
+Result:
+
+- Exit code: `0`
+- Output: `native_captures\shader_payload_capture_001\native-renderer-d3d12-diagnostic-shader-payload.bmp`
+- SHA-256: `6A3E73E74CC22538420B2FCDA6B5B7D72A4EA205EAAAD11476ED700554F6C577`
+
 ## Real backend
 
 `--backend d3d12` now has a first offline resource-backed geometry path. It selects a captured indexed draw with real index and vertex snapshots, canonicalizes the decoded Xenos vertex data into a native D3D12 input layout, binds upload-buffer vertex/index resources, and submits `DrawIndexedInstanced`.
 
-This is still not full BO2 scene rendering. The shader used by this path is a diagnostic native shader that visualizes captured color/UV data; translated BO2 shaders, texture/sampler state, render-target/depth state, and full command-stream replay are still missing.
+This is still not full BO2 scene rendering. The temporary shader used by this path is a diagnostic native shader that visualizes captured color/UV data; it now requires explicit `--allow-diagnostic-shader`. Without that flag, `--backend d3d12` fails closed until a translated, cached, or override BO2 shader pair is available.
 
 Current missing pieces:
 
@@ -68,7 +80,10 @@ Current captured pieces from `native_captures\vertex_fetch_capture_001`:
 - Real D3D12 output for draw `1004`: `native_captures\vertex_fetch_capture_001\native-renderer-d3d12-real-draw1004-final.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`, `1280x720`, `921600/921600` non-clear pixels
 - Auto-selected real D3D12 output: `native_captures\vertex_fetch_capture_001\native-renderer-d3d12-real-auto-final.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
 - Diagnostic D3D12 after the real path remains working: `native-renderer-d3d12-diagnostic-final.bmp`, SHA-256 `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`
+- Fresh shader-payload capture `native_captures\shader_payload_capture_001`: `587/587` shader uploads with payload, `73/73` constant uploads with payload, `28` indexed draw snapshots, `218` vertex fetch snapshots
+- Draw `1209` with explicit diagnostic shader fallback: `native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
+- Draw `1209` without `--allow-diagnostic-shader`: exit code `1`, expected fail-closed message because no translated/cached/override shader pair exists yet
 
 ## Build note
 
-The CMake build graph was regenerated with Visual Studio CMake. `default`, `native_render_replay`, and `native_shader_inspect` build successfully through Ninja under `VsDevCmd`; latest verified artifact times are 2026-06-28 23:16-23:17 Brisbane time.
+The CMake build graph was regenerated with Visual Studio CMake. `default`, `native_render_replay`, and `native_shader_inspect` build successfully through Ninja under `VsDevCmd`; latest verified shader-payload build exit file is `native-renderer-shader-payload-build.exit.txt` = `0`.

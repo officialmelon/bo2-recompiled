@@ -306,14 +306,89 @@ XEX:
 - `PM4_SET_SHADER_CONSTANTS` packet construction hit: `0x8258CE80`.
 - `PM4_IM_LOAD_IMMEDIATE` shader upload hits include `0x82582948`, `0x8258CD20`, and related paths.
 
+## 2026-06-29 shader-payload capture and D3D12 shader gate
+
+Full Windows build:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"" -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j1 default native_render_replay native_shader_inspect"
+```
+
+- Build log: `default\out\build\win-amd64-clangmsvc-debug\native-renderer-shader-payload-build.out.log`
+- Exit file: `native-renderer-shader-payload-build.exit.txt` = `0`
+- Result: linked `default.exe`, `native_render_replay.exe`, and `native_shader_inspect.exe`
+
+Fresh capture:
+
+```powershell
+default.exe --native_renderer_mode native --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --native_renderer_capture_limit 12000 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false
+```
+
+- Capture process was explicitly stopped after the JSONL hit the bounded `12000` event limit.
+- Capture: `C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl`
+- Events: `12000`
+- Frames: `53`
+- Draws: `2654`
+- Shader payloads: `587/587`, `13230` payload dwords, `0` missing, `0` truncated
+- Constant payloads: `73/73`
+- Indexed draw snapshots: `28`
+- Vertex fetch snapshots: `218`
+- Validation: `Validation OK: 12000 events, 53 frames, 2654 draws`
+
+Target draw:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --draw 1209 --dump-bound-state --dump-indices --dump-vertices --dump-constants --no-summary
+```
+
+- Draw: `PM4_DRAW_INDX`, packet `0xC0032201`, packet pointer `0x0501B700`
+- Index base: `0x0501E0B0`, length `12`, format `0`, endian `1`
+- Raw index bytes: `00 03 00 00 00 02 00 02 00 00 00 01`
+- Decoded indices: `3,0,2,2,0,1`
+- VS: `0x5D918D91043B3ED0`, `63` payload dwords captured
+- PS: `0xC4ED2979F29C9139`, `72` payload dwords captured
+- Vertex fetch: `vf95`, address `0x0501E030`, stride `32`, `128/128` vertex bytes
+- Attributes: Xenos formats `38`, `6`, `37` at byte offsets `0`, `16`, `20`
+- Decoded vertex preview: a four-vertex `1280x720` quad with position/color/UV components
+- Constants: two bound ranges, both with payload
+
+Shader matching:
+
+```powershell
+native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --list-runtime-shaders --match-runtime-shaders --top-shaders 12
+```
+
+- Unique runtime shaders: `8`
+- Runtime shader pairs: `7`
+- Direct runtime-hash static-index matches: `0/8`
+- SHA-256 of captured PM4 payload dwords in little-endian and big-endian byte order did not match the static shader index for the tested top/target runtime shaders.
+
+D3D12 gate:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --draw 1209 --no-summary
+```
+
+- Exit code: `1`
+- Expected result: fails closed because no translated, cached, or override shader pair is available.
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --draw 1209 --allow-diagnostic-shader --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp --no-summary
+```
+
+- Exit code: `0`
+- Output: `native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`
+- SHA-256: `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
+- Status: resource-backed captured geometry with an explicit diagnostic shader fallback, not shader-correct BO2 rendering.
+
 ## Current hard blocker
 
-The current fresh capture can feed real index buffers and bounded raw vertex-buffer payloads for the first indexed draws, and D3D12 now renders draw `1004` from those captured resources. It still cannot feed a real D3D12/Vulkan scene backend because it lacks shader-correct native shaders, texture/sampler state, render-target/depth state, constant-buffer binding, and full-frame sequencing.
+The current fresh capture can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, and constant payloads for target draw `1209`. D3D12 can render that captured geometry only with the explicit diagnostic shader fallback. It still cannot feed a real D3D12/Vulkan scene backend because it lacks shader-correct native shaders or overrides, texture/sampler state, render-target/depth state, constant-buffer binding, and full-frame sequencing.
 
 ## Next required work
 
-1. Decode observed Xenos vertex formats into native input-layout metadata and CPU-visible vertex previews.
-2. Bind captured indices and vertex buffers into the real D3D12 replay path for draw `1004`.
-3. Implement shader runtime-hash matching and manual override plumbing for the top replay shader pairs.
-4. Decode texture/sampler and render-target/depth state for the same tested frame.
+1. Implement shader runtime-hash matching and manual override plumbing for the `0x5D918D91043B3ED0` / `0xC4ED2979F29C9139` pair.
+2. Bind captured constants through a real root signature/constant-buffer layout instead of only using diagnostic shader constants.
+3. Decode texture/sampler and render-target/depth/blend/raster state for the same tested frame.
+4. Expand D3D12 strict replay from one selected draw to all supported draws in a captured frame.
 5. Add sidecar resource manifests for larger vertex/texture/RT snapshots.

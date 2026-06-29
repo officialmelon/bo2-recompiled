@@ -41,6 +41,7 @@ Verified draw `1004` from `native_captures\vertex_fetch_capture_001\events.jsonl
 - BO2 JSONL capture writes `index_payload_byte_count`, `index_payload_missing`, `index_payload_truncated`, and `index_bytes`.
 - Replay validates indexed draws with missing snapshots and decodes captured 16-bit/32-bit index bytes with Xenos endian handling.
 - Replay command `--draw <n> --dump-bound-state` prints shader hashes and current bound constant ranges.
+- Replay summaries now report PM4 shader upload payload coverage. Fresh capture `shader_payload_capture_001` has `587/587` shader uploads with payload and `13230` captured payload dwords.
 - Replay command `--draw <n> --dump-indices` reports real indexed-draw metadata, raw bytes, and decoded indices when snapshots exist.
 - ReXGlue CP trace draw events now carry active vertex-shader fetch bindings, raw vertex fetch constant words, decoded address/size/endian/stride fields, decoded shader attribute descriptors, and up to `512` raw vertex bytes per fetch binding.
 - BO2 JSONL capture writes `vertex_fetch_count`, `vertex_fetch_truncated`, and structured `vertex_fetches`.
@@ -48,11 +49,13 @@ Verified draw `1004` from `native_captures\vertex_fetch_capture_001\events.jsonl
 - Replay command `--draw <n> --dump-vertices` now reports real fetch constants, stream addresses, stride, attribute formats, and raw vertex byte previews when snapshots exist.
 - Replay vertex dumps now decode captured vertex payloads into CPU-visible float components for observed Xenos formats `6`, `7`, `16`, `17`, `25`, `26`, `31`, `32`, `33`, `34`, `35`, `36`, `37`, `38`, and `57`, with captured endian handling.
 - Replay command `--resource-summary` reports snapshot coverage and current real-backend blockers.
+- Target draw `1209` in `shader_payload_capture_001` has real index bytes, decoded indices `3,0,2,2,0,1`, `vf95` vertex fetch state, `128/128` vertex bytes, decoded position/color/UV vertices, two constant ranges with payload, and captured VS/PS PM4 shader payload dwords.
 
 ## Required next capture fields
 
-1. Native input-layout conversion and backend vertex-buffer packing for the decoded Xenos formats.
-2. Textures/samplers: texture fetch constants, base address, dimensions, format, mip count, tiling/swizzle, endian, sampler filter/wrap/lod, and raw bytes or sidecar snapshot.
+1. Textures/samplers: texture fetch constants, base address, dimensions, format, mip count, tiling/swizzle, endian, sampler filter/wrap/lod, and raw bytes or sidecar snapshot.
+2. Render targets/depth/blend/raster state: color/depth target addresses and formats, viewport/scissor, blend/depth/stencil/raster state, clears, resolves, and frontbuffer/swap metadata.
+3. Shader identity metadata: material/shader record pointers, stripped/aligned payload hashes, and source container/microcode mapping evidence.
 3. Render state: color/depth target addresses, formats, pitch, viewport, scissor, blend, depth/stencil, rasterizer/cull, clears, resolves, and present target mapping.
 4. Shader microcode: raw PM4-loaded microcode bytes or stable sidecar resource references for runtime-used shaders.
 5. Sidecar resource manifests for larger vertex, texture, and render-target snapshots so JSONL stays bounded.

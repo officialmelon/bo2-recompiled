@@ -137,8 +137,12 @@ Runtime verification:
 - `native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --summary` succeeds: `142` zones, `36769` occurrences, `33950` unique containers, `33355` unique microcode blobs, `0` invalid bounds.
 - `native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --list-runtime-shaders --top-shaders 20` succeeds: `12000` lines, `594` shader events, `2646` draw events, `8` unique runtime shaders, `7` shader pairs.
 - `native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --match-runtime-shaders --top-shaders 20` succeeds and reports `Runtime shader direct matches: 0/8`.
-- The interrupted Ninja run was repaired by regenerating the CMake build graph with Visual Studio CMake. Target-specific `native_render_replay` and `native_shader_inspect` builds now succeed through Ninja under `VsDevCmd`.
-- The full `default` target was attempted with a 180-second cap and stopped while rebuilding ReXGlue runtime objects at step `28/165`; it had not reached or failed on the BO2 native renderer changes.
+- Full shader-payload rebuild completed with `default`, `native_render_replay`, and `native_shader_inspect` linked successfully. Build log: `default\out\build\win-amd64-clangmsvc-debug\native-renderer-shader-payload-build.out.log`; exit file: `native-renderer-shader-payload-build.exit.txt` = `0`.
+- Fresh shader-payload capture `C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl` contains `12000` JSONL events, `53` frames, `2654` draws, `587/587` shader uploads with payload (`13230` dwords), `73/73` constant uploads with payload, `28` indexed draw snapshots, and `218` vertex fetch snapshots. Validation result: `Validation OK: 12000 events, 53 frames, 2654 draws`.
+- Target draw `1209` in `shader_payload_capture_001` is a real indexed `PM4_DRAW_INDX` quad with index bytes `00 03 00 00 00 02 00 02 00 00 00 01`, decoded indices `3,0,2,2,0,1`, `vf95` at `0x0501E030`, stride `32`, Xenos formats `38`, `6`, `37`, and decoded `1280x720` position/color/UV vertices.
+- Runtime shader direct static-index matches remain `0/8` on the shader-payload capture. SHA-256 experiments over little-endian and big-endian PM4 payload bytes for runtime shaders `0x5D918D91043B3ED0`, `0xC4ED2979F29C9139`, `0xB6C9863F710683EC`, and `0xA4A965C189287B99` found no direct `shader_work/shaders/index.json` match.
+- `--backend d3d12` now fails closed unless a real translated/cached/override shader is available. The temporary resource-backed diagnostic shader path requires explicit `--allow-diagnostic-shader`; with that flag, draw `1209` writes `native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
+- The earlier 180-second full-build timeout was superseded by the shader-payload rebuild above. The current known build state is successful for `default`, `native_render_replay`, and `native_shader_inspect`.
 
 ## What works
 
@@ -152,11 +156,12 @@ Runtime verification:
 - JSONL capture can record the live render stream for replay/backend bring-up.
 - Offline replay reconstructs draw state enough to list draw opcode, packet pointer, index/primitive/source fields, bound VS/PS hashes, constant history, bound constant ranges, and missing-state flags per draw.
 - Offline replay now parses optional constant payload arrays and reports whether each constant upload has payload, is missing payload, or is truncated.
+- Offline replay now parses optional shader payload arrays and reports whether each PM4 shader upload has payload, is missing payload, or is truncated.
 - Offline replay now parses bounded raw index-byte payloads for indexed draws, validates indexed draws with missing snapshots, and decodes 16-bit/32-bit indices using the captured Xenos endian mode.
 - Offline replay now has explicit `--dump-indices`, `--dump-vertices`, and `--resource-summary` reports. Index dumps can show real decoded BO2 indices for fresh captures; vertex/fetch dumps can show real fetch constants, stream base/size/stride, shader-decoded attribute formats, and bounded raw vertex bytes.
 - Offline replay now decodes captured vertex payload bytes for the observed Xenos fetch formats. Draw `1004` decodes to a real `1280x720` indexed quad with position/color/UV attributes, and draw `24` decodes non-indexed position data from format `57`.
 - Offline D3D12 replay creates a native D3D12 render target, emits draw-derived clear rectangles, compiles a tiny HLSL VS/PS pair, submits synthetic triangle draw calls, copies the target to CPU memory, and writes a BMP without using ReXGlue/Xenia final rendering.
-- Offline real D3D12 replay can bind decoded captured BO2 vertex/index data for draw `1004`, submit `DrawIndexedInstanced`, copy the target to CPU memory, and write a BMP. The shader is still diagnostic.
+- Offline real D3D12 replay can bind decoded captured BO2 vertex/index data for draw `1004`/`1209`, submit `DrawIndexedInstanced`, copy the target to CPU memory, and write a BMP. The temporary shader is still diagnostic and now requires `--allow-diagnostic-shader`.
 - Ghidra MCP is usable for both programs: `CoDMPServer_PC.exe` provides PDB-backed renderer symbols, and `default.xex` instruction searches verify the XEX packet emitter addresses even where Ghidra's PPC function boundaries are broken.
 
 ## What does not work yet
