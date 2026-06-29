@@ -402,6 +402,8 @@ struct PM4SwapInfo {
   std::vector<uint8_t> frontbuffer_bytes;
   bool frontbuffer_payload_truncated = false;
   bool frontbuffer_payload_missing = true;
+  bool frontbuffer_fetch_valid = false;
+  TextureFetchInfo frontbuffer_fetch;
 };
 
 const char *ToString(RendererMode mode);

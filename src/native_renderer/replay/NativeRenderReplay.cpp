@@ -655,6 +655,77 @@ std::vector<VertexFetchRecord> ParseVertexFetches(const JsonObject &object) {
   return fetches;
 }
 
+TextureFetchRecord ParseTextureFetchRecord(
+    const std::vector<std::pair<std::string, JsonValue>> &fetch_object) {
+  TextureFetchRecord fetch{};
+  fetch.shader_type = GetU32(fetch_object, "shader_type");
+  fetch.binding_index = GetU32(fetch_object, "binding_index");
+  fetch.fetch_constant = GetU32(fetch_object, "fetch_constant");
+  fetch.dwords = GetU32Array(fetch_object, "dwords");
+  fetch.type = GetU32(fetch_object, "type");
+  fetch.base_address = GetU32(fetch_object, "base_address");
+  fetch.base_address_bytes =
+      GetU32(fetch_object, "base_address_bytes", fetch.base_address << 12);
+  fetch.mip_address = GetU32(fetch_object, "mip_address");
+  fetch.mip_address_bytes =
+      GetU32(fetch_object, "mip_address_bytes", fetch.mip_address << 12);
+  fetch.pitch = GetU32(fetch_object, "pitch");
+  fetch.tiled = GetBool(fetch_object, "tiled");
+  fetch.format = GetU32(fetch_object, "format");
+  fetch.endian = GetU32(fetch_object, "endian");
+  fetch.request_size = GetU32(fetch_object, "request_size");
+  fetch.stacked = GetBool(fetch_object, "stacked");
+  fetch.width = GetU32(fetch_object, "width");
+  fetch.height = GetU32(fetch_object, "height");
+  fetch.depth_or_stack = GetU32(fetch_object, "depth_or_stack");
+  fetch.num_format = GetU32(fetch_object, "num_format");
+  fetch.swizzle = GetU32(fetch_object, "swizzle");
+  fetch.exp_adjust = GetI32(fetch_object, "exp_adjust");
+  fetch.clamp_modes_present = FindValue(fetch_object, "clamp_x") != nullptr &&
+                              FindValue(fetch_object, "clamp_y") != nullptr &&
+                              FindValue(fetch_object, "clamp_z") != nullptr;
+  fetch.clamp_x = GetU32(fetch_object, "clamp_x");
+  fetch.clamp_y = GetU32(fetch_object, "clamp_y");
+  fetch.clamp_z = GetU32(fetch_object, "clamp_z");
+  fetch.mag_filter = GetU32(fetch_object, "mag_filter");
+  fetch.min_filter = GetU32(fetch_object, "min_filter");
+  fetch.mip_filter = GetU32(fetch_object, "mip_filter");
+  fetch.aniso_filter = GetU32(fetch_object, "aniso_filter");
+  fetch.arbitrary_filter = GetU32(fetch_object, "arbitrary_filter");
+  fetch.border_size = GetU32(fetch_object, "border_size");
+  fetch.vol_mag_filter = GetU32(fetch_object, "vol_mag_filter");
+  fetch.vol_min_filter = GetU32(fetch_object, "vol_min_filter");
+  fetch.mip_min_level = GetU32(fetch_object, "mip_min_level");
+  fetch.mip_max_level = GetU32(fetch_object, "mip_max_level");
+  fetch.lod_bias = GetI32(fetch_object, "lod_bias");
+  fetch.grad_exp_adjust_h = GetI32(fetch_object, "grad_exp_adjust_h");
+  fetch.grad_exp_adjust_v = GetI32(fetch_object, "grad_exp_adjust_v");
+  fetch.border_color = GetU32(fetch_object, "border_color");
+  fetch.force_bc_w_to_max = GetU32(fetch_object, "force_bc_w_to_max");
+  fetch.tri_clamp = GetU32(fetch_object, "tri_clamp");
+  fetch.aniso_bias = GetI32(fetch_object, "aniso_bias");
+  fetch.dimension = GetU32(fetch_object, "dimension");
+  fetch.packed_mips = GetBool(fetch_object, "packed_mips");
+  fetch.payload_byte_count = GetU32(fetch_object, "payload_byte_count");
+  fetch.payload_resource_byte_count =
+      GetU32(fetch_object, "payload_resource_byte_count");
+  fetch.payload_resource_path =
+      GetString(fetch_object, "payload_resource_path");
+  fetch.payload_bytes = GetU8Array(fetch_object, "payload_bytes");
+  if (fetch.payload_byte_count == 0 && !fetch.payload_bytes.empty()) {
+    fetch.payload_byte_count =
+        static_cast<uint32_t>(fetch.payload_bytes.size());
+  }
+  fetch.payload_truncated = GetBool(fetch_object, "payload_truncated");
+  fetch.payload_missing =
+      GetBool(fetch_object, "payload_missing",
+              !FindValue(fetch_object, "payload_bytes"));
+  if (!fetch.payload_bytes.empty()) {
+    fetch.payload_missing = false;
+  }
+  return fetch;
+}
+
 std::vector<TextureFetchRecord> ParseTextureFetches(const JsonObject &object) {
   std::vector<TextureFetchRecord> fetches;
   const JsonValue *value = FindValue(object, "texture_fetches");
@@ -667,74 +738,7 @@ std::vector<TextureFetchRecord> ParseTextureFetches(const JsonObject &object) {
     if (element.type != JsonValueType::Object) {
       continue;
     }
-    const auto &fetch_object = element.object_value;
-    TextureFetchRecord fetch{};
-    fetch.shader_type = GetU32(fetch_object, "shader_type");
-    fetch.binding_index = GetU32(fetch_object, "binding_index");
-    fetch.fetch_constant = GetU32(fetch_object, "fetch_constant");
-    fetch.dwords = GetU32Array(fetch_object, "dwords");
-    fetch.type = GetU32(fetch_object, "type");
-    fetch.base_address = GetU32(fetch_object, "base_address");
-    fetch.base_address_bytes =
-        GetU32(fetch_object, "base_address_bytes", fetch.base_address << 12);
-    fetch.mip_address = GetU32(fetch_object, "mip_address");
-    fetch.mip_address_bytes =
-        GetU32(fetch_object, "mip_address_bytes", fetch.mip_address << 12);
-    fetch.pitch = GetU32(fetch_object, "pitch");
-    fetch.tiled = GetBool(fetch_object, "tiled");
-    fetch.format = GetU32(fetch_object, "format");
-    fetch.endian = GetU32(fetch_object, "endian");
-    fetch.request_size = GetU32(fetch_object, "request_size");
-    fetch.stacked = GetBool(fetch_object, "stacked");
-    fetch.width = GetU32(fetch_object, "width");
-    fetch.height = GetU32(fetch_object, "height");
-    fetch.depth_or_stack = GetU32(fetch_object, "depth_or_stack");
-    fetch.num_format = GetU32(fetch_object, "num_format");
-    fetch.swizzle = GetU32(fetch_object, "swizzle");
-    fetch.exp_adjust = GetI32(fetch_object, "exp_adjust");
-    fetch.clamp_modes_present = FindValue(fetch_object, "clamp_x") != nullptr &&
-                                FindValue(fetch_object, "clamp_y") != nullptr &&
-                                FindValue(fetch_object, "clamp_z") != nullptr;
-    fetch.clamp_x = GetU32(fetch_object, "clamp_x");
-    fetch.clamp_y = GetU32(fetch_object, "clamp_y");
-    fetch.clamp_z = GetU32(fetch_object, "clamp_z");
-    fetch.mag_filter = GetU32(fetch_object, "mag_filter");
-    fetch.min_filter = GetU32(fetch_object, "min_filter");
-    fetch.mip_filter = GetU32(fetch_object, "mip_filter");
-    fetch.aniso_filter = GetU32(fetch_object, "aniso_filter");
-    fetch.arbitrary_filter = GetU32(fetch_object, "arbitrary_filter");
-    fetch.border_size = GetU32(fetch_object, "border_size");
-    fetch.vol_mag_filter = GetU32(fetch_object, "vol_mag_filter");
-    fetch.vol_min_filter = GetU32(fetch_object, "vol_min_filter");
-    fetch.mip_min_level = GetU32(fetch_object, "mip_min_level");
-    fetch.mip_max_level = GetU32(fetch_object, "mip_max_level");
-    fetch.lod_bias = GetI32(fetch_object, "lod_bias");
-    fetch.grad_exp_adjust_h = GetI32(fetch_object, "grad_exp_adjust_h");
-    fetch.grad_exp_adjust_v = GetI32(fetch_object, "grad_exp_adjust_v");
-    fetch.border_color = GetU32(fetch_object, "border_color");
-    fetch.force_bc_w_to_max = GetU32(fetch_object, "force_bc_w_to_max");
-    fetch.tri_clamp = GetU32(fetch_object, "tri_clamp");
-    fetch.aniso_bias = GetI32(fetch_object, "aniso_bias");
-    fetch.dimension = GetU32(fetch_object, "dimension");
-    fetch.packed_mips = GetBool(fetch_object, "packed_mips");
-    fetch.payload_byte_count = GetU32(fetch_object, "payload_byte_count");
-    fetch.payload_resource_byte_count =
-        GetU32(fetch_object, "payload_resource_byte_count");
-    fetch.payload_resource_path =
-        GetString(fetch_object, "payload_resource_path");
-    fetch.payload_bytes = GetU8Array(fetch_object, "payload_bytes");
-    if (fetch.payload_byte_count == 0 && !fetch.payload_bytes.empty()) {
-      fetch.payload_byte_count =
-          static_cast<uint32_t>(fetch.payload_bytes.size());
-    }
-    fetch.payload_truncated = GetBool(fetch_object, "payload_truncated");
-    fetch.payload_missing =
-        GetBool(fetch_object, "payload_missing",
-                !FindValue(fetch_object, "payload_bytes"));
-    if (!fetch.payload_bytes.empty()) {
-      fetch.payload_missing = false;
-    }
-    fetches.push_back(std::move(fetch));
+    fetches.push_back(ParseTextureFetchRecord(element.object_value));
   }
   return fetches;
 }
@@ -1049,6 +1053,16 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
                 !FindValue(object, "frontbuffer_payload_bytes"));
     if (!event.swap.frontbuffer_payload_bytes.empty()) {
       event.swap.frontbuffer_payload_missing = false;
+    }
+    event.swap.frontbuffer_fetch_valid =
+        GetBool(object, "frontbuffer_fetch_valid");
+    if (const JsonValue *frontbuffer_fetch =
+            FindValue(object, "frontbuffer_fetch");
+        frontbuffer_fetch &&
+        frontbuffer_fetch->type == JsonValueType::Object) {
+      event.swap.frontbuffer_fetch =
+          ParseTextureFetchRecord(frontbuffer_fetch->object_value);
+      event.swap.frontbuffer_fetch_valid = true;
     }
     break;
   case CaptureEventType::RenderCommand:
@@ -2048,6 +2062,156 @@ uint32_t GpuSwap32(uint32_t value, uint32_t endian) {
   default:
     return value;
   }
+}
+
+uint32_t AlignUpU32(uint32_t value, uint32_t alignment) {
+  return alignment == 0 ? value
+                        : ((value + alignment - 1) / alignment) * alignment;
+}
+
+uint32_t XenosTiledOffset2D(uint32_t x, uint32_t y, uint32_t pitch,
+                            uint32_t bytes_per_block_log2) {
+  pitch = AlignUpU32(pitch, 32);
+  const uint32_t macro =
+      ((x >> 5) + (y >> 5) * (pitch >> 5)) << (bytes_per_block_log2 + 7);
+  const uint32_t micro =
+      ((x & 7) + ((y & 0xE) << 2)) << bytes_per_block_log2;
+  const uint32_t offset =
+      macro + ((micro & ~0xFu) << 1) + (micro & 0xFu) + ((y & 1) << 4);
+  return ((offset & ~0x1FFu) << 3) + ((y & 16) << 7) +
+         ((offset & 0x1C0u) << 2) +
+         (((((y & 8) >> 2) + (x >> 3)) & 3) << 6) + (offset & 0x3Fu);
+}
+
+uint32_t XenosTiledAddressUpperBound2D(uint32_t right, uint32_t bottom,
+                                       uint32_t pitch,
+                                       uint32_t bytes_per_block_log2) {
+  if (right == 0 || bottom == 0) {
+    return 0;
+  }
+
+  uint32_t upper_bound = XenosTiledOffset2D((right - 1) & ~31u,
+                                            (bottom - 1) & ~31u, pitch,
+                                            bytes_per_block_log2);
+  switch (bytes_per_block_log2) {
+  case 0:
+    upper_bound += 0xA00;
+    break;
+  case 1:
+    upper_bound += 0xC00;
+    break;
+  default:
+    upper_bound += 0x400u << bytes_per_block_log2;
+    break;
+  }
+  return upper_bound;
+}
+
+uint8_t ApplyTextureSwizzleComponent(const std::array<uint8_t, 4> &rgba,
+                                     uint32_t swizzle,
+                                     uint32_t component_index) {
+  const uint32_t component = (swizzle >> (3 * component_index)) & 0b111;
+  switch (component) {
+  case 0:
+  case 1:
+  case 2:
+  case 3:
+    return rgba[component];
+  case 4:
+    return 0;
+  case 5:
+    return 0xFF;
+  default:
+    return 0;
+  }
+}
+
+bool DecodeFrontbufferFetchRgba8(const PM4SwapRecord &swap,
+                                 std::vector<uint8_t> &rgba,
+                                 std::string &reason) {
+  rgba.clear();
+  if (!swap.frontbuffer_fetch_valid) {
+    reason = "frontbuffer fetch0 metadata is missing";
+    return false;
+  }
+  const TextureFetchRecord &fetch = swap.frontbuffer_fetch;
+  if (fetch.format != 6) {
+    reason = "unsupported frontbuffer format " + std::to_string(fetch.format);
+    return false;
+  }
+  if (fetch.width == 0 || fetch.height == 0) {
+    reason = "frontbuffer fetch dimensions are zero";
+    return false;
+  }
+  if (fetch.width != swap.width || fetch.height != swap.height) {
+    reason = "frontbuffer fetch dimensions do not match PM4 swap dimensions";
+    return false;
+  }
+  const uint64_t output_bytes =
+      static_cast<uint64_t>(fetch.width) * fetch.height * 4u;
+  if (output_bytes > SIZE_MAX) {
+    reason = "decoded frontbuffer output would exceed addressable memory";
+    return false;
+  }
+
+  const uint32_t pitch_texels =
+      fetch.pitch != 0 ? fetch.pitch << 5 : fetch.width;
+  if (fetch.tiled) {
+    const uint32_t tiled_footprint =
+        XenosTiledAddressUpperBound2D(fetch.width, fetch.height, pitch_texels,
+                                      2);
+    if (tiled_footprint > swap.frontbuffer_payload_bytes.size()) {
+      reason = "tiled frontbuffer payload is smaller than fetch footprint "
+               "(have " +
+               std::to_string(swap.frontbuffer_payload_bytes.size()) +
+               " bytes, need " + std::to_string(tiled_footprint) + " bytes)";
+      return false;
+    }
+  } else {
+    const uint64_t footprint =
+        (static_cast<uint64_t>(pitch_texels) * (fetch.height - 1) +
+         fetch.width) *
+        4u;
+    if (footprint > swap.frontbuffer_payload_bytes.size()) {
+      reason = "linear frontbuffer payload is smaller than fetch footprint";
+      return false;
+    }
+  }
+
+  rgba.resize(static_cast<std::size_t>(output_bytes));
+  for (uint32_t y = 0; y < fetch.height; ++y) {
+    for (uint32_t x = 0; x < fetch.width; ++x) {
+      const std::size_t pixel =
+          static_cast<std::size_t>(y) * fetch.width + x;
+      const std::size_t source_offset =
+          fetch.tiled
+              ? XenosTiledOffset2D(x, y, pitch_texels, 2)
+              : (static_cast<std::size_t>(y) * pitch_texels + x) * 4u;
+      if (source_offset + 4 > swap.frontbuffer_payload_bytes.size()) {
+        reason = "tiled frontbuffer payload is smaller than fetch footprint";
+        rgba.clear();
+        return false;
+      }
+      const uint32_t word = GpuSwap32(
+          LoadLittleEndian32(swap.frontbuffer_payload_bytes, source_offset),
+          fetch.endian);
+      const std::array<uint8_t, 4> raw = {
+          static_cast<uint8_t>(word & 0xFF),
+          static_cast<uint8_t>((word >> 8) & 0xFF),
+          static_cast<uint8_t>((word >> 16) & 0xFF),
+          static_cast<uint8_t>((word >> 24) & 0xFF)};
+      rgba[pixel * 4 + 0] =
+          ApplyTextureSwizzleComponent(raw, fetch.swizzle, 0);
+      rgba[pixel * 4 + 1] =
+          ApplyTextureSwizzleComponent(raw, fetch.swizzle, 1);
+      rgba[pixel * 4 + 2] =
+          ApplyTextureSwizzleComponent(raw, fetch.swizzle, 2);
+      rgba[pixel * 4 + 3] =
+          ApplyTextureSwizzleComponent(raw, fetch.swizzle, 3);
+    }
+  }
+  reason.clear();
+  return true;
 }
 
 float FloatFromBits(uint32_t bits) {
@@ -3611,9 +3775,22 @@ bool DumpFrontbufferPreview(const ReplayCapture &capture,
     }
   }
 
+  std::vector<uint8_t> output_rgba;
+  std::string decode_reason;
+  std::string decode_mode = "fetch0_tiled_rgba8";
+  uint32_t output_width = swap.width;
+  uint32_t output_height = swap.height;
+  if (DecodeFrontbufferFetchRgba8(swap, output_rgba, decode_reason)) {
+    output_width = swap.frontbuffer_fetch.width;
+    output_height = swap.frontbuffer_fetch.height;
+  } else {
+    decode_mode = "raw_linear_rgba8";
+    output_rgba = swap.frontbuffer_payload_bytes;
+  }
+
   std::string error;
-  if (!WriteRawLinearRgbaBmpPreview(output, swap.frontbuffer_payload_bytes,
-                                    swap.width, swap.height, error)) {
+  if (!WriteRawLinearRgbaBmpPreview(output, output_rgba, output_width,
+                                    output_height, error)) {
     std::cerr << "frontbuffer BMP preview failed: " << error << "\n";
     return false;
   }
@@ -3637,12 +3814,48 @@ bool DumpFrontbufferPreview(const ReplayCapture &capture,
   if (required_bytes != swap.frontbuffer_payload_bytes.size()) {
     std::cout << " expected_linear_bytes=" << required_bytes;
   }
+  std::cout << " decode_mode=" << decode_mode;
+  if (!decode_reason.empty()) {
+    std::cout << " decode_fallback_reason=\"" << decode_reason << "\"";
+  }
   std::cout << "\n";
-  std::cout << "Frontbuffer BMP raw-linear preview: "
+  if (swap.frontbuffer_fetch_valid) {
+    const TextureFetchRecord &fetch = swap.frontbuffer_fetch;
+    std::cout << "Frontbuffer fetch0: base="
+              << FormatHex32(fetch.base_address_bytes)
+              << " mip=" << FormatHex32(fetch.mip_address_bytes)
+              << " format=" << fetch.format
+              << " endian=" << fetch.endian
+              << " tiled=" << (fetch.tiled ? "yes" : "no")
+              << " pitch=" << fetch.pitch
+              << " size=" << fetch.width << "x" << fetch.height
+              << " depth_or_stack=" << fetch.depth_or_stack
+              << " dimension=" << fetch.dimension
+              << " swizzle=" << FormatHex32(fetch.swizzle)
+              << " clamp=" << fetch.clamp_x << "/" << fetch.clamp_y << "/"
+              << fetch.clamp_z << "\n";
+  } else {
+    std::cout << "Frontbuffer fetch0: missing\n";
+  }
+  std::size_t output_rgb_nonzero_pixels = 0;
+  std::size_t output_alpha_nonzero_pixels = 0;
+  for (std::size_t i = 0; i + 3 < output_rgba.size(); i += 4) {
+    if ((output_rgba[i] | output_rgba[i + 1] | output_rgba[i + 2]) != 0) {
+      ++output_rgb_nonzero_pixels;
+    }
+    if (output_rgba[i + 3] != 0) {
+      ++output_alpha_nonzero_pixels;
+    }
+  }
+  std::cout << "Frontbuffer decoded pixels: rgb_nonzero="
+            << output_rgb_nonzero_pixels
+            << " alpha_nonzero=" << output_alpha_nonzero_pixels << "\n";
+  std::cout << "Frontbuffer BMP preview: "
             << std::filesystem::absolute(output).string() << "\n";
-  std::cout << "Frontbuffer note: this preview treats the payload as linear "
-               "RGBA8. Correct swap-texture decode still needs captured "
-               "fetch0 format, swizzle, tiling, and endian metadata.\n";
+  if (decode_mode == "raw_linear_rgba8") {
+    std::cout << "Frontbuffer note: using raw linear fallback; correct "
+                 "swap-texture decode needs supported fetch0 metadata.\n";
+  }
   return true;
 }
 

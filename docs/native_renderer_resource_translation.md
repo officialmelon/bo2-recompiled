@@ -1,6 +1,6 @@
 # Native Renderer Resource Translation
 
-Last updated: 2026-06-29
+Last updated: 2026-06-30
 
 ## Current replay resource coverage
 
@@ -80,16 +80,17 @@ Verified draw `799` from `native_captures\state_capture_004\events.jsonl` is the
 - Draw `29` in `target_snapshot_capture_003` shows the corrected `1280x720x4` target footprint: color target base `1328`, depth base `608`, `payload_requested_byte_count=3686400`, `payload_offset_bytes=1843200`, and `payload=16384/3686400 sidecar truncated`.
 - Scanning all color/depth target sidecars in `target_snapshot_capture_003` found only zero bytes. This proves the CPU guest-memory path can read those target ranges, but the CPU memory mirror is not receiving GPU-rendered target contents at draw time. The next reverse-engineering target is the ReXGlue/Xenos GPU render-target backing/readback or resolve path, not another CPU-memory copy from the same base addresses.
 - ReXGlue's existing resolve readback path is useful for capture when enabled. Running with `--readback_resolve full` produced `native_captures\resolve_readback_capture_001\events.jsonl`, which validates `3000` events, `16` frames, and `671` draws. In that capture, `13/15` PM4 swap frontbuffer sidecars contain nonzero bytes and `9/15` contain nonzero RGB pixels.
-- Replay command `--dump-frontbuffer` now exports a selected PM4 swap payload as a raw linear RGBA8 BMP preview and reports byte/RGB/alpha coverage. On `resolve_readback_capture_001`, the default RGB-bearing snapshot is `3` (`seq=508`, `frontbuffer=0x1DD38000`) with `rgb_nonzero_pixels=911360`; the preview SHA-256 is `8C5D3248BE49A258FFD111FFCA1E30D44FC758A1A8C557FC1F534E8EA5384B28`.
-- The frontbuffer preview is not a correct final decode yet because PM4 swap capture currently lacks the texture fetch constant `0` metadata that ReXGlue uses in `TextureCache::RequestSwapTexture` to interpret format, dimensions, swizzle, tiling, endian, and scaled-resolve state.
+- Swap capture now records texture fetch constant `0` metadata on `pm4_swap` events. The frontbuffer payload request uses the Xenos tiled upper-bound footprint instead of only `width * height * 4`, which is required because a `1280x720` tiled format-6 swap texture has a `3768320` byte footprint even though the visible linear image is `3686400` bytes.
+- Fresh swap-fetch capture `native_captures\swap_fetch_capture_003\events.jsonl` validates `3000` events, `16` frames, and `670` draws. Resource summary reports `frontbuffer_snapshots=15`, `payload_bytes=56524800`, `sidecars=15`, `sidecar_bytes=56524800`, and `truncated=0`.
+- Replay command `--dump-frontbuffer` now decodes complete format-6 tiled frontbuffer payloads with captured fetch0 endian/swizzle metadata. On `swap_fetch_capture_003`, snapshot `3` (`seq=508`, `frontbuffer=0x1DD38000`) decodes with `decode_mode=fetch0_tiled_rgba8`, `format=6`, `endian=0`, `tiled=yes`, `pitch=40`, `swizzle=0x00000A0A`; output SHA-256 is `CD6890DFB492C3D8124A3E41DBF1161B2AD3821A6CE365F8509775D2F42A414B`.
+- Visual status: the decoded frontbuffer is coherent but the tested early frame is solid blue. This proves the frontbuffer texture decode path; it is not full BO2 scene output and does not replace the need for real draw sequencing, shader translation, render target/depth state, and live native backend integration.
 
 ## Required next capture fields
 
-1. Capture swap-time texture fetch constant `0` metadata and decode the readback-resolved frontbuffer with the same format/swizzle/tiling/endian rules ReXGlue uses for presentation. `readback_resolve=full` proves CPU-visible frontbuffer payloads, but current replay output is only a raw linear preview.
-2. Expand sidecar-backed texture snapshots beyond the current bounded base payloads: mip footprints and conversion beyond format `6` to the next runtime-used formats.
-3. Render-target/depth resource snapshots and resolve/frontbuffer mapping.
-4. Shader identity metadata: material/shader record pointers, stripped/aligned payload hashes, and source container/microcode mapping evidence.
-5. Shader microcode: raw PM4-loaded microcode bytes or stable sidecar resource references for runtime-used shaders.
+1. Expand sidecar-backed texture snapshots beyond the current bounded base payloads: mip footprints and conversion beyond format `6` to the next runtime-used formats.
+2. Render-target/depth resource snapshots and resolve/frontbuffer mapping for scene frames, not only early solid-color frontbuffer swaps.
+3. Shader identity metadata: material/shader record pointers, stripped/aligned payload hashes, and source container/microcode mapping evidence.
+4. Shader microcode: raw PM4-loaded microcode bytes or stable sidecar resource references for runtime-used shaders.
 
 ## Hard blocker
 

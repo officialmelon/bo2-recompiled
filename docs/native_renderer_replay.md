@@ -1,6 +1,6 @@
 # Native Renderer Replay
 
-Last updated: 2026-06-29
+Last updated: 2026-06-30
 
 `native_render_replay.exe` is the first offline replay executable for the BO2 native renderer work. It reads the JSONL written by `native_renderer_capture_path`, reconstructs frame/draw/shader/constant state, and reports enough state per draw to drive backend bring-up without booting the game for every iteration.
 
@@ -41,7 +41,7 @@ Options:
 - `--dump-constants`: list captured constant uploads; with `--draw`, lists constants known before that draw.
 - `--dump-indices`: report indexed-draw metadata, captured raw index bytes, and decoded index values when an index snapshot is available.
 - `--dump-vertices`: report fetch/vertex state coverage for the selected draw, including decoded vertex component previews for known Xenos formats.
-- `--dump-frontbuffer`: export a PM4 swap frontbuffer payload as a raw linear RGBA8 BMP preview. By default it picks the first payload with nonzero RGB pixels; use `--frontbuffer-index <n>` to force a zero-based PM4 swap payload and `--frontbuffer-output <path>` to set the BMP path. This is a payload sanity preview only until swap fetch0 format/swizzle/tiling/endian metadata is captured.
+- `--dump-frontbuffer`: export a PM4 swap frontbuffer payload as an RGBA8 BMP preview. By default it picks the first payload with nonzero RGB pixels; use `--frontbuffer-index <n>` to force a zero-based PM4 swap payload and `--frontbuffer-output <path>` to set the BMP path. Fresh captures with swap fetch0 metadata and a complete tiled payload decode through `fetch0_tiled_rgba8`; older/incomplete captures fall back to raw linear RGBA8 and print the exact missing tiled footprint.
 - `--resource-summary`: report current replay resource snapshot coverage.
 - `--shader-usage --top-shaders <n>`: show shader hash and shader-pair draw usage.
 - `--backend null|offline|d3d12-diagnostic|d3d12|vulkan-diagnostic|vulkan`: backend selector. `d3d12-diagnostic` runs the offscreen D3D12 debug renderer. `d3d12` is the real resource-backed path and fails closed unless real translated/cached/override shaders are available or `--allow-diagnostic-shader` is explicitly supplied. `vulkan*` fails closed until a Vulkan backend exists.
@@ -71,7 +71,38 @@ Replay result:
 - Sidecar scan: `13/15` frontbuffer payloads contain nonzero bytes; `9/15` contain nonzero RGB pixels. Color/depth target-base previews remain zero.
 - `--dump-frontbuffer` selects snapshot `3` by default because it is the first payload with nonzero RGB pixels: `seq=508`, `frontbuffer=0x1DD38000`, `1280x720`, `nonzero_bytes=1822720`, `rgb_nonzero_pixels=911360`, `alpha_nonzero_pixels=911360`.
 - Raw-linear BMP preview: `native-renderer-resolve-readback-frontbuffer-preview-rgb.bmp`, SHA-256 `8C5D3248BE49A258FFD111FFCA1E30D44FC758A1A8C557FC1F534E8EA5384B28`.
-- Interpretation: enabling ReXGlue `readback_resolve=full` makes resolved frontbuffer memory visible to CPU capture. The BMP preview is visibly nonblack but not a correct final decode yet because PM4 swap capture does not include fetch0 texture metadata used by ReXGlue's `RequestSwapTexture`.
+- Interpretation: enabling ReXGlue `readback_resolve=full` makes resolved frontbuffer memory visible to CPU capture. This older capture is still raw-linear-only because it lacks swap fetch0 metadata and only captured the visible `1280*720*4` byte count.
+
+## Verified swap fetch0 frontbuffer decode
+
+Input:
+
+`C:\Users\braxt\bo2-recompiled\native_captures\swap_fetch_capture_003\events.jsonl`
+
+Capture command:
+
+```powershell
+default.exe --native_renderer_mode native --native_renderer_shader_record_probe_mode off --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\swap_fetch_capture_003\events.jsonl --native_renderer_capture_limit 3000 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false --readback_resolve full
+```
+
+Replay commands:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\swap_fetch_capture_003\events.jsonl --validate
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\swap_fetch_capture_003\events.jsonl --resource-summary --no-summary
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\swap_fetch_capture_003\events.jsonl --dump-frontbuffer --frontbuffer-output C:\Users\braxt\bo2-recompiled\native-renderer-swap-fetch-003-frontbuffer-decoded.bmp --no-summary
+```
+
+Replay result:
+
+- Validation: `Validation OK: 3000 events, 16 frames, 670 draws`.
+- Resource summary: `frontbuffer_snapshots=15`, `payload_bytes=56524800`, `sidecars=15`, `sidecar_bytes=56524800`, `truncated=0`.
+- ReXGlue now captures the swap texture fetch0 metadata and requests the Xenos tiled upper-bound footprint. For the default selected snapshot, visible bytes are `3686400`, but the tiled footprint is `3768320`.
+- `--dump-frontbuffer` selected snapshot `3`, `seq=508`, `frontbuffer=0x1DD38000`, `1280x720`, `payload=3768320/3768320`, `decode_mode=fetch0_tiled_rgba8`.
+- Fetch0 fields: `base=0x1DD38000`, `format=6`, `endian=0`, `tiled=yes`, `pitch=40`, `swizzle=0x00000A0A`.
+- Decoded BMP: `native-renderer-swap-fetch-003-frontbuffer-decoded.bmp`, SHA-256 `CD6890DFB492C3D8124A3E41DBF1161B2AD3821A6CE365F8509775D2F42A414B`.
+- Visual status: coherent untiled output, but the tested early frame is solid blue. This proves frontbuffer footprint/tiling/swizzle decode, not full native scene rendering.
+- D3D12 regression on `sidecar_capture_002` is unchanged: `5` supported draws submitted, `5` captured texture SRVs, `5` captured samplers, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 
 ## Verified shader-payload capture
 

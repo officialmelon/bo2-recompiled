@@ -279,6 +279,8 @@ struct PM4SwapRecord {
   bool frontbuffer_payload_truncated = false;
   bool frontbuffer_payload_missing = true;
   bool frontbuffer_payload_loaded_from_resource = false;
+  bool frontbuffer_fetch_valid = false;
+  TextureFetchRecord frontbuffer_fetch;
 };
 
 struct RenderCommandRecord {

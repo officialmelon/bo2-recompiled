@@ -452,6 +452,116 @@ void NativeRenderCaptureWriter::WritePM4Packet(const PM4PacketInfo &packet) {
   EndEvent();
 }
 
+void NativeRenderCaptureWriter::WriteTextureFetchObject(
+    const TextureFetchInfo &fetch, bool allow_payload_sidecar) {
+  file_ << '{';
+  bool first_fetch_field = true;
+  auto fetch_prefix = [&]() {
+    if (!first_fetch_field) {
+      file_ << ',';
+    }
+    first_fetch_field = false;
+  };
+  auto fetch_u64 = [&](const char *name, uint64_t value) {
+    fetch_prefix();
+    file_ << '"' << name << "\":" << value;
+  };
+  auto fetch_i64 = [&](const char *name, int64_t value) {
+    fetch_prefix();
+    file_ << '"' << name << "\":" << value;
+  };
+  auto fetch_bool = [&](const char *name, bool value) {
+    fetch_prefix();
+    file_ << '"' << name << "\":" << (value ? "true" : "false");
+  };
+  auto fetch_hex = [&](const char *name, uint64_t value, int width) {
+    fetch_prefix();
+    file_ << '"' << name << "\":\"" << HexValue(value, width) << '"';
+  };
+  fetch_u64("shader_type", fetch.shader_type);
+  fetch_u64("binding_index", fetch.binding_index);
+  fetch_u64("fetch_constant", fetch.fetch_constant);
+  fetch_prefix();
+  file_ << "\"dwords\":[";
+  for (uint32_t j = 0; j < fetch.dwords.size(); ++j) {
+    if (j) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(fetch.dwords[j], 8) << '"';
+  }
+  file_ << ']';
+  fetch_u64("type", fetch.type);
+  fetch_hex("base_address", fetch.base_address, 8);
+  fetch_hex("base_address_bytes", fetch.base_address_bytes, 8);
+  fetch_hex("mip_address", fetch.mip_address, 8);
+  fetch_hex("mip_address_bytes", fetch.mip_address_bytes, 8);
+  fetch_u64("pitch", fetch.pitch);
+  fetch_bool("tiled", fetch.tiled);
+  fetch_u64("format", fetch.format);
+  fetch_u64("endian", fetch.endian);
+  fetch_u64("request_size", fetch.request_size);
+  fetch_bool("stacked", fetch.stacked);
+  fetch_u64("width", fetch.width);
+  fetch_u64("height", fetch.height);
+  fetch_u64("depth_or_stack", fetch.depth_or_stack);
+  fetch_u64("num_format", fetch.num_format);
+  fetch_hex("swizzle", fetch.swizzle, 4);
+  fetch_i64("exp_adjust", fetch.exp_adjust);
+  fetch_u64("clamp_x", fetch.clamp_x);
+  fetch_u64("clamp_y", fetch.clamp_y);
+  fetch_u64("clamp_z", fetch.clamp_z);
+  fetch_u64("mag_filter", fetch.mag_filter);
+  fetch_u64("min_filter", fetch.min_filter);
+  fetch_u64("mip_filter", fetch.mip_filter);
+  fetch_u64("aniso_filter", fetch.aniso_filter);
+  fetch_u64("arbitrary_filter", fetch.arbitrary_filter);
+  fetch_u64("border_size", fetch.border_size);
+  fetch_u64("vol_mag_filter", fetch.vol_mag_filter);
+  fetch_u64("vol_min_filter", fetch.vol_min_filter);
+  fetch_u64("mip_min_level", fetch.mip_min_level);
+  fetch_u64("mip_max_level", fetch.mip_max_level);
+  fetch_i64("lod_bias", fetch.lod_bias);
+  fetch_i64("grad_exp_adjust_h", fetch.grad_exp_adjust_h);
+  fetch_i64("grad_exp_adjust_v", fetch.grad_exp_adjust_v);
+  fetch_u64("border_color", fetch.border_color);
+  fetch_u64("force_bc_w_to_max", fetch.force_bc_w_to_max);
+  fetch_u64("tri_clamp", fetch.tri_clamp);
+  fetch_i64("aniso_bias", fetch.aniso_bias);
+  fetch_u64("dimension", fetch.dimension);
+  fetch_bool("packed_mips", fetch.packed_mips);
+  fetch_u64("payload_byte_count", fetch.payload_byte_count);
+  fetch_bool("payload_truncated", fetch.payload_truncated);
+  fetch_bool("payload_missing", fetch.payload_missing);
+  const uint32_t payload_count = std::min<uint32_t>(
+      fetch.payload_byte_count, fetch.payload_bytes.size());
+  constexpr uint32_t kInlineTexturePayloadLimit = 256;
+  constexpr uint32_t kTexturePayloadPreviewBytes = 64;
+  std::string payload_resource_path;
+  const bool payload_sidecar =
+      allow_payload_sidecar && payload_count > kInlineTexturePayloadLimit &&
+      WriteBinaryResource("texture_payload", fetch.payload_bytes.data(),
+                          payload_count, payload_resource_path);
+  if (payload_sidecar) {
+    fetch_u64("payload_resource_byte_count", payload_count);
+    fetch_prefix();
+    file_ << "\"payload_resource_path\":\""
+          << EscapeJson(payload_resource_path) << '"';
+  }
+  fetch_prefix();
+  file_ << "\"payload_bytes\":[";
+  const uint32_t inline_payload_count =
+      payload_sidecar
+          ? std::min<uint32_t>(payload_count, kTexturePayloadPreviewBytes)
+          : payload_count;
+  for (uint32_t j = 0; j < inline_payload_count; ++j) {
+    if (j) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(fetch.payload_bytes[j], 2) << '"';
+  }
+  file_ << "]}";
+}
+
 void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("pm4_draw")) {
@@ -582,113 +692,7 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
     if (i) {
       file_ << ',';
     }
-    const TextureFetchInfo &fetch = draw.texture_fetches[i];
-    file_ << '{';
-    bool first_fetch_field = true;
-    auto fetch_prefix = [&]() {
-      if (!first_fetch_field) {
-        file_ << ',';
-      }
-      first_fetch_field = false;
-    };
-    auto fetch_u64 = [&](const char *name, uint64_t value) {
-      fetch_prefix();
-      file_ << '"' << name << "\":" << value;
-    };
-    auto fetch_i64 = [&](const char *name, int64_t value) {
-      fetch_prefix();
-      file_ << '"' << name << "\":" << value;
-    };
-    auto fetch_bool = [&](const char *name, bool value) {
-      fetch_prefix();
-      file_ << '"' << name << "\":" << (value ? "true" : "false");
-    };
-    auto fetch_hex = [&](const char *name, uint64_t value, int width) {
-      fetch_prefix();
-      file_ << '"' << name << "\":\"" << HexValue(value, width) << '"';
-    };
-    fetch_u64("shader_type", fetch.shader_type);
-    fetch_u64("binding_index", fetch.binding_index);
-    fetch_u64("fetch_constant", fetch.fetch_constant);
-    fetch_prefix();
-    file_ << "\"dwords\":[";
-    for (uint32_t j = 0; j < fetch.dwords.size(); ++j) {
-      if (j) {
-        file_ << ',';
-      }
-      file_ << '"' << HexValue(fetch.dwords[j], 8) << '"';
-    }
-    file_ << ']';
-    fetch_u64("type", fetch.type);
-    fetch_hex("base_address", fetch.base_address, 8);
-    fetch_hex("base_address_bytes", fetch.base_address_bytes, 8);
-    fetch_hex("mip_address", fetch.mip_address, 8);
-    fetch_hex("mip_address_bytes", fetch.mip_address_bytes, 8);
-    fetch_u64("pitch", fetch.pitch);
-    fetch_bool("tiled", fetch.tiled);
-    fetch_u64("format", fetch.format);
-    fetch_u64("endian", fetch.endian);
-    fetch_u64("request_size", fetch.request_size);
-    fetch_bool("stacked", fetch.stacked);
-    fetch_u64("width", fetch.width);
-    fetch_u64("height", fetch.height);
-    fetch_u64("depth_or_stack", fetch.depth_or_stack);
-    fetch_u64("num_format", fetch.num_format);
-    fetch_hex("swizzle", fetch.swizzle, 4);
-    fetch_i64("exp_adjust", fetch.exp_adjust);
-    fetch_u64("clamp_x", fetch.clamp_x);
-    fetch_u64("clamp_y", fetch.clamp_y);
-    fetch_u64("clamp_z", fetch.clamp_z);
-    fetch_u64("mag_filter", fetch.mag_filter);
-    fetch_u64("min_filter", fetch.min_filter);
-    fetch_u64("mip_filter", fetch.mip_filter);
-    fetch_u64("aniso_filter", fetch.aniso_filter);
-    fetch_u64("arbitrary_filter", fetch.arbitrary_filter);
-    fetch_u64("border_size", fetch.border_size);
-    fetch_u64("vol_mag_filter", fetch.vol_mag_filter);
-    fetch_u64("vol_min_filter", fetch.vol_min_filter);
-    fetch_u64("mip_min_level", fetch.mip_min_level);
-    fetch_u64("mip_max_level", fetch.mip_max_level);
-    fetch_i64("lod_bias", fetch.lod_bias);
-    fetch_i64("grad_exp_adjust_h", fetch.grad_exp_adjust_h);
-    fetch_i64("grad_exp_adjust_v", fetch.grad_exp_adjust_v);
-    fetch_u64("border_color", fetch.border_color);
-    fetch_u64("force_bc_w_to_max", fetch.force_bc_w_to_max);
-    fetch_u64("tri_clamp", fetch.tri_clamp);
-    fetch_i64("aniso_bias", fetch.aniso_bias);
-    fetch_u64("dimension", fetch.dimension);
-    fetch_bool("packed_mips", fetch.packed_mips);
-    fetch_u64("payload_byte_count", fetch.payload_byte_count);
-    fetch_bool("payload_truncated", fetch.payload_truncated);
-    fetch_bool("payload_missing", fetch.payload_missing);
-    const uint32_t payload_count = std::min<uint32_t>(
-        fetch.payload_byte_count, fetch.payload_bytes.size());
-    constexpr uint32_t kInlineTexturePayloadLimit = 256;
-    constexpr uint32_t kTexturePayloadPreviewBytes = 64;
-    std::string payload_resource_path;
-    const bool payload_sidecar =
-        payload_count > kInlineTexturePayloadLimit &&
-        WriteBinaryResource("texture_payload", fetch.payload_bytes.data(),
-                            payload_count, payload_resource_path);
-    if (payload_sidecar) {
-      fetch_u64("payload_resource_byte_count", payload_count);
-      fetch_prefix();
-      file_ << "\"payload_resource_path\":\""
-            << EscapeJson(payload_resource_path) << '"';
-    }
-    fetch_prefix();
-    file_ << "\"payload_bytes\":[";
-    const uint32_t inline_payload_count =
-        payload_sidecar ? std::min<uint32_t>(payload_count,
-                                             kTexturePayloadPreviewBytes)
-                        : payload_count;
-    for (uint32_t j = 0; j < inline_payload_count; ++j) {
-      if (j) {
-        file_ << ',';
-      }
-      file_ << '"' << HexValue(fetch.payload_bytes[j], 2) << '"';
-    }
-    file_ << "]}";
+    WriteTextureFetchObject(draw.texture_fetches[i], true);
   }
   file_ << ']';
   WriteFieldPrefix("render_state");
@@ -1060,6 +1064,11 @@ void NativeRenderCaptureWriter::WritePM4Swap(const PM4SwapInfo &swap) {
     file_ << '"' << HexValue(swap.frontbuffer_bytes[i], 2) << '"';
   }
   file_ << ']';
+  WriteBoolField("frontbuffer_fetch_valid", swap.frontbuffer_fetch_valid);
+  if (swap.frontbuffer_fetch_valid) {
+    WriteFieldPrefix("frontbuffer_fetch");
+    WriteTextureFetchObject(swap.frontbuffer_fetch, false);
+  }
   EndEvent();
 }
 

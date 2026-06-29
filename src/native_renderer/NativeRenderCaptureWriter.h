@@ -46,6 +46,8 @@ class NativeRenderCaptureWriter {
   void WriteHex32Field(std::string_view name, uint32_t value);
   void WriteHex64Field(std::string_view name, uint64_t value);
   void WriteHexSizeField(std::string_view name, uintptr_t value);
+  void WriteTextureFetchObject(const TextureFetchInfo& fetch,
+                               bool allow_payload_sidecar);
   void FinalizeResourceIndex();
   bool WriteBinaryResource(std::string_view type, const uint8_t* data,
                            uint32_t byte_count,

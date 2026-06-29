@@ -152,6 +152,65 @@ void CopyDrawVertexFetchesIfPresent(const DrawEvent *event,
   }
 }
 
+template <typename TextureFetchEvent>
+void CopyTextureFetchInfo(const TextureFetchEvent &source,
+                          bo2::native::TextureFetchInfo &target) {
+  target.shader_type = source.shader_type;
+  target.binding_index = source.binding_index;
+  target.fetch_constant = source.fetch_constant;
+  for (uint32_t j = 0; j < target.dwords.size(); ++j) {
+    target.dwords[j] = source.dwords[j];
+  }
+  target.type = source.type;
+  target.base_address = source.base_address;
+  target.base_address_bytes = source.base_address_bytes;
+  target.mip_address = source.mip_address;
+  target.mip_address_bytes = source.mip_address_bytes;
+  target.pitch = source.pitch;
+  target.tiled = source.tiled;
+  target.format = source.format;
+  target.endian = source.endian;
+  target.request_size = source.request_size;
+  target.stacked = source.stacked;
+  target.width = source.width;
+  target.height = source.height;
+  target.depth_or_stack = source.depth_or_stack;
+  target.num_format = source.num_format;
+  target.swizzle = source.swizzle;
+  target.exp_adjust = source.exp_adjust;
+  target.clamp_x = source.clamp_x;
+  target.clamp_y = source.clamp_y;
+  target.clamp_z = source.clamp_z;
+  target.mag_filter = source.mag_filter;
+  target.min_filter = source.min_filter;
+  target.mip_filter = source.mip_filter;
+  target.aniso_filter = source.aniso_filter;
+  target.arbitrary_filter = source.arbitrary_filter;
+  target.border_size = source.border_size;
+  target.vol_mag_filter = source.vol_mag_filter;
+  target.vol_min_filter = source.vol_min_filter;
+  target.mip_min_level = source.mip_min_level;
+  target.mip_max_level = source.mip_max_level;
+  target.lod_bias = source.lod_bias;
+  target.grad_exp_adjust_h = source.grad_exp_adjust_h;
+  target.grad_exp_adjust_v = source.grad_exp_adjust_v;
+  target.border_color = source.border_color;
+  target.force_bc_w_to_max = source.force_bc_w_to_max;
+  target.tri_clamp = source.tri_clamp;
+  target.aniso_bias = source.aniso_bias;
+  target.dimension = source.dimension;
+  target.packed_mips = source.packed_mips;
+  target.payload_byte_count = std::min<uint32_t>(
+      source.payload_byte_count, target.payload_bytes.size());
+  for (uint32_t j = 0; j < target.payload_byte_count; ++j) {
+    target.payload_bytes[j] = source.payload_bytes[j];
+  }
+  target.payload_truncated =
+      source.payload_truncated ||
+      source.payload_byte_count > target.payload_bytes.size();
+  target.payload_missing = source.payload_missing;
+}
+
 template <typename DrawEvent>
 void CopyDrawTextureFetchesIfPresent(const DrawEvent *event,
                                      bo2::native::PM4DrawInfo &draw) {
@@ -169,60 +228,7 @@ void CopyDrawTextureFetchesIfPresent(const DrawEvent *event,
     for (uint32_t i = 0; i < draw.texture_fetch_count; ++i) {
       const auto &source = event->texture_fetches[i];
       auto &target = draw.texture_fetches[i];
-      target.shader_type = source.shader_type;
-      target.binding_index = source.binding_index;
-      target.fetch_constant = source.fetch_constant;
-      for (uint32_t j = 0; j < target.dwords.size(); ++j) {
-        target.dwords[j] = source.dwords[j];
-      }
-      target.type = source.type;
-      target.base_address = source.base_address;
-      target.base_address_bytes = source.base_address_bytes;
-      target.mip_address = source.mip_address;
-      target.mip_address_bytes = source.mip_address_bytes;
-      target.pitch = source.pitch;
-      target.tiled = source.tiled;
-      target.format = source.format;
-      target.endian = source.endian;
-      target.request_size = source.request_size;
-      target.stacked = source.stacked;
-      target.width = source.width;
-      target.height = source.height;
-      target.depth_or_stack = source.depth_or_stack;
-      target.num_format = source.num_format;
-      target.swizzle = source.swizzle;
-      target.exp_adjust = source.exp_adjust;
-      target.clamp_x = source.clamp_x;
-      target.clamp_y = source.clamp_y;
-      target.clamp_z = source.clamp_z;
-      target.mag_filter = source.mag_filter;
-      target.min_filter = source.min_filter;
-      target.mip_filter = source.mip_filter;
-      target.aniso_filter = source.aniso_filter;
-      target.arbitrary_filter = source.arbitrary_filter;
-      target.border_size = source.border_size;
-      target.vol_mag_filter = source.vol_mag_filter;
-      target.vol_min_filter = source.vol_min_filter;
-      target.mip_min_level = source.mip_min_level;
-      target.mip_max_level = source.mip_max_level;
-      target.lod_bias = source.lod_bias;
-      target.grad_exp_adjust_h = source.grad_exp_adjust_h;
-      target.grad_exp_adjust_v = source.grad_exp_adjust_v;
-      target.border_color = source.border_color;
-      target.force_bc_w_to_max = source.force_bc_w_to_max;
-      target.tri_clamp = source.tri_clamp;
-      target.aniso_bias = source.aniso_bias;
-      target.dimension = source.dimension;
-      target.packed_mips = source.packed_mips;
-      target.payload_byte_count = std::min<uint32_t>(
-          source.payload_byte_count, target.payload_bytes.size());
-      for (uint32_t j = 0; j < target.payload_byte_count; ++j) {
-        target.payload_bytes[j] = source.payload_bytes[j];
-      }
-      target.payload_truncated = source.payload_truncated ||
-                                 source.payload_byte_count >
-                                     target.payload_bytes.size();
-      target.payload_missing = source.payload_missing;
+      CopyTextureFetchInfo(source, target);
     }
   } else {
     draw.texture_fetch_count = 0;
@@ -462,6 +468,16 @@ void OnNativeRendererSwap(const rex::graphics::NativeRendererSwapEvent *event,
     swap.frontbuffer_bytes.assign(
         event->frontbuffer_bytes,
         event->frontbuffer_bytes + event->frontbuffer_payload_byte_count);
+  }
+  if constexpr (requires {
+                  event->frontbuffer_fetch_valid;
+                  event->frontbuffer_fetch.fetch_constant;
+                  event->frontbuffer_fetch.dwords[0];
+                }) {
+    swap.frontbuffer_fetch_valid = event->frontbuffer_fetch_valid;
+    if (swap.frontbuffer_fetch_valid) {
+      CopyTextureFetchInfo(event->frontbuffer_fetch, swap.frontbuffer_fetch);
+    }
   }
   bo2::native::NativeRenderer::Instance().OnPM4Swap(swap);
 }

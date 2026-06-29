@@ -1,6 +1,6 @@
 # Native Renderer Progress
 
-Last updated: 2026-06-28
+Last updated: 2026-06-30
 
 ## Current status
 
@@ -23,6 +23,7 @@ Last updated: 2026-06-28
 - `native_render_replay.exe --backend d3d12` now produces a BO2-owned native GPU-output artifact from captured draw `1004` using real replayed vertex/index payloads, D3D12 upload buffers, and `DrawIndexedInstanced`. This is captured BO2 geometry with a diagnostic native shader, not shader-correct scene rendering.
 - `native_shader_inspect.exe` has been added as a standalone shader index inspection target. The current implementation loads `shader_work/shaders/index.json`, prints summary counts, previews first pixel/vertex containers, and searches static container/microcode records by hash substring.
 - `native_shader_inspect.exe` now reads native captures, ranks runtime-used shader hashes and shader pairs, computes captured PM4 shader-payload SHA-256 variants, and checks whether runtime IDs or payload hashes appear directly in the static shader index. `shader_payload_capture_001` has `8` unique runtime shaders, `7` pairs, and `0/8` matches across runtime IDs, raw payload LE/BE hashes, and trailing-zero-trimmed payload LE/BE hashes.
+- PM4 swap capture now records ReXGlue texture fetch constant `0` metadata and requests the full Xenos tiled frontbuffer footprint. `swap_fetch_capture_003` validates and `--dump-frontbuffer` decodes snapshot `3` through `fetch0_tiled_rgba8` (`format=6`, `tiled=yes`, `pitch=40`, `swizzle=0x00000A0A`) to `native-renderer-swap-fetch-003-frontbuffer-decoded.bmp`, SHA-256 `CD6890DFB492C3D8124A3E41DBF1161B2AD3821A6CE365F8509775D2F42A414B`. The tested early frame is solid blue, so this proves frontbuffer texture decode but not full scene rendering.
 - Backend bring-up plan now lives in `docs/native_renderer_backend_plan.md`; replay format and verified results live in `docs/native_renderer_replay.md`.
 - Runtime renderer selection is controlled by the ReXGlue cvar `native_renderer_mode`.
 
@@ -138,6 +139,11 @@ Runtime verification:
 - `native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --list-runtime-shaders --top-shaders 20` succeeds: `12000` lines, `594` shader events, `2646` draw events, `8` unique runtime shaders, `7` shader pairs.
 - `native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --match-runtime-shaders --top-shaders 20` succeeds and reports `Runtime shader direct matches: 0/8`.
 - Full shader-payload rebuild completed with `default`, `native_render_replay`, and `native_shader_inspect` linked successfully. Build log: `default\out\build\win-amd64-clangmsvc-debug\native-renderer-shader-payload-build.out.log`; exit file: `native-renderer-shader-payload-build.exit.txt` = `0`.
+- Latest swap-fetch footprint rebuild completed with `default` and `native_render_replay` linked successfully using `ninja -j12`; elapsed about `155` seconds. Build logs: `native-renderer-swap-fetch-fullfootprint-build.stdout.txt` and `native-renderer-swap-fetch-fullfootprint-build.stderr.txt`.
+- Fresh swap-fetch capture `C:\Users\braxt\bo2-recompiled\native_captures\swap_fetch_capture_003\events.jsonl` was watchdog-stopped after `210` seconds but finalized successfully. Validation result: `Validation OK: 3000 events, 16 frames, 670 draws`.
+- Resource summary for `swap_fetch_capture_003`: `frontbuffer_snapshots=15`, `payload_bytes=56524800`, `sidecars=15`, `sidecar_bytes=56524800`, `truncated=0`; draw-time color/depth target previews are still bounded/truncated 16 KiB samples.
+- Frontbuffer decode for `swap_fetch_capture_003`: snapshot `3`, `seq=508`, `frontbuffer=0x1DD38000`, `payload=3768320/3768320`, `decode_mode=fetch0_tiled_rgba8`, output SHA-256 `CD6890DFB492C3D8124A3E41DBF1161B2AD3821A6CE365F8509775D2F42A414B`.
+- D3D12 real replay regression on `sidecar_capture_002` remains unchanged after swap-fetch changes: `5` supported draws submitted, `5` captured texture SRVs, `5` captured samplers, output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - Fresh shader-payload capture `C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl` contains `12000` JSONL events, `53` frames, `2654` draws, `587/587` shader uploads with payload (`13230` dwords), `73/73` constant uploads with payload, `28` indexed draw snapshots, and `218` vertex fetch snapshots. Validation result: `Validation OK: 12000 events, 53 frames, 2654 draws`.
 - Target draw `1209` in `shader_payload_capture_001` is a real indexed `PM4_DRAW_INDX` quad with index bytes `00 03 00 00 00 02 00 02 00 00 00 01`, decoded indices `3,0,2,2,0,1`, `vf95` at `0x0501E030`, stride `32`, Xenos formats `38`, `6`, `37`, and decoded `1280x720` position/color/UV vertices.
 - Runtime shader direct static-index matches remain `0/8` on the shader-payload capture. `native_shader_inspect.exe` now computes raw little-endian, raw big-endian, trailing-zero-trimmed little-endian, and trailing-zero-trimmed big-endian SHA-256 values for each captured runtime shader payload. All eight runtime shaders have stable payload hashes across repeated uploads, but all four payload-hash match rules report `no` against `shader_work/shaders/index.json`.
@@ -227,7 +233,7 @@ Runtime verification:
 2. Capture material shader record metadata and use Ghidra-backed shader/material records so runtime hashes can be matched to static shader containers or explicit overrides.
 3. Replace flattened captured constants with layout-aware constant buffers for draw `1209`.
 4. Expand sidecar-backed texture snapshots into mip footprint handling and additional runtime-used formats.
-5. Capture swap-time fetch0 metadata and correct frontbuffer texture decode. `readback_resolve=full` makes frontbuffer payloads nonzero, but the current replay BMP is only a raw linear preview.
+5. Use the decoded fetch0 frontbuffer path as a swap/resolve reference while expanding from the early solid-blue frame to useful scene frames.
 6. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends and apply color/depth/blend/raster state in D3D12.
 7. Add sidecar resource payloads for larger vertex snapshots.
-7. Replace the null runtime backend with a `D3D12Debug` backend once the replay D3D12 path proves device/swapchain/indexed draw submission.
+8. Replace the null runtime backend with a `D3D12Debug` backend once the replay D3D12 path proves device/swapchain/indexed draw submission.
