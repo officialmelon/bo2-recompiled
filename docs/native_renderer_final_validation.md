@@ -482,9 +482,28 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 - D3D12 regression on `sidecar_capture_002`: exit code `0`, still submits `5/5` supported draws, binds `5` captured texture SRVs, binds `5` exact-clamp sampler descriptors, and writes `native-renderer-frontbuffer-regression-d3d12-real.bmp` with SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - Status: PM4 swap/frontbuffer memory capture is implemented and replay-loadable. It does not yet provide useful scene color for the tested early frames; draw-time render-target/depth snapshots are still required.
 
+Draw-time render-target preview validation:
+
+```powershell
+default.exe --native_renderer_mode native --native_renderer_shader_record_probe_mode off --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\target_snapshot_capture_003\events.jsonl --native_renderer_capture_limit 1800 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\target_snapshot_capture_003\events.jsonl --validate
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\target_snapshot_capture_003\events.jsonl --resource-summary --no-summary
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\target_snapshot_capture_003\events.jsonl --draw 29 --dump-bound-state --no-summary
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\sidecar_capture_002\events.jsonl --backend d3d12 --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-target-snapshot-regression-d3d12-real.bmp --d3d12-draws 256 --no-summary
+```
+
+- Build exit code before capture: `0` for `default native_render_replay` with `-j12`.
+- Validation: `Validation OK: 1800 events, 10 frames, 395 draws`.
+- Resource summary: `color_target_snapshots=368`, `color_target_payload_bytes=6029312`, `depth_target_snapshots=369`, `depth_target_payload_bytes=6045696`, all sidecar-backed and truncated to 16 KiB previews.
+- Manifest: `746` resources total, with `368` `color_target_payload`, `369` `depth_target_payload`, and `9` `frontbuffer_payload` entries.
+- Draw `29`: color target base `1328`, depth base `608`, `payload=16384/3686400`, `offset=1843200`, sidecar-backed and truncated for both color and depth.
+- Payload content check: scanning every color/depth target sidecar in `target_snapshot_capture_003` found only zero bytes.
+- Expected vs actual: expected bounded target previews to contain at least some nonzero scene/depth data after sampling away from the top-left; actual CPU memory copies from target base ranges are all zero. This points at missing GPU-side ReXGlue/Xenos render-target backing/readback or resolve instrumentation rather than a replay parser issue.
+- D3D12 regression on `sidecar_capture_002`: exit code `0`, unchanged SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+
 ## Current hard blocker
 
-The current fresh captures can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, constant payloads, sidecar-backed texture payloads, texture clamp modes, PM4 swap/frontbuffer sidecar payloads, and decoded render-state registers for target draws. D3D12 can render the supported captured geometry with manifest-backed manual HLSL overrides, flattened captured constants, captured 2D format-6 SRV binding from inline or sidecar payloads, captured texture-filter/clamp sampler descriptors, first-pass captured render-state PSO setup, a compiled `.dxbc` cache hit, or the explicit diagnostic shader fallback. Runtime shader payload hashes are reproducible, and runtime shader/material record names are now captured, but neither currently maps directly to the extracted shader-work index. The renderer still cannot feed a real D3D12/Vulkan scene backend because it lacks automatic Xenos shader translation, DXC/DXIL, broader texture format/mip coverage, draw-time render-target/depth resource snapshots, real DSV binding for depth-enabled draws, full constant-layout reconstruction, heterogeneous PSO/state sequencing, and full-frame sequencing. The tested frontbuffer sidecars are black/zero, so they do not replace color/depth target snapshots.
+The current fresh captures can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, constant payloads, sidecar-backed texture payloads, texture clamp modes, PM4 swap/frontbuffer sidecar payloads, bounded draw-time color/depth target previews, and decoded render-state registers for target draws. D3D12 can render the supported captured geometry with manifest-backed manual HLSL overrides, flattened captured constants, captured 2D format-6 SRV binding from inline or sidecar payloads, captured texture-filter/clamp sampler descriptors, first-pass captured render-state PSO setup, a compiled `.dxbc` cache hit, or the explicit diagnostic shader fallback. Runtime shader payload hashes are reproducible, and runtime shader/material record names are now captured, but neither currently maps directly to the extracted shader-work index. The renderer still cannot feed a real D3D12/Vulkan scene backend because it lacks automatic Xenos shader translation, DXC/DXIL, broader texture format/mip coverage, GPU-side render-target/depth readback or resolve snapshots, real DSV binding for depth-enabled draws, full constant-layout reconstruction, heterogeneous PSO/state sequencing, and full-frame sequencing. The tested frontbuffer and CPU target-base sidecars are black/zero, so they do not yet provide real scene color/depth contents.
 
 Latest D3D12 multi-draw evidence: `native_render_replay.exe --backend d3d12 --d3d12-draws 64` on `shader_payload_capture_001` reports `11 supported draw(s)` out of `11` captured draws for `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139`, output SHA-256 `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`.
 
@@ -492,7 +511,7 @@ Latest D3D12 multi-draw evidence: `native_render_replay.exe --backend d3d12 --d3
 
 1. Capture or recover material/shader record metadata for the `0x5D918D91043B3ED0` / `0xC4ED2979F29C9139` pair, then implement runtime-hash matching with evidence.
 2. Replace flattened captured constants with a real shader-reflected constant-buffer layout.
-3. Expand sidecar-backed texture format/mip decoding and capture draw-time render-target/depth resources for the same tested frame.
+3. Expand sidecar-backed texture format/mip decoding and capture GPU-side render-target/depth resources for the same tested frame.
 4. Expand D3D12 strict replay from one selected draw to all supported draws in a captured frame.
 5. Add DXC/DXIL and generated/translated shader cache entries.
 6. Add sidecar payload capture for larger vertex and render-target/depth snapshots.

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <iterator>
 
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/graphics_system.h>
@@ -268,6 +269,49 @@ void CopyDrawRenderStateIfPresent(const DrawEvent *event,
       target.color_base[i] = source.color_base[i];
       target.color_format[i] = source.color_format[i];
       target.color_exp_bias[i] = source.color_exp_bias[i];
+    }
+    if constexpr (requires {
+                    source.color_payload_requested_byte_count[0];
+                    source.color_payload_offset_bytes[0];
+                    source.color_payload_byte_count[0];
+                    source.color_payload_bytes[0][0];
+                    source.color_payload_truncated[0];
+                    source.color_payload_missing[0];
+                    source.depth_payload_requested_byte_count;
+                    source.depth_payload_offset_bytes;
+                    source.depth_payload_byte_count;
+                    source.depth_payload_bytes[0];
+                  }) {
+      for (uint32_t i = 0; i < target.color_payload_bytes.size(); ++i) {
+        target.color_payload_requested_byte_count[i] =
+            source.color_payload_requested_byte_count[i];
+        target.color_payload_offset_bytes[i] =
+            source.color_payload_offset_bytes[i];
+        target.color_payload_byte_count[i] = source.color_payload_byte_count[i];
+        target.color_payload_truncated[i] = source.color_payload_truncated[i];
+        target.color_payload_missing[i] = source.color_payload_missing[i];
+        const uint32_t payload_count = std::min<uint32_t>(
+            source.color_payload_byte_count[i],
+            std::size(source.color_payload_bytes[i]));
+        if (payload_count != 0) {
+          target.color_payload_bytes[i].assign(
+              source.color_payload_bytes[i],
+              source.color_payload_bytes[i] + payload_count);
+        }
+      }
+      target.depth_payload_requested_byte_count =
+          source.depth_payload_requested_byte_count;
+      target.depth_payload_offset_bytes = source.depth_payload_offset_bytes;
+      target.depth_payload_byte_count = source.depth_payload_byte_count;
+      target.depth_payload_truncated = source.depth_payload_truncated;
+      target.depth_payload_missing = source.depth_payload_missing;
+      const uint32_t depth_payload_count = std::min<uint32_t>(
+          source.depth_payload_byte_count, std::size(source.depth_payload_bytes));
+      if (depth_payload_count != 0) {
+        target.depth_payload_bytes.assign(
+            source.depth_payload_bytes,
+            source.depth_payload_bytes + depth_payload_count);
+      }
     }
     target.surface_pitch = source.surface_pitch;
     target.msaa_samples = source.msaa_samples;

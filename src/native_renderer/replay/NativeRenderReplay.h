@@ -166,6 +166,20 @@ struct TextureFetchRecord {
   bool payload_loaded_from_resource = false;
 };
 
+struct RenderTargetPayloadRecord {
+  uint32_t target = 0;
+  uint32_t base = 0;
+  uint32_t payload_requested_byte_count = 0;
+  uint32_t payload_offset_bytes = 0;
+  uint32_t payload_byte_count = 0;
+  uint32_t payload_resource_byte_count = 0;
+  std::string payload_resource_path;
+  std::vector<uint8_t> payload_bytes;
+  bool payload_truncated = false;
+  bool payload_missing = true;
+  bool payload_loaded_from_resource = false;
+};
+
 struct RenderStateRecord {
   bool present = false;
   uint32_t rb_modecontrol = 0;
@@ -198,6 +212,8 @@ struct RenderStateRecord {
   std::vector<uint32_t> color_base;
   std::vector<uint32_t> color_format;
   std::vector<int32_t> color_exp_bias;
+  std::vector<RenderTargetPayloadRecord> color_target_payloads;
+  RenderTargetPayloadRecord depth_target_payload;
   bool depth_test_enable = false;
   bool depth_write_enable = false;
   bool stencil_enable = false;
@@ -478,6 +494,18 @@ struct ReplaySummary {
   uint64_t frontbuffer_payload_sidecars = 0;
   uint64_t frontbuffer_payload_sidecar_bytes = 0;
   uint64_t frontbuffer_payload_truncated = 0;
+  uint64_t color_target_snapshots = 0;
+  uint64_t color_target_snapshots_missing = 0;
+  uint64_t color_target_payload_bytes = 0;
+  uint64_t color_target_payload_sidecars = 0;
+  uint64_t color_target_payload_sidecar_bytes = 0;
+  uint64_t color_target_payload_truncated = 0;
+  uint64_t depth_target_snapshots = 0;
+  uint64_t depth_target_snapshots_missing = 0;
+  uint64_t depth_target_payload_bytes = 0;
+  uint64_t depth_target_payload_sidecars = 0;
+  uint64_t depth_target_payload_sidecar_bytes = 0;
+  uint64_t depth_target_payload_truncated = 0;
   uint64_t draws_with_render_state = 0;
   uint64_t draws_missing_render_state = 0;
   std::map<CaptureEventType, uint64_t> event_counts;

@@ -780,6 +780,92 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
   state_u64_array("color_base", state.color_base);
   state_u64_array("color_format", state.color_format);
   state_i64_array("color_exp_bias", state.color_exp_bias);
+  constexpr uint32_t kInlineTargetPayloadLimit = 256;
+  constexpr uint32_t kTargetPayloadPreviewBytes = 64;
+  state_prefix();
+  file_ << "\"color_target_payloads\":[";
+  for (uint32_t i = 0; i < state.color_payload_bytes.size(); ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    const uint32_t payload_count = std::min<uint32_t>(
+        state.color_payload_byte_count[i],
+        state.color_payload_bytes[i].size());
+    std::string payload_resource_path;
+    const bool payload_sidecar =
+        payload_count > kInlineTargetPayloadLimit &&
+        WriteBinaryResource("color_target_payload",
+                            state.color_payload_bytes[i].data(), payload_count,
+                            payload_resource_path);
+    file_ << "{\"target\":" << i
+          << ",\"base\":" << state.color_base[i]
+          << ",\"payload_requested_byte_count\":"
+          << state.color_payload_requested_byte_count[i]
+          << ",\"payload_offset_bytes\":"
+          << state.color_payload_offset_bytes[i]
+          << ",\"payload_byte_count\":"
+          << state.color_payload_byte_count[i]
+          << ",\"payload_truncated\":"
+          << (state.color_payload_truncated[i] ? "true" : "false")
+          << ",\"payload_missing\":"
+          << (state.color_payload_missing[i] ? "true" : "false");
+    if (payload_sidecar) {
+      file_ << ",\"payload_resource_byte_count\":" << payload_count
+            << ",\"payload_resource_path\":\""
+            << EscapeJson(payload_resource_path) << '"';
+    }
+    file_ << ",\"payload_bytes\":[";
+    const uint32_t inline_payload_count =
+        payload_sidecar
+            ? std::min<uint32_t>(payload_count, kTargetPayloadPreviewBytes)
+            : payload_count;
+    for (uint32_t j = 0; j < inline_payload_count; ++j) {
+      if (j) {
+        file_ << ',';
+      }
+      file_ << '"' << HexValue(state.color_payload_bytes[i][j], 2) << '"';
+    }
+    file_ << "]}";
+  }
+  file_ << ']';
+  state_prefix();
+  const uint32_t depth_payload_count = std::min<uint32_t>(
+      state.depth_payload_byte_count, state.depth_payload_bytes.size());
+  std::string depth_payload_resource_path;
+  const bool depth_payload_sidecar =
+      depth_payload_count > kInlineTargetPayloadLimit &&
+      WriteBinaryResource("depth_target_payload",
+                          state.depth_payload_bytes.data(),
+                          depth_payload_count,
+                          depth_payload_resource_path);
+  file_ << "\"depth_target_payload\":{\"base\":" << state.depth_base
+        << ",\"payload_requested_byte_count\":"
+        << state.depth_payload_requested_byte_count
+        << ",\"payload_offset_bytes\":"
+        << state.depth_payload_offset_bytes
+        << ",\"payload_byte_count\":" << state.depth_payload_byte_count
+        << ",\"payload_truncated\":"
+        << (state.depth_payload_truncated ? "true" : "false")
+        << ",\"payload_missing\":"
+        << (state.depth_payload_missing ? "true" : "false");
+  if (depth_payload_sidecar) {
+    file_ << ",\"payload_resource_byte_count\":" << depth_payload_count
+          << ",\"payload_resource_path\":\""
+          << EscapeJson(depth_payload_resource_path) << '"';
+  }
+  file_ << ",\"payload_bytes\":[";
+  const uint32_t inline_depth_payload_count =
+      depth_payload_sidecar
+          ? std::min<uint32_t>(depth_payload_count,
+                               kTargetPayloadPreviewBytes)
+          : depth_payload_count;
+  for (uint32_t i = 0; i < inline_depth_payload_count; ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(state.depth_payload_bytes[i], 2) << '"';
+  }
+  file_ << "]}";
   state_bool("depth_test_enable", state.depth_test_enable);
   state_bool("depth_write_enable", state.depth_write_enable);
   state_bool("stencil_enable", state.stencil_enable);

@@ -738,6 +738,62 @@ std::vector<TextureFetchRecord> ParseTextureFetches(const JsonObject &object) {
   return fetches;
 }
 
+RenderTargetPayloadRecord ParseRenderTargetPayload(
+    const std::vector<std::pair<std::string, JsonValue>> &object) {
+  RenderTargetPayloadRecord payload{};
+  payload.target = GetU32(object, "target");
+  payload.base = GetU32(object, "base");
+  payload.payload_requested_byte_count =
+      GetU32(object, "payload_requested_byte_count");
+  payload.payload_offset_bytes = GetU32(object, "payload_offset_bytes");
+  payload.payload_byte_count = GetU32(object, "payload_byte_count");
+  payload.payload_resource_byte_count =
+      GetU32(object, "payload_resource_byte_count");
+  payload.payload_resource_path = GetString(object, "payload_resource_path");
+  payload.payload_bytes = GetU8Array(object, "payload_bytes");
+  if (payload.payload_byte_count == 0 && !payload.payload_bytes.empty()) {
+    payload.payload_byte_count =
+        static_cast<uint32_t>(payload.payload_bytes.size());
+  }
+  payload.payload_truncated = GetBool(object, "payload_truncated");
+  payload.payload_missing =
+      GetBool(object, "payload_missing", !FindValue(object, "payload_bytes"));
+  if (!payload.payload_bytes.empty()) {
+    payload.payload_missing = false;
+  }
+  return payload;
+}
+
+std::vector<RenderTargetPayloadRecord> ParseRenderTargetPayloads(
+    const std::vector<std::pair<std::string, JsonValue>> &object) {
+  std::vector<RenderTargetPayloadRecord> payloads;
+  const JsonValue *value = FindValue(object, "color_target_payloads");
+  if (!value || value->type != JsonValueType::Array) {
+    return payloads;
+  }
+
+  payloads.reserve(value->array_value.size());
+  for (const JsonValue &element : value->array_value) {
+    if (element.type != JsonValueType::Object) {
+      continue;
+    }
+    payloads.push_back(ParseRenderTargetPayload(element.object_value));
+  }
+  return payloads;
+}
+
+RenderTargetPayloadRecord ParseDepthTargetPayload(
+    const std::vector<std::pair<std::string, JsonValue>> &object) {
+  const JsonValue *value = FindValue(object, "depth_target_payload");
+  if (!value || value->type != JsonValueType::Object) {
+    return RenderTargetPayloadRecord{};
+  }
+  RenderTargetPayloadRecord payload =
+      ParseRenderTargetPayload(value->object_value);
+  payload.target = 0;
+  return payload;
+}
+
 RenderStateRecord ParseRenderState(const JsonObject &object) {
   RenderStateRecord state{};
   const JsonValue *value = FindValue(object, "render_state");
@@ -781,6 +837,8 @@ RenderStateRecord ParseRenderState(const JsonObject &object) {
   state.color_base = GetU32Array(state_object, "color_base");
   state.color_format = GetU32Array(state_object, "color_format");
   state.color_exp_bias = GetI32Array(state_object, "color_exp_bias");
+  state.color_target_payloads = ParseRenderTargetPayloads(state_object);
+  state.depth_target_payload = ParseDepthTargetPayload(state_object);
   state.depth_test_enable = GetBool(state_object, "depth_test_enable");
   state.depth_write_enable = GetBool(state_object, "depth_write_enable");
   state.stencil_enable = GetBool(state_object, "stencil_enable");
@@ -1249,6 +1307,70 @@ void LoadFrontbufferPayloadSidecars(ReplayCapture &capture,
   }
 }
 
+void LoadRenderTargetPayloadSidecar(
+    ReplayCapture &capture, const ReplayLoadOptions &options,
+    const std::filesystem::path &base_dir, uint64_t seq,
+    std::string_view label, RenderTargetPayloadRecord &payload) {
+  if (payload.payload_resource_path.empty()) {
+    return;
+  }
+
+  std::filesystem::path resource_path(payload.payload_resource_path);
+  if (resource_path.is_relative()) {
+    resource_path = base_dir / resource_path;
+  }
+
+  std::vector<uint8_t> bytes;
+  std::string error;
+  if (!ReadSidecarResource(resource_path, bytes, error)) {
+    AddWarning(capture, options,
+               std::string(label) + " sidecar load failed for seq " +
+                   std::to_string(seq) + ": " + error);
+    return;
+  }
+
+  if (payload.payload_resource_byte_count != 0 &&
+      payload.payload_resource_byte_count != bytes.size()) {
+    AddWarning(capture, options,
+               std::string(label) + " sidecar byte count mismatch for seq " +
+                   std::to_string(seq) + ": expected " +
+                   std::to_string(payload.payload_resource_byte_count) +
+                   " got " + std::to_string(bytes.size()));
+  }
+
+  payload.payload_bytes = std::move(bytes);
+  payload.payload_loaded_from_resource = true;
+  payload.payload_missing = false;
+  if (payload.payload_resource_byte_count == 0) {
+    payload.payload_resource_byte_count =
+        static_cast<uint32_t>(payload.payload_bytes.size());
+  }
+  if (payload.payload_byte_count == 0) {
+    payload.payload_byte_count =
+        static_cast<uint32_t>(payload.payload_bytes.size());
+  }
+}
+
+void LoadRenderTargetPayloadSidecars(ReplayCapture &capture,
+                                     const ReplayLoadOptions &options) {
+  const std::filesystem::path base_dir = capture.path.parent_path();
+  for (CaptureEvent &event : capture.events) {
+    if (event.type != CaptureEventType::PM4Draw ||
+        !event.draw.render_state.present) {
+      continue;
+    }
+
+    for (RenderTargetPayloadRecord &payload :
+         event.draw.render_state.color_target_payloads) {
+      LoadRenderTargetPayloadSidecar(capture, options, base_dir, event.seq,
+                                     "color target payload", payload);
+    }
+    LoadRenderTargetPayloadSidecar(capture, options, base_dir, event.seq,
+                                   "depth target payload",
+                                   event.draw.render_state.depth_target_payload);
+  }
+}
+
 std::string FrameLabel(const ReplayDrawState &draw_state) {
   if (!draw_state.frame_index) {
     return "pre";
@@ -1503,6 +1625,53 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
       }
       if (event.draw.render_state.present) {
         ++capture.summary.draws_with_render_state;
+        for (const RenderTargetPayloadRecord &payload :
+             event.draw.render_state.color_target_payloads) {
+          if (payload.base == 0 &&
+              payload.payload_requested_byte_count == 0 &&
+              payload.payload_byte_count == 0 &&
+              payload.payload_bytes.empty()) {
+            continue;
+          }
+          if (payload.payload_missing || payload.payload_bytes.empty()) {
+            ++capture.summary.color_target_snapshots_missing;
+          } else {
+            ++capture.summary.color_target_snapshots;
+            capture.summary.color_target_payload_bytes +=
+                payload.payload_bytes.size();
+          }
+          if (!payload.payload_resource_path.empty()) {
+            ++capture.summary.color_target_payload_sidecars;
+            capture.summary.color_target_payload_sidecar_bytes +=
+                payload.payload_bytes.size();
+          }
+          if (payload.payload_truncated) {
+            ++capture.summary.color_target_payload_truncated;
+          }
+        }
+        const RenderTargetPayloadRecord &depth_payload =
+            event.draw.render_state.depth_target_payload;
+        if (depth_payload.base != 0 ||
+            depth_payload.payload_requested_byte_count != 0 ||
+            depth_payload.payload_byte_count != 0 ||
+            !depth_payload.payload_bytes.empty()) {
+          if (depth_payload.payload_missing ||
+              depth_payload.payload_bytes.empty()) {
+            ++capture.summary.depth_target_snapshots_missing;
+          } else {
+            ++capture.summary.depth_target_snapshots;
+            capture.summary.depth_target_payload_bytes +=
+                depth_payload.payload_bytes.size();
+          }
+          if (!depth_payload.payload_resource_path.empty()) {
+            ++capture.summary.depth_target_payload_sidecars;
+            capture.summary.depth_target_payload_sidecar_bytes +=
+                depth_payload.payload_bytes.size();
+          }
+          if (depth_payload.payload_truncated) {
+            ++capture.summary.depth_target_payload_truncated;
+          }
+        }
       } else {
         ++capture.summary.draws_missing_render_state;
       }
@@ -2310,6 +2479,7 @@ bool LoadReplayCapture(const std::filesystem::path &path,
 
   LoadTexturePayloadSidecars(capture, options);
   LoadFrontbufferPayloadSidecars(capture, options);
+  LoadRenderTargetPayloadSidecars(capture, options);
   AnalyzeReplayCapture(capture, options);
   if (!options.keep_events) {
     capture.events.clear();
@@ -2545,6 +2715,18 @@ void PrintReplaySummary(const ReplayCapture &capture) {
             << capture.summary.draws_with_render_state
             << " missing=" << capture.summary.draws_missing_render_state
             << "\n";
+  std::cout << "Render targets: color_snapshots="
+            << capture.summary.color_target_snapshots
+            << " color_missing="
+            << capture.summary.color_target_snapshots_missing
+            << " color_payload_bytes="
+            << capture.summary.color_target_payload_bytes
+            << " depth_snapshots="
+            << capture.summary.depth_target_snapshots
+            << " depth_missing="
+            << capture.summary.depth_target_snapshots_missing
+            << " depth_payload_bytes="
+            << capture.summary.depth_target_payload_bytes << "\n";
   std::cout << "Frontbuffer snapshots: snapshots="
             << capture.summary.frontbuffer_snapshots
             << " missing="
@@ -2862,6 +3044,35 @@ void PrintBoundStateDump(const ReplayCapture &capture, std::size_t draw_index) {
       std::cout << " " << base;
     }
     std::cout << "\n";
+    if (!rs.color_target_payloads.empty()) {
+      std::cout << "    color_target_payloads:";
+      for (const RenderTargetPayloadRecord &payload :
+           rs.color_target_payloads) {
+        std::cout << " [rt=" << payload.target
+                  << " base=" << payload.base
+                  << " offset=" << payload.payload_offset_bytes
+                  << " payload=" << payload.payload_bytes.size() << "/"
+                  << payload.payload_requested_byte_count
+                  << (payload.payload_loaded_from_resource ? " sidecar" : "")
+                  << (payload.payload_missing ? " missing" : "")
+                  << (payload.payload_truncated ? " truncated" : "")
+                  << "]";
+      }
+      std::cout << "\n";
+    }
+    const RenderTargetPayloadRecord &depth_payload = rs.depth_target_payload;
+    if (depth_payload.base != 0 ||
+        depth_payload.payload_requested_byte_count != 0 ||
+        !depth_payload.payload_bytes.empty()) {
+      std::cout << "    depth_target_payload base=" << depth_payload.base
+                << " offset=" << depth_payload.payload_offset_bytes
+                << " payload=" << depth_payload.payload_bytes.size() << "/"
+                << depth_payload.payload_requested_byte_count
+                << (depth_payload.payload_loaded_from_resource ? " sidecar" : "")
+                << (depth_payload.payload_missing ? " missing" : "")
+                << (depth_payload.payload_truncated ? " truncated" : "")
+                << "\n";
+    }
   } else {
     std::cout << "  render_state: missing\n";
   }
@@ -3149,8 +3360,30 @@ void PrintResourceSummary(const ReplayCapture &capture) {
             << capture.summary.frontbuffer_payload_sidecar_bytes
             << " truncated="
             << capture.summary.frontbuffer_payload_truncated << "\n";
-  std::cout << "  render_target_snapshots=0"
-            << " (draw-time color/depth target bytes not captured yet)\n";
+  std::cout << "  color_target_snapshots="
+            << capture.summary.color_target_snapshots
+            << " missing="
+            << capture.summary.color_target_snapshots_missing
+            << " payload_bytes="
+            << capture.summary.color_target_payload_bytes
+            << " sidecars="
+            << capture.summary.color_target_payload_sidecars
+            << " sidecar_bytes="
+            << capture.summary.color_target_payload_sidecar_bytes
+            << " truncated="
+            << capture.summary.color_target_payload_truncated << "\n";
+  std::cout << "  depth_target_snapshots="
+            << capture.summary.depth_target_snapshots
+            << " missing="
+            << capture.summary.depth_target_snapshots_missing
+            << " payload_bytes="
+            << capture.summary.depth_target_payload_bytes
+            << " sidecars="
+            << capture.summary.depth_target_payload_sidecars
+            << " sidecar_bytes="
+            << capture.summary.depth_target_payload_sidecar_bytes
+            << " truncated="
+            << capture.summary.depth_target_payload_truncated << "\n";
   const std::filesystem::path resource_dir =
       capture.path.parent_path() / "resources";
   const bool sidecar_json_present =

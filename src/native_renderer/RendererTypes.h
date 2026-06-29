@@ -284,6 +284,19 @@ struct RenderStateInfo {
   std::array<uint32_t, kColorTargetCount> color_base{};
   std::array<uint32_t, kColorTargetCount> color_format{};
   std::array<int32_t, kColorTargetCount> color_exp_bias{};
+  std::array<uint32_t, kColorTargetCount> color_payload_requested_byte_count{};
+  std::array<uint32_t, kColorTargetCount> color_payload_offset_bytes{};
+  std::array<uint32_t, kColorTargetCount> color_payload_byte_count{};
+  std::array<std::vector<uint8_t>, kColorTargetCount> color_payload_bytes{};
+  std::array<bool, kColorTargetCount> color_payload_truncated{};
+  std::array<bool, kColorTargetCount> color_payload_missing{true, true, true,
+                                                            true};
+  uint32_t depth_payload_requested_byte_count = 0;
+  uint32_t depth_payload_offset_bytes = 0;
+  uint32_t depth_payload_byte_count = 0;
+  std::vector<uint8_t> depth_payload_bytes;
+  bool depth_payload_truncated = false;
+  bool depth_payload_missing = true;
   bool depth_test_enable = false;
   bool depth_write_enable = false;
   bool stencil_enable = false;
