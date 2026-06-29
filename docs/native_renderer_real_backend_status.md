@@ -46,6 +46,16 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 - Output SHA-256: `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`
 - Evidence: succeeds with an empty override root because `shader_work\cache\shader_cache_index.json` maps the runtime hashes to compiled `.dxbc` blobs.
 
+Supported shader-pair multi-draw command:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --d3d12-draws 64 --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\native-renderer-d3d12-real-supported-pair-multidraw-log.bmp --no-summary
+```
+
+- Exit code: `0`
+- Backend log: `D3D12 real replay submitted 11 supported draw(s) for shader pair VS=0x5D918D91043B3ED0 PS=0xC4ED2979F29C9139 out of 11 captured draw(s) with that pair`
+- Output SHA-256: `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`
+
 Strict missing-cache-and-override path:
 
 ```powershell
@@ -72,7 +82,7 @@ Draw `1209` in `native_captures\shader_payload_capture_001` has enough packet da
 
 - Real: draw packet, index metadata, raw index bytes, decoded indices `3,0,2,2,0,1`, shader hashes and uploaded shader payload dwords, two constant ranges with payload, `vf95` at guest physical `0x0501E030`, stride `32`, attributes with Xenos formats `38`, `6`, and `37`, `128/128` raw vertex bytes, and decoded position/color/UV components.
 - Implemented: D3D12 canonical input layout, upload-buffer vertex/index resources, and `DrawIndexedInstanced` for this draw.
-- Implemented for draw `1209`: shader cache-index lookup, manifest override lookup, HLSL compilation/cache write, flattened captured constants at `b1`, canonical D3D12 input layout, upload-buffer vertex/index resources, and `DrawIndexedInstanced`.
+- Implemented for the draw-1209 shader pair: shader cache-index lookup, manifest override lookup, HLSL compilation/cache write, flattened captured constants at `b1`, canonical D3D12 input layout, upload-buffer vertex/index resources, and `DrawIndexedInstanced` for all `11/11` captured draws with that pair.
 - Missing: automatic Xenos shader translation, DXC/DXIL compilation, full constant-layout reconstruction, render target/depth state, texture/sampler state, and full-frame multi-draw replay.
 
 ## Next implementation targets

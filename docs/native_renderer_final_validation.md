@@ -427,6 +427,8 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 
 The current fresh capture can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, and constant payloads for target draw `1209`. D3D12 can render that captured geometry with manifest-backed manual HLSL overrides, flattened captured constants, a compiled `.dxbc` cache hit, or the explicit diagnostic shader fallback. Runtime shader payload hashes are reproducible, and runtime shader/material record names are now captured, but neither currently maps directly to the extracted shader-work index. The renderer still cannot feed a real D3D12/Vulkan scene backend because it lacks automatic Xenos shader translation, DXC/DXIL, texture/sampler state, render-target/depth state, full constant-layout reconstruction, and full-frame sequencing.
 
+Latest D3D12 multi-draw evidence: `native_render_replay.exe --backend d3d12 --d3d12-draws 64` on `shader_payload_capture_001` reports `11 supported draw(s)` out of `11` captured draws for `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139`, output SHA-256 `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`.
+
 ## Next required work
 
 1. Capture or recover material/shader record metadata for the `0x5D918D91043B3ED0` / `0xC4ED2979F29C9139` pair, then implement runtime-hash matching with evidence.

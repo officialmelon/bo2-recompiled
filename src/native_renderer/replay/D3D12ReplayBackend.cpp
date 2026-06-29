@@ -7,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -295,6 +296,15 @@ struct PreparedCapturedConstants {
   uint32_t count = 0;
 };
 
+struct UploadedRealDraw {
+  PreparedRealDraw prepared;
+  PreparedCapturedConstants constants;
+  ComPtr<ID3D12Resource> vertex_buffer;
+  ComPtr<ID3D12Resource> index_buffer;
+  uint64_t vertex_bytes = 0;
+  uint64_t index_bytes = 0;
+};
+
 struct NativeShaderOverridePair {
   std::filesystem::path vertex_path;
   std::filesystem::path pixel_path;
@@ -377,6 +387,54 @@ D3D12_PRIMITIVE_TOPOLOGY TopologyForPrimitive(uint32_t primitive_type) {
   }
 }
 
+bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
+                            PreparedRealDraw &prepared) {
+  if (index >= capture.draws.size()) {
+    return false;
+  }
+  const ReplayDrawState &state = capture.draws[index];
+  const PM4DrawRecord &draw = state.draw;
+  if (!draw.indexed || draw.index_payload_missing ||
+      draw.index_payload_truncated || draw.vertex_fetches.empty() ||
+      TopologyForPrimitive(draw.primitive_type) !=
+          D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) {
+    return false;
+  }
+
+  std::vector<uint32_t> decoded_indices = DecodeReplayIndices(draw);
+  if (decoded_indices.empty()) {
+    return false;
+  }
+
+  for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
+    PreparedRealDraw candidate;
+    candidate.draw_index = index;
+    if (!BuildCanonicalVertices(fetch, candidate.vertices)) {
+      continue;
+    }
+
+    const uint32_t max_index =
+        *std::max_element(decoded_indices.begin(), decoded_indices.end());
+    if (max_index >= candidate.vertices.size()) {
+      continue;
+    }
+
+    candidate.uses_32bit_indices =
+        draw.index_format != 0 || max_index > UINT16_MAX;
+    if (candidate.uses_32bit_indices) {
+      candidate.indices32 = decoded_indices;
+    } else {
+      candidate.indices16.reserve(decoded_indices.size());
+      for (uint32_t decoded_index : decoded_indices) {
+        candidate.indices16.push_back(static_cast<uint16_t>(decoded_index));
+      }
+    }
+    prepared = std::move(candidate);
+    return true;
+  }
+  return false;
+}
+
 bool PrepareFirstRealDraw(const ReplayCapture &capture,
                           const ReplayCliOptions &options,
                           PreparedRealDraw &prepared, std::string &error) {
@@ -388,45 +446,7 @@ bool PrepareFirstRealDraw(const ReplayCapture &capture,
                          : capture.draws.size();
 
   for (std::size_t i = begin; i < end; ++i) {
-    const ReplayDrawState &state = capture.draws[i];
-    const PM4DrawRecord &draw = state.draw;
-    if (!draw.indexed || draw.index_payload_missing ||
-        draw.index_payload_truncated ||
-        draw.vertex_fetches.empty() ||
-        TopologyForPrimitive(draw.primitive_type) !=
-            D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) {
-      continue;
-    }
-
-    std::vector<uint32_t> decoded_indices = DecodeReplayIndices(draw);
-    if (decoded_indices.empty()) {
-      continue;
-    }
-
-    for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
-      PreparedRealDraw candidate;
-      candidate.draw_index = i;
-      if (!BuildCanonicalVertices(fetch, candidate.vertices)) {
-        continue;
-      }
-
-      const uint32_t max_index = *std::max_element(decoded_indices.begin(),
-                                                  decoded_indices.end());
-      if (max_index >= candidate.vertices.size()) {
-        continue;
-      }
-
-      candidate.uses_32bit_indices =
-          draw.index_format != 0 || max_index > UINT16_MAX;
-      if (candidate.uses_32bit_indices) {
-        candidate.indices32 = decoded_indices;
-      } else {
-        candidate.indices16.reserve(decoded_indices.size());
-        for (uint32_t index : decoded_indices) {
-          candidate.indices16.push_back(static_cast<uint16_t>(index));
-        }
-      }
-      prepared = std::move(candidate);
+    if (PrepareRealDrawAtIndex(capture, i, prepared)) {
       return true;
     }
   }
@@ -438,6 +458,46 @@ bool PrepareFirstRealDraw(const ReplayCapture &capture,
           : "capture has no complete indexed vertex/index snapshot that the "
             "current D3D12 real replay path can bind";
   return false;
+}
+
+std::vector<PreparedRealDraw> CollectSupportedRealDraws(
+    const ReplayCapture &capture, const ReplayCliOptions &options,
+    const PreparedRealDraw &first_draw) {
+  std::vector<PreparedRealDraw> draws;
+  draws.push_back(first_draw);
+  if (options.draw_index || options.d3d12_draw_limit <= 1) {
+    return draws;
+  }
+
+  const ReplayDrawState &first_state = capture.draws[first_draw.draw_index];
+  for (std::size_t i = first_draw.draw_index + 1; i < capture.draws.size() &&
+       draws.size() < options.d3d12_draw_limit;
+       ++i) {
+    const ReplayDrawState &state = capture.draws[i];
+    if (state.vertex_shader.hash != first_state.vertex_shader.hash ||
+        state.pixel_shader.hash != first_state.pixel_shader.hash) {
+      continue;
+    }
+
+    PreparedRealDraw prepared;
+    if (PrepareRealDrawAtIndex(capture, i, prepared)) {
+      draws.push_back(std::move(prepared));
+    }
+  }
+  return draws;
+}
+
+std::size_t CountDrawsForShaderPair(const ReplayCapture &capture,
+                                    uint64_t vertex_shader_hash,
+                                    uint64_t pixel_shader_hash) {
+  std::size_t count = 0;
+  for (const ReplayDrawState &state : capture.draws) {
+    if (state.vertex_shader.hash == vertex_shader_hash &&
+        state.pixel_shader.hash == pixel_shader_hash) {
+      ++count;
+    }
+  }
+  return count;
 }
 
 bool CreateUploadBuffer(ID3D12Device *device, const void *data,
@@ -1616,6 +1676,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   }
 
   const ReplayDrawState &draw_state = capture.draws[prepared.draw_index];
+  const std::vector<PreparedRealDraw> prepared_draws =
+      CollectSupportedRealDraws(capture, options, prepared);
   NativeShaderOverridePair override_pair;
   const char *vertex_shader_source = nullptr;
   const char *pixel_shader_source = nullptr;
@@ -1748,28 +1810,42 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     return false;
   }
 
-  ComPtr<ID3D12Resource> vertex_buffer;
-  const uint64_t vertex_bytes =
-      prepared.vertices.size() * sizeof(RealReplayVertex);
-  if (!CreateUploadBuffer(device.Get(), prepared.vertices.data(), vertex_bytes,
-                          vertex_buffer, error)) {
-    return false;
-  }
+  std::vector<UploadedRealDraw> uploaded_draws;
+  uploaded_draws.reserve(prepared_draws.size());
+  for (const PreparedRealDraw &prepared_draw : prepared_draws) {
+    UploadedRealDraw uploaded;
+    uploaded.prepared = prepared_draw;
+    uploaded.constants =
+        BuildCapturedConstants(capture.draws[prepared_draw.draw_index]);
+    uploaded.vertex_bytes =
+        uploaded.prepared.vertices.size() * sizeof(RealReplayVertex);
+    if (!CreateUploadBuffer(device.Get(), uploaded.prepared.vertices.data(),
+                            uploaded.vertex_bytes, uploaded.vertex_buffer,
+                            error)) {
+      return false;
+    }
 
-  ComPtr<ID3D12Resource> index_buffer;
-  const void *index_data = prepared.uses_32bit_indices
-                               ? static_cast<const void *>(
-                                     prepared.indices32.data())
-                               : static_cast<const void *>(
-                                     prepared.indices16.data());
-  const uint64_t index_bytes =
-      prepared.uses_32bit_indices
-          ? prepared.indices32.size() * sizeof(uint32_t)
-          : prepared.indices16.size() * sizeof(uint16_t);
-  if (!CreateUploadBuffer(device.Get(), index_data, index_bytes, index_buffer,
-                          error)) {
-    return false;
+    const void *index_data =
+        uploaded.prepared.uses_32bit_indices
+            ? static_cast<const void *>(uploaded.prepared.indices32.data())
+            : static_cast<const void *>(uploaded.prepared.indices16.data());
+    uploaded.index_bytes =
+        uploaded.prepared.uses_32bit_indices
+            ? uploaded.prepared.indices32.size() * sizeof(uint32_t)
+            : uploaded.prepared.indices16.size() * sizeof(uint16_t);
+    if (!CreateUploadBuffer(device.Get(), index_data, uploaded.index_bytes,
+                            uploaded.index_buffer, error)) {
+      return false;
+    }
+    uploaded_draws.push_back(std::move(uploaded));
   }
+  std::cout << "D3D12 real replay submitted " << uploaded_draws.size()
+            << " supported draw(s) for shader pair VS="
+            << FormatHex64(draw_state.vertex_shader.hash) << " PS="
+            << FormatHex64(draw_state.pixel_shader.hash) << " out of "
+            << CountDrawsForShaderPair(capture, draw_state.vertex_shader.hash,
+                                       draw_state.pixel_shader.hash)
+            << " captured draw(s) with that pair\n";
 
   D3D12_VIEWPORT viewport{};
   viewport.Width = static_cast<float>(width);
@@ -1790,32 +1866,37 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   const float constants[4] = {static_cast<float>(width),
                               static_cast<float>(height), 0.0f, 0.0f};
   list->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
-  const PreparedCapturedConstants captured_constants =
-      BuildCapturedConstants(draw_state);
-  list->SetGraphicsRoot32BitConstants(
-      1, static_cast<UINT>(captured_constants.dwords.size()),
-      captured_constants.dwords.data(), 0);
 
-  D3D12_VERTEX_BUFFER_VIEW vertex_view{};
-  vertex_view.BufferLocation = vertex_buffer->GetGPUVirtualAddress();
-  vertex_view.SizeInBytes = static_cast<UINT>(vertex_bytes);
-  vertex_view.StrideInBytes = sizeof(RealReplayVertex);
+  for (const UploadedRealDraw &uploaded : uploaded_draws) {
+    const ReplayDrawState &uploaded_state =
+        capture.draws[uploaded.prepared.draw_index];
+    list->SetGraphicsRoot32BitConstants(
+        1, static_cast<UINT>(uploaded.constants.dwords.size()),
+        uploaded.constants.dwords.data(), 0);
 
-  D3D12_INDEX_BUFFER_VIEW index_view{};
-  index_view.BufferLocation = index_buffer->GetGPUVirtualAddress();
-  index_view.SizeInBytes = static_cast<UINT>(index_bytes);
-  index_view.Format =
-      prepared.uses_32bit_indices ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT;
+    D3D12_VERTEX_BUFFER_VIEW vertex_view{};
+    vertex_view.BufferLocation =
+        uploaded.vertex_buffer->GetGPUVirtualAddress();
+    vertex_view.SizeInBytes = static_cast<UINT>(uploaded.vertex_bytes);
+    vertex_view.StrideInBytes = sizeof(RealReplayVertex);
 
-  list->IASetVertexBuffers(0, 1, &vertex_view);
-  list->IASetIndexBuffer(&index_view);
-  list->IASetPrimitiveTopology(TopologyForPrimitive(
-      draw_state.draw.primitive_type));
-  const UINT index_count =
-      static_cast<UINT>(prepared.uses_32bit_indices
-                            ? prepared.indices32.size()
-                            : prepared.indices16.size());
-  list->DrawIndexedInstanced(index_count, 1, 0, 0, 0);
+    D3D12_INDEX_BUFFER_VIEW index_view{};
+    index_view.BufferLocation = uploaded.index_buffer->GetGPUVirtualAddress();
+    index_view.SizeInBytes = static_cast<UINT>(uploaded.index_bytes);
+    index_view.Format = uploaded.prepared.uses_32bit_indices
+                            ? DXGI_FORMAT_R32_UINT
+                            : DXGI_FORMAT_R16_UINT;
+
+    list->IASetVertexBuffers(0, 1, &vertex_view);
+    list->IASetIndexBuffer(&index_view);
+    list->IASetPrimitiveTopology(
+        TopologyForPrimitive(uploaded_state.draw.primitive_type));
+    const UINT index_count =
+        static_cast<UINT>(uploaded.prepared.uses_32bit_indices
+                              ? uploaded.prepared.indices32.size()
+                              : uploaded.prepared.indices16.size());
+    list->DrawIndexedInstanced(index_count, 1, 0, 0, 0);
+  }
 
   D3D12_RESOURCE_BARRIER barrier{};
   barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

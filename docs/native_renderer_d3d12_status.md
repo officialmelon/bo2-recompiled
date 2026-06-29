@@ -85,6 +85,7 @@ Current captured pieces from `native_captures\vertex_fetch_capture_001`:
 - Draw `1209` with explicit diagnostic shader fallback: `native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
 - Draw `1209` with manual overrides `vs_5D918D91043B3ED0.hlsl` and `ps_C4ED2979F29C9139.hlsl`: `native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-constant-bound.bmp`, SHA-256 `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`
 - Draw `1209` with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache`: exit code `0`, cache-only output SHA-256 `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`
+- Auto real replay without `--draw` now batches every fully supported draw using the first supported shader pair. For `shader_payload_capture_001`, it submits `11/11` captured draws for `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139` and writes `native-renderer-d3d12-real-supported-pair-multidraw-log.bmp`, SHA-256 `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`
 - Draw `1209` with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root native_captures\empty_shader_cache` and no `--allow-diagnostic-shader`: exit code `1`, expected fail-closed message with the exact missing VS/PS hashes
 
 ## Build note
