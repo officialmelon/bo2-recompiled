@@ -96,6 +96,48 @@ Top live shader pairs:
 
 These runtime hashes are not the same IDs as `shader_work/shaders/index.json` container SHA-256 hashes. They come from the ReXGlue command-processor trace over loaded Xenos microcode. The replacement registry should therefore key first on `(stage, runtime_hash)` and later attach source container/microcode metadata when the hash relationship is proven.
 
+## Updated runtime shader evidence
+
+`native_shader_inspect.exe` now reads native renderer captures directly:
+
+```powershell
+native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --list-runtime-shaders --top-shaders 20
+native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --match-runtime-shaders --top-shaders 20
+```
+
+Verified capture `vertex_fetch_capture_001`:
+
+- Lines: `12000`
+- Shader events: `594`
+- Draw events: `2646`
+- Unique runtime shaders: `8`
+- Runtime shader pairs: `7`
+
+Top runtime shader pairs in this capture:
+
+| VS | PS | Draws |
+|---|---|---:|
+| `0xB6C9863F710683EC` | `0xA4A965C189287B99` | 2424 |
+| `0x1E6883FCCDE1F688` | `0xA4A965C189287B99` | 139 |
+| `0xAB1E86137A0240E8` | `0xA4A965C189287B99` | 21 |
+| `0x81311AC4B1FBD082` | `0x246E20EF10E0DDC7` | 20 |
+| `0xAB1E86137A0240E8` | `0x246E20EF10E0DDC7` | 20 |
+| `0x5D918D91043B3ED0` | `0xC4ED2979F29C9139` | 11 |
+| `0xAB1E86137A0240E8` | `0xC4ED2979F29C9139` | 11 |
+
+Direct static-index matching:
+
+- Exact substring matches in `shader_work/shaders/index.json`: `0/8`
+- Draw `1004` pair `VS=0x5D918D91043B3ED0`, `PS=0xC4ED2979F29C9139`: no direct match to static container or microcode hashes.
+
+Ghidra PDB evidence:
+
+- `Material_RegisterVertexShader` and `Material_RegisterPixelShader` use material-loader shader hash tables and load by shader name when the hash table misses.
+- `Material_LoadPassVertexShader` and `Material_LoadPassPixelShader` parse `vertexShader` / `pixelShader` tokens, then call `Material_SetPassShaderArguments_DX`.
+- `Material_SetPassShaderArguments_DX` reflects shader bytecode and records input/output/resource argument metadata.
+
+Inference: the runtime 64-bit PM4 hashes in the capture are not proven static SHA-256 container or microcode hashes. The next matching rule must capture raw PM4 shader payload bytes and/or material shader-record metadata, then compare exact payload hashes, byte-swapped payload hashes, stripped/aligned payload hashes, and material name/hash-table records.
+
 ## Shader inspection tool
 
 `native_shader_inspect.exe` has been added as the first static shader registry inspection tool. Verified command:
@@ -104,7 +146,7 @@ These runtime hashes are not the same IDs as `shader_work/shaders/index.json` co
 default\out\build\win-amd64-clangmsvc-debug\native_renderer_direct_build\native_shader_inspect_direct.exe --index shader_work\shaders\index.json --summary
 ```
 
-It loads `shader_work/shaders/index.json`, prints the summary counts, previews the first pixel and vertex containers, and supports `--hash <value> --find` for static container/microcode substring search. It does not yet match runtime 64-bit replay hashes to static SHA-256 records.
+It loads `shader_work/shaders/index.json`, prints the summary counts, previews the first pixel and vertex containers, supports `--hash <value> --find` for static container/microcode substring search, and ranks/matches runtime capture hashes with `--capture`, `--list-runtime-shaders`, and `--match-runtime-shaders`.
 
 ## Native renderer path forward
 

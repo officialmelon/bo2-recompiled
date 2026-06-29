@@ -165,6 +165,40 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 - This is resource-backed captured BO2 geometry: D3D12 upload buffers are created from draw `1004` vertex/index snapshots and submitted with `DrawIndexedInstanced`.
 - This is still not full BO2 native rendering: the shader is a diagnostic native HLSL shader, constants are not bound into the shader interface, and texture/sampler/render-target/depth state is not replayed.
 
+## 2026-06-29 runtime shader matching pass
+
+Build:
+
+```powershell
+cmd.exe /d /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"" -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j1 native_shader_inspect"
+```
+
+- Build log: `default\out\build\win-amd64-clangmsvc-debug\native-renderer-shader-runtime-match-rebuild.out.log`
+- Result: linked `native_shader_inspect.exe`
+
+Runtime shader listing:
+
+```powershell
+native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --list-runtime-shaders --top-shaders 20
+```
+
+- Lines: `12000`
+- Shader events: `594`
+- Draw events: `2646`
+- Unique runtime shaders: `8`
+- Runtime shader pairs: `7`
+- Draw `1004` pair: VS `0x5D918D91043B3ED0`, PS `0xC4ED2979F29C9139`, `11` draws in the capture
+
+Runtime shader direct static-index match:
+
+```powershell
+native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\vertex_fetch_capture_001\events.jsonl --match-runtime-shaders --top-shaders 20
+```
+
+- Direct exact-substring matches: `0/8`
+- Evidence: `No shader index record matched '5d918d91043b3ed0'`
+- Blocker: runtime 64-bit shader hashes are not proven to equal static container or microcode hashes. The next capture work needs PM4 shader payload bytes and/or material shader record metadata.
+
 ## Commands run in this pass
 
 Direct MSVC compile was used first to validate the changed replay tools without touching the generated build graph:
