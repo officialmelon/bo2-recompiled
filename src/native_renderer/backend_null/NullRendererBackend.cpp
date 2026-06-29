@@ -109,6 +109,26 @@ void NullRendererBackend::SubmitDrawPacketCandidate(
       draw.write_end, draw.dword_count, draw.truncated);
 }
 
+void NullRendererBackend::SubmitShaderRecordProbe(
+    const ShaderRecordProbeInfo &probe) {
+  capture_.WriteShaderRecordProbe(probe);
+  if (!verbose_ || !ShouldLogHighFrequencyEvent(probe.event_index)) {
+    return;
+  }
+
+  REXLOG_INFO(
+      "BO2 native renderer shader probe #{} {}({:#010x}) lr={:#010x} "
+      "r4={:#010x} r5={:#010x} r6={:#010x} r30={:#010x} "
+      "primary={:#010x}/{} missing={} truncated={} secondary={:#010x}/{} "
+      "missing={} truncated={}",
+      probe.event_index, probe.function_name, probe.function_address,
+      static_cast<uint32_t>(probe.link_register), probe.r4, probe.r5, probe.r6,
+      probe.r30, probe.primary_address, probe.primary_dword_count,
+      probe.primary_missing, probe.primary_truncated, probe.secondary_address,
+      probe.secondary_dword_count, probe.secondary_missing,
+      probe.secondary_truncated);
+}
+
 void NullRendererBackend::SubmitPM4Packet(const PM4PacketInfo &packet) {
   capture_.WritePM4Packet(packet);
   if (!verbose_ || !ShouldLogHighFrequencyEvent(packet.event_index)) {

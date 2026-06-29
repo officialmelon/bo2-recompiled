@@ -127,6 +127,26 @@ Verified capture `shader_payload_capture_001` after adding PM4 shader payload ca
 
 Current shader identity conclusion: runtime 64-bit IDs and directly hashed PM4 upload payloads are not enough to map to extracted container or microcode hashes. The next evidence target is shader record/material metadata from the XEX/PC PDB path, plus aligned/padded payload hash variants and explicit override mapping.
 
+## Shader Record Probe Evidence
+
+`shader_probe_capture_003` adds runtime shader/material record snapshots from the XEX `0x82597F50` ALU constant upload path. This hook captures argument registers, command-buffer write range, a primary record snapshot from `r4`, and a secondary snapshot from `r5` when it is pointer-like.
+
+Verified probes:
+
+| Function | LR | Primary | Secondary | Decoded name |
+|---|---|---|---|---|
+| `0x82597F50` | `0x82598314` | `0xA5BE7AE0` | `0xA6019BC0` | `pimp_shader_cinematic_519f564_ps_main_ps_3_0_534c8cc25dea1826410cc2974d7e9a80.updb` |
+| `0x82597F50` | `0x82598560` | `0xA5BE7374` | `0xA6019940` | `pimp_shader_radiant_190f4788_vs_main_vs_3_0_e10bcefc8da60302d0bbf12b675d091c.updb` |
+
+Probe layout observations:
+
+- `primary_dwords[10]` is `0x52` for the PS record and `0x51` for the VS record. These values match the shader-name byte length, and the name bytes begin in big-endian order at `primary_dwords[11]`.
+- The first record is a pixel-shader record (`ps_main_ps_3_0`) and its secondary pointer begins with nonzero floats followed by Xenos-looking shader words.
+- The second record is a vertex-shader record (`vs_main_vs_3_0`) and its secondary pointer has leading zeros followed by Xenos-looking shader words.
+- The 32-hex suffixes in these names, `534c8cc25dea1826410cc2974d7e9a80` and `e10bcefc8da60302d0bbf12b675d091c`, do not appear in `shader_work\shaders\index.json` or `shader_work\shaders\index.csv`.
+
+Conclusion: shader-record names are now observable at runtime and should become an additional registry key, but the extracted shader-work index still does not directly identify these names/suffixes. The next matching attempt should hash the secondary pointer payloads with the same raw, byte-swapped, trimmed, aligned, and container-stripped variants used for PM4 payloads, and then fall back to a manual override table keyed by `(stage, runtime_hash, shader_name)`.
+
 Top runtime shader pairs in `vertex_fetch_capture_001`:
 
 | VS | PS | Draws |

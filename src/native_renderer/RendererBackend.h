@@ -19,6 +19,7 @@ class RendererBackend {
   virtual void SubmitCommandBufferSnapshot(
       uint64_t frame_index, const CommandBufferSnapshot& snapshot) = 0;
   virtual void SubmitDrawPacketCandidate(const DrawPacketCandidateInfo& draw) = 0;
+  virtual void SubmitShaderRecordProbe(const ShaderRecordProbeInfo& probe) = 0;
   virtual void SubmitPM4Packet(const PM4PacketInfo& packet) = 0;
   virtual void SubmitPM4Draw(const PM4DrawInfo& draw) = 0;
   virtual void SubmitPM4Shader(const PM4ShaderInfo& shader) = 0;

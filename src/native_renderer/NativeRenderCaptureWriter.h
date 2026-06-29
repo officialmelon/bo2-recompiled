@@ -26,6 +26,7 @@ class NativeRenderCaptureWriter {
   void WriteCommandBufferSnapshot(uint64_t frame_index,
                                   const CommandBufferSnapshot& snapshot);
   void WriteDrawPacketCandidate(const DrawPacketCandidateInfo& draw);
+  void WriteShaderRecordProbe(const ShaderRecordProbeInfo& probe);
   void WritePM4Packet(const PM4PacketInfo& packet);
   void WritePM4Draw(const PM4DrawInfo& draw);
   void WritePM4Shader(const PM4ShaderInfo& shader);

@@ -375,6 +375,25 @@ cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\C
 - Exit file: `native-renderer-shader-inspect-payload-hashes-build.exit.txt` = `0`
 - Result: linked `native_shader_inspect.exe`
 
+Shader-record probe validation:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_003\events.jsonl --validate
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_003\events.jsonl --shader-record-probes --max-draws 4 --no-summary
+```
+
+- Build log: `default\out\build\win-amd64-clangmsvc-debug\native-renderer-shader-probe-rebuild.out.log`
+- Exit file: `native-renderer-shader-probe-rebuild.exit.txt` = `0`
+- Narrow replay rebuild logs: `native-renderer-replay-ascii-build.out.log` and `native-renderer-replay-shader-name-build.out.log`, both exit `0`
+- Capture: `C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_003\events.jsonl`
+- Validation: `Validation OK: 4514 events, 22 frames, 1026 draws`
+- Shader-record probes: `2`, with `2` primary snapshots and `2` secondary snapshots
+- Decoded names:
+  - `pimp_shader_cinematic_519f564_ps_main_ps_3_0_534c8cc25dea1826410cc2974d7e9a80.updb`
+  - `pimp_shader_radiant_190f4788_vs_main_vs_3_0_e10bcefc8da60302d0bbf12b675d091c.updb`
+- Direct search of `534c8cc25dea1826410cc2974d7e9a80` and `e10bcefc8da60302d0bbf12b675d091c` in `shader_work\shaders\index.json` / `index.csv` returned no matches.
+- Status: useful shader/material record identity evidence, but not a complete runtime-to-static shader mapping.
+
 D3D12 gate:
 
 ```powershell
@@ -395,7 +414,7 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 
 ## Current hard blocker
 
-The current fresh capture can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, and constant payloads for target draw `1209`. D3D12 can render that captured geometry only with the explicit diagnostic shader fallback. Runtime shader payload hashes are now reproducible but still do not identify static shader records directly. The renderer still cannot feed a real D3D12/Vulkan scene backend because it lacks shader-correct native shaders or overrides, texture/sampler state, render-target/depth state, constant-buffer binding, and full-frame sequencing.
+The current fresh capture can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, and constant payloads for target draw `1209`. D3D12 can render that captured geometry only with the explicit diagnostic shader fallback. Runtime shader payload hashes are reproducible, and runtime shader/material record names are now captured, but neither currently maps directly to the extracted shader-work index. The renderer still cannot feed a real D3D12/Vulkan scene backend because it lacks shader-correct native shaders or overrides, texture/sampler state, render-target/depth state, constant-buffer binding, and full-frame sequencing.
 
 ## Next required work
 

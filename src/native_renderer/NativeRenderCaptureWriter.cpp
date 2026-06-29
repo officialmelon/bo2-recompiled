@@ -480,6 +480,67 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
   EndEvent();
 }
 
+void NativeRenderCaptureWriter::WriteShaderRecordProbe(
+    const ShaderRecordProbeInfo &probe) {
+  std::scoped_lock lock(mutex_);
+  if (!BeginEvent("shader_record_probe")) {
+    return;
+  }
+  WriteU64Field("event", probe.event_index);
+  WriteStringField("function", probe.function_name);
+  WriteHex32Field("function_address", probe.function_address);
+  WriteHex64Field("link_register", probe.link_register);
+  WriteHex32Field("r3", probe.r3);
+  WriteHex32Field("r4", probe.r4);
+  WriteHex32Field("r5", probe.r5);
+  WriteHex32Field("r6", probe.r6);
+  WriteHex32Field("r7", probe.r7);
+  WriteHex32Field("r8", probe.r8);
+  WriteHex32Field("r9", probe.r9);
+  WriteHex32Field("r10", probe.r10);
+  WriteHex32Field("r28", probe.r28);
+  WriteHex32Field("r29", probe.r29);
+  WriteHex32Field("r30", probe.r30);
+  WriteHex32Field("r31", probe.r31);
+  WriteHex32Field("command_buffer_object", probe.command_buffer_object);
+  WriteHex32Field("write_begin", probe.write_begin);
+  WriteHex32Field("write_end", probe.write_end);
+  WriteHex32Field("write_limit_begin", probe.write_limit_begin);
+  WriteHex32Field("write_limit_end", probe.write_limit_end);
+  WriteHex32Field("return_value", probe.return_value);
+  WriteHex32Field("primary_address", probe.primary_address);
+  WriteU64Field("primary_dword_count_hint", probe.primary_dword_count_hint);
+  WriteU64Field("primary_dword_count", probe.primary_dword_count);
+  WriteBoolField("primary_truncated", probe.primary_truncated);
+  WriteBoolField("primary_missing", probe.primary_missing);
+  WriteFieldPrefix("primary_dwords");
+  file_ << '[';
+  for (uint32_t i = 0;
+       i < probe.primary_dword_count && i < probe.primary_dwords.size(); ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(probe.primary_dwords[i], 8) << '"';
+  }
+  file_ << ']';
+  WriteHex32Field("secondary_address", probe.secondary_address);
+  WriteU64Field("secondary_dword_count", probe.secondary_dword_count);
+  WriteBoolField("secondary_truncated", probe.secondary_truncated);
+  WriteBoolField("secondary_missing", probe.secondary_missing);
+  WriteFieldPrefix("secondary_dwords");
+  file_ << '[';
+  for (uint32_t i = 0; i < probe.secondary_dword_count &&
+                       i < probe.secondary_dwords.size();
+       ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(probe.secondary_dwords[i], 8) << '"';
+  }
+  file_ << ']';
+  EndEvent();
+}
+
 void NativeRenderCaptureWriter::WritePM4Shader(const PM4ShaderInfo &shader) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("pm4_shader")) {

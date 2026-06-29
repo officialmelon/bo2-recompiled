@@ -18,6 +18,7 @@ class NullRendererBackend final : public RendererBackend {
   void SubmitCommandBufferSnapshot(uint64_t frame_index,
                                    const CommandBufferSnapshot& snapshot) override;
   void SubmitDrawPacketCandidate(const DrawPacketCandidateInfo& draw) override;
+  void SubmitShaderRecordProbe(const ShaderRecordProbeInfo& probe) override;
   void SubmitPM4Packet(const PM4PacketInfo& packet) override;
   void SubmitPM4Draw(const PM4DrawInfo& draw) override;
   void SubmitPM4Shader(const PM4ShaderInfo& shader) override;

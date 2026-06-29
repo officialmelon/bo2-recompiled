@@ -323,3 +323,29 @@ The smoke capture validation result was:
 ```text
 Validation OK: 100 events, 2 frames, 24 draws
 ```
+
+## Shader Record Probe Replay
+
+`native_render_replay.exe` now accepts:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_003\events.jsonl --shader-record-probes --max-draws 4 --no-summary
+```
+
+Verified result on `shader_probe_capture_003`:
+
+- Validation: `Validation OK: 4514 events, 22 frames, 1026 draws`
+- Probe count: `2`
+- Primary snapshots: `2`
+- Secondary snapshots: `2`
+- The replay report decodes printable big-endian ASCII runs from primary and secondary dword snapshots.
+- The replay report also normalizes strings containing `pimp_shader_` into a `shader_name=` line.
+
+Captured shader-record names:
+
+```text
+pimp_shader_cinematic_519f564_ps_main_ps_3_0_534c8cc25dea1826410cc2974d7e9a80.updb
+pimp_shader_radiant_190f4788_vs_main_vs_3_0_e10bcefc8da60302d0bbf12b675d091c.updb
+```
+
+Important caveat: this capture exits naturally before the older `shader_payload_capture_001` draw `1209` window. Use it for shader/material record-layout evidence, not as the primary full draw/resource capture. The current primary draw/resource capture remains `shader_payload_capture_001`.

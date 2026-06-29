@@ -847,6 +847,51 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
     event.draw_candidate.source_select = GetU32(object, "source_select");
     event.draw_candidate.index_32bit = GetBool(object, "index_32bit");
     break;
+  case CaptureEventType::ShaderRecordProbe:
+    event.shader_probe.event = GetU64(object, "event");
+    event.shader_probe.function = GetString(object, "function");
+    event.shader_probe.function_address = GetU32(object, "function_address");
+    event.shader_probe.link_register = GetU64(object, "link_register");
+    event.shader_probe.r3 = GetU32(object, "r3");
+    event.shader_probe.r4 = GetU32(object, "r4");
+    event.shader_probe.r5 = GetU32(object, "r5");
+    event.shader_probe.r6 = GetU32(object, "r6");
+    event.shader_probe.r7 = GetU32(object, "r7");
+    event.shader_probe.r8 = GetU32(object, "r8");
+    event.shader_probe.r9 = GetU32(object, "r9");
+    event.shader_probe.r10 = GetU32(object, "r10");
+    event.shader_probe.r28 = GetU32(object, "r28");
+    event.shader_probe.r29 = GetU32(object, "r29");
+    event.shader_probe.r30 = GetU32(object, "r30");
+    event.shader_probe.r31 = GetU32(object, "r31");
+    event.shader_probe.command_buffer_object =
+        GetU32(object, "command_buffer_object");
+    event.shader_probe.write_begin = GetU32(object, "write_begin");
+    event.shader_probe.write_end = GetU32(object, "write_end");
+    event.shader_probe.write_limit_begin =
+        GetU32(object, "write_limit_begin");
+    event.shader_probe.write_limit_end = GetU32(object, "write_limit_end");
+    event.shader_probe.return_value = GetU32(object, "return_value");
+    event.shader_probe.primary_address = GetU32(object, "primary_address");
+    event.shader_probe.primary_dword_count_hint =
+        GetU32(object, "primary_dword_count_hint");
+    event.shader_probe.primary_dword_count =
+        GetU32(object, "primary_dword_count");
+    event.shader_probe.primary_dwords = GetU32Array(object, "primary_dwords");
+    event.shader_probe.primary_truncated =
+        GetBool(object, "primary_truncated");
+    event.shader_probe.primary_missing = GetBool(object, "primary_missing");
+    event.shader_probe.secondary_address =
+        GetU32(object, "secondary_address");
+    event.shader_probe.secondary_dword_count =
+        GetU32(object, "secondary_dword_count");
+    event.shader_probe.secondary_dwords =
+        GetU32Array(object, "secondary_dwords");
+    event.shader_probe.secondary_truncated =
+        GetBool(object, "secondary_truncated");
+    event.shader_probe.secondary_missing =
+        GetBool(object, "secondary_missing");
+    break;
   default:
     break;
   }
@@ -1729,6 +1774,7 @@ void PrintHelp() {
       << "  --shader-usage         Print shader and shader-pair usage\n"
       << "  --top-shaders <count>  Limit shader usage rows (default 20)\n"
       << "  --missing-shaders      Report draws missing runtime shader hashes\n"
+      << "  --shader-record-probes Dump captured XEX shader/material probe events\n"
       << "  --backend <name>       Replay backend selector: "
          "null/d3d12-diagnostic/d3d12/vulkan-diagnostic/vulkan\n"
       << "  --d3d12-output <path>  BMP output for D3D12 replay backends\n"
@@ -1757,6 +1803,8 @@ const char *ToString(CaptureEventType type) {
     return "present_snapshot";
   case CaptureEventType::DrawPacketCandidate:
     return "draw_packet_candidate";
+  case CaptureEventType::ShaderRecordProbe:
+    return "shader_record_probe";
   case CaptureEventType::PM4Packet:
     return "pm4_packet";
   case CaptureEventType::PM4Draw:
@@ -1793,6 +1841,9 @@ CaptureEventType ParseCaptureEventType(std::string_view type) {
   }
   if (type == "draw_packet_candidate") {
     return CaptureEventType::DrawPacketCandidate;
+  }
+  if (type == "shader_record_probe") {
+    return CaptureEventType::ShaderRecordProbe;
   }
   if (type == "pm4_packet") {
     return CaptureEventType::PM4Packet;
@@ -1867,6 +1918,31 @@ bool LoadReplayCapture(const std::filesystem::path &path,
 std::string FormatHex32(uint32_t value) { return FormatHex(value, 8); }
 
 std::string FormatHex64(uint64_t value) { return FormatHex(value, 16); }
+
+std::vector<std::string> ExtractAsciiRunsFromDwords(
+    const std::vector<uint32_t> &dwords) {
+  std::vector<std::string> runs;
+  std::string current;
+  auto flush = [&]() {
+    if (current.size() >= 8) {
+      runs.push_back(current);
+    }
+    current.clear();
+  };
+
+  for (const uint32_t dword : dwords) {
+    for (int shift = 24; shift >= 0; shift -= 8) {
+      const char ch = static_cast<char>((dword >> shift) & 0xFF);
+      if (ch >= 0x20 && ch <= 0x7E) {
+        current.push_back(ch);
+      } else {
+        flush();
+      }
+    }
+  }
+  flush();
+  return runs;
+}
 
 void PrintReplaySummary(const ReplayCapture &capture) {
   std::cout << "Capture: " << capture.path.string() << "\n";
@@ -2378,6 +2454,12 @@ void PrintResourceSummary(const ReplayCapture &capture) {
       constant_count_it == capture.summary.event_counts.end()
           ? 0
           : constant_count_it->second;
+  const auto probe_count_it =
+      capture.summary.event_counts.find(CaptureEventType::ShaderRecordProbe);
+  const uint64_t shader_record_probes =
+      probe_count_it == capture.summary.event_counts.end()
+          ? 0
+          : probe_count_it->second;
   std::cout << "Resource snapshot summary:\n";
   std::cout << "  shader_uploads=" << shader_uploads
             << " with_payload=" << capture.summary.shader_uploads_with_payload
@@ -2412,6 +2494,7 @@ void PrintResourceSummary(const ReplayCapture &capture) {
             << " payload_bytes=" << capture.summary.vertex_payload_bytes
             << " truncated=" << capture.summary.vertex_payload_truncated
             << "\n";
+  std::cout << "  shader_record_probes=" << shader_record_probes << "\n";
   std::cout << "  texture_snapshots=0\n";
   std::cout << "  render_target_snapshots=0\n";
   std::cout << "  sidecar_resource_manifest=missing\n";
@@ -2428,6 +2511,106 @@ void PrintResourceSummary(const ReplayCapture &capture) {
            "snapshots plus native shader replacements/translations.\n";
   }
 }
+
+void PrintShaderRecordProbes(const ReplayCapture &capture,
+                             std::size_t max_count) {
+  std::cout << "Shader record probes:\n";
+  std::size_t printed = 0;
+  uint64_t primary_snapshots = 0;
+  uint64_t secondary_snapshots = 0;
+  for (const CaptureEvent &event : capture.events) {
+    if (event.type != CaptureEventType::ShaderRecordProbe) {
+      continue;
+    }
+    const ShaderRecordProbeRecord &probe = event.shader_probe;
+    if (!probe.primary_missing && !probe.primary_dwords.empty()) {
+      ++primary_snapshots;
+    }
+    if (!probe.secondary_missing && !probe.secondary_dwords.empty()) {
+      ++secondary_snapshots;
+    }
+    if (printed >= max_count) {
+      continue;
+    }
+    ++printed;
+    std::cout << "  probe[" << printed - 1 << "] seq=" << event.seq
+              << " event=" << probe.event << " " << probe.function
+              << "(" << FormatHex32(probe.function_address) << ")"
+              << " lr=" << FormatHex64(probe.link_register) << "\n";
+    std::cout << "    regs r3=" << FormatHex32(probe.r3)
+              << " r4=" << FormatHex32(probe.r4)
+              << " r5=" << FormatHex32(probe.r5)
+              << " r6=" << FormatHex32(probe.r6)
+              << " r7=" << FormatHex32(probe.r7)
+              << " r8=" << FormatHex32(probe.r8)
+              << " r9=" << FormatHex32(probe.r9)
+              << " r10=" << FormatHex32(probe.r10)
+              << " r30=" << FormatHex32(probe.r30) << "\n";
+    std::cout << "    write " << FormatHex32(probe.write_begin) << " -> "
+              << FormatHex32(probe.write_end) << " limit "
+              << FormatHex32(probe.write_limit_begin) << " -> "
+              << FormatHex32(probe.write_limit_end)
+              << " ret=" << FormatHex32(probe.return_value) << "\n";
+    auto print_dwords = [](const char *label, uint32_t address,
+                           uint32_t count, bool missing, bool truncated,
+                           const std::vector<uint32_t> &dwords) {
+      std::cout << "    " << label << "=" << FormatHex32(address)
+                << " dwords=" << count
+                << " missing=" << (missing ? "yes" : "no")
+                << " truncated=" << (truncated ? "yes" : "no");
+      if (!dwords.empty()) {
+        std::cout << " first=";
+        const std::size_t preview = std::min<std::size_t>(dwords.size(), 8);
+        for (std::size_t i = 0; i < preview; ++i) {
+          if (i) {
+            std::cout << ",";
+          }
+          std::cout << FormatHex32(dwords[i]);
+        }
+        if (dwords.size() > preview) {
+          std::cout << ",...";
+        }
+      }
+      std::cout << "\n";
+      const std::vector<std::string> ascii_runs =
+          ExtractAsciiRunsFromDwords(dwords);
+      if (!ascii_runs.empty()) {
+        std::cout << "      ascii=\"";
+        for (std::size_t i = 0; i < ascii_runs.size(); ++i) {
+          if (i) {
+            std::cout << "\" \"";
+          }
+          std::cout << ascii_runs[i];
+        }
+        std::cout << "\"\n";
+        for (const std::string &run : ascii_runs) {
+          const std::size_t name_pos = run.find("pimp_shader_");
+          if (name_pos != std::string::npos) {
+            std::cout << "      shader_name=" << run.substr(name_pos) << "\n";
+            break;
+          }
+        }
+      }
+    };
+    print_dwords("primary", probe.primary_address,
+                 probe.primary_dword_count, probe.primary_missing,
+                 probe.primary_truncated, probe.primary_dwords);
+    print_dwords("secondary", probe.secondary_address,
+                 probe.secondary_dword_count, probe.secondary_missing,
+                 probe.secondary_truncated, probe.secondary_dwords);
+  }
+  const auto total_it =
+      capture.summary.event_counts.find(CaptureEventType::ShaderRecordProbe);
+  const uint64_t total =
+      total_it == capture.summary.event_counts.end() ? 0 : total_it->second;
+  std::cout << "  total=" << total
+            << " primary_snapshots=" << primary_snapshots
+            << " secondary_snapshots=" << secondary_snapshots << "\n";
+  if (printed == 0) {
+    std::cout << "  no shader_record_probe events captured\n";
+  }
+}
+
 void PrintMissingShaders(const ReplayCapture &capture) {
   std::cout << "Missing shader state:\n";
   uint64_t rows = 0;
@@ -2514,6 +2697,8 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       cli.show_shader_usage = true;
     } else if (arg == "--missing-shaders") {
       cli.show_missing_shaders = true;
+    } else if (arg == "--shader-record-probes") {
+      cli.show_shader_record_probes = true;
     } else if (arg == "--validate") {
       cli.validate_only = true;
     } else if (arg == "--allow-diagnostic-shader") {
@@ -2699,6 +2884,10 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
   if (cli.show_missing_shaders) {
     std::cout << "\n";
     PrintMissingShaders(capture);
+  }
+  if (cli.show_shader_record_probes) {
+    std::cout << "\n";
+    PrintShaderRecordProbes(capture, cli.max_draws);
   }
 
   return clean ? 0 : 1;

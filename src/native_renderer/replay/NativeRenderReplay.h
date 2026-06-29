@@ -19,6 +19,7 @@ enum class CaptureEventType {
   VdSwap,
   PresentSnapshot,
   DrawPacketCandidate,
+  ShaderRecordProbe,
   PM4Packet,
   PM4Draw,
   PM4Shader,
@@ -215,6 +216,42 @@ struct DrawPacketCandidateRecord {
   bool index_32bit = false;
 };
 
+struct ShaderRecordProbeRecord {
+  uint64_t event = 0;
+  std::string function;
+  uint32_t function_address = 0;
+  uint64_t link_register = 0;
+  uint32_t r3 = 0;
+  uint32_t r4 = 0;
+  uint32_t r5 = 0;
+  uint32_t r6 = 0;
+  uint32_t r7 = 0;
+  uint32_t r8 = 0;
+  uint32_t r9 = 0;
+  uint32_t r10 = 0;
+  uint32_t r28 = 0;
+  uint32_t r29 = 0;
+  uint32_t r30 = 0;
+  uint32_t r31 = 0;
+  uint32_t command_buffer_object = 0;
+  uint32_t write_begin = 0;
+  uint32_t write_end = 0;
+  uint32_t write_limit_begin = 0;
+  uint32_t write_limit_end = 0;
+  uint32_t return_value = 0;
+  uint32_t primary_address = 0;
+  uint32_t primary_dword_count_hint = 0;
+  uint32_t primary_dword_count = 0;
+  std::vector<uint32_t> primary_dwords;
+  bool primary_truncated = false;
+  bool primary_missing = true;
+  uint32_t secondary_address = 0;
+  uint32_t secondary_dword_count = 0;
+  std::vector<uint32_t> secondary_dwords;
+  bool secondary_truncated = false;
+  bool secondary_missing = true;
+};
+
 struct CaptureEvent {
   uint64_t seq = 0;
   uint64_t line = 0;
@@ -230,6 +267,7 @@ struct CaptureEvent {
   VdSwapRecord vd_swap;
   PresentSnapshotRecord present;
   DrawPacketCandidateRecord draw_candidate;
+  ShaderRecordProbeRecord shader_probe;
 };
 
 struct BoundShaderState {
@@ -349,6 +387,7 @@ struct ReplayCliOptions {
   bool show_resource_summary = false;
   bool show_shader_usage = false;
   bool show_missing_shaders = false;
+  bool show_shader_record_probes = false;
   bool validate_only = false;
   bool allow_diagnostic_shader = false;
   std::optional<std::size_t> frame_index;
@@ -384,6 +423,8 @@ void PrintVertexDump(const ReplayCapture &capture, std::size_t draw_index);
 void PrintResourceSummary(const ReplayCapture &capture);
 void PrintShaderUsage(const ReplayCapture &capture, std::size_t top_count);
 void PrintMissingShaders(const ReplayCapture &capture);
+void PrintShaderRecordProbes(const ReplayCapture &capture,
+                             std::size_t max_count);
 
 bool RunD3D12DiagnosticReplayBackend(const ReplayCapture &capture,
                                      const ReplayCliOptions &options,

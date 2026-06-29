@@ -49,17 +49,129 @@ uint32_t ReadGuestArg(PPCContext& ctx, uint8_t* base, std::size_t arg) {
       rex::ppc::ArgTranslator::GetIntegerArgumentValue(ctx, base, arg));
 }
 
-uint32_t ReadGuestU32(uint32_t address) {
+bool ReadGuestU32Checked(uint32_t address, uint32_t& value) {
   if (!address) {
-    return 0;
+    value = 0;
+    return false;
   }
   const auto* ptr = REX_KERNEL_MEMORY()->TranslateVirtual<const uint32_t*>(address);
-  return rex::memory::load_and_swap<uint32_t>(ptr);
+  if (!ptr) {
+    value = 0;
+    return false;
+  }
+  value = rex::memory::load_and_swap<uint32_t>(ptr);
+  return true;
+}
+
+uint32_t ReadGuestU32(uint32_t address) {
+  uint32_t value = 0;
+  ReadGuestU32Checked(address, value);
+  return value;
 }
 
 bool IsType3Packet(uint32_t packet, rex::graphics::xenos::Type3Opcode opcode) {
   return ((packet >> 30) == 3) &&
          (((packet >> 8) & 0x7F) == static_cast<uint32_t>(opcode));
+}
+
+bool LooksLikeGuestPointer(uint32_t address) {
+  if ((address & 3u) != 0 || address == UINT32_MAX) {
+    return false;
+  }
+  // BO2 commonly passes shader/material records through the 0xA/0xB physical
+  // aliases used by the Xbox memory map, while code/data records live in the
+  // lower virtual and XEX ranges.
+  return address >= 0x00010000u && address < 0xF0000000u;
+}
+
+bool IsShaderRecordProbeAddress(uint32_t address) {
+  switch (address) {
+    case 0x8258CCE8:
+    case 0x8258CE40:
+    case 0x82597DF8:
+    case 0x82597F50:
+    case 0x82598140:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void CaptureDwordSnapshot(
+    uint32_t address, uint32_t dword_count_hint,
+    std::array<uint32_t, ShaderRecordProbeInfo::kMaxRecordDwords>& dwords,
+    uint32_t& dword_count, bool& truncated, bool& missing) {
+  dword_count = 0;
+  truncated = false;
+  missing = true;
+  dwords = {};
+  if (!LooksLikeGuestPointer(address)) {
+    return;
+  }
+
+  const uint32_t requested =
+      dword_count_hint == 0 ? ShaderRecordProbeInfo::kMaxRecordDwords
+                            : dword_count_hint;
+  const uint32_t limit = std::min<uint32_t>(
+      requested, ShaderRecordProbeInfo::kMaxRecordDwords);
+  truncated = requested > ShaderRecordProbeInfo::kMaxRecordDwords;
+
+  for (uint32_t i = 0; i < limit; ++i) {
+    uint32_t value = 0;
+    if (!ReadGuestU32Checked(address + i * 4, value)) {
+      truncated = i != 0;
+      missing = i == 0;
+      return;
+    }
+    dwords[i] = value;
+    ++dword_count;
+  }
+  missing = dword_count == 0;
+}
+
+ShaderRecordProbeInfo BuildShaderRecordProbe(
+    const CommandBufferEventInfo& event) {
+  ShaderRecordProbeInfo probe{};
+  probe.event_index = event.event_index;
+  probe.function_address = event.function_address;
+  probe.function_name = event.function_name;
+  probe.link_register = event.link_register;
+  probe.r3 = event.r3;
+  probe.r4 = event.r4;
+  probe.r5 = event.r5;
+  probe.r6 = event.r6;
+  probe.r7 = event.r7;
+  probe.r8 = event.r8;
+  probe.r9 = event.r9;
+  probe.r10 = event.r10;
+  probe.r28 = event.r28;
+  probe.r29 = event.r29;
+  probe.r30 = event.r30;
+  probe.r31 = event.r31;
+  probe.command_buffer_object = event.command_buffer_object;
+  probe.write_begin = event.write_begin;
+  probe.write_end = event.write_end;
+  probe.write_limit_begin = event.write_limit_begin;
+  probe.write_limit_end = event.write_limit_end;
+  probe.return_value = event.return_value;
+
+  probe.primary_address = event.r4;
+  probe.primary_dword_count_hint =
+      LooksLikeGuestPointer(event.r5)
+          ? static_cast<uint32_t>(ShaderRecordProbeInfo::kMaxRecordDwords)
+          : event.r5;
+  CaptureDwordSnapshot(probe.primary_address, probe.primary_dword_count_hint,
+                       probe.primary_dwords, probe.primary_dword_count,
+                       probe.primary_truncated, probe.primary_missing);
+
+  if (LooksLikeGuestPointer(event.r5)) {
+    probe.secondary_address = event.r5;
+    CaptureDwordSnapshot(probe.secondary_address,
+                         ShaderRecordProbeInfo::kMaxRecordDwords,
+                         probe.secondary_dwords, probe.secondary_dword_count,
+                         probe.secondary_truncated, probe.secondary_missing);
+  }
+  return probe;
 }
 
 }  // namespace
@@ -228,6 +340,14 @@ CommandBufferEventInfo NativeRenderer::OnCommandBufferEventBegin(
   event.r4 = ctx.r4.u32;
   event.r5 = ctx.r5.u32;
   event.r6 = ctx.r6.u32;
+  event.r7 = ctx.r7.u32;
+  event.r8 = ctx.r8.u32;
+  event.r9 = ctx.r9.u32;
+  event.r10 = ctx.r10.u32;
+  event.r28 = ctx.r28.u32;
+  event.r29 = ctx.r29.u32;
+  event.r30 = ctx.r30.u32;
+  event.r31 = ctx.r31.u32;
   event.command_buffer_object = ctx.r3.u32;
   if (event.command_buffer_object) {
     event.write_begin = ReadGuestU32(event.command_buffer_object + 48);
@@ -238,8 +358,7 @@ CommandBufferEventInfo NativeRenderer::OnCommandBufferEventBegin(
 
 void NativeRenderer::OnCommandBufferEventEnd(CommandBufferEventInfo& event,
                                              PPCContext& ctx) {
-  if (!event.event_index || !config_.verbose ||
-      !ShouldLogHighFrequencyEvent(event.event_index)) {
+  if (!event.event_index) {
     return;
   }
 
@@ -249,14 +368,24 @@ void NativeRenderer::OnCommandBufferEventEnd(CommandBufferEventInfo& event,
     event.write_limit_end = ReadGuestU32(event.command_buffer_object + 56);
   }
 
+  if (IsShaderRecordProbeAddress(event.function_address) && EnsureBackend()) {
+    backend_->SubmitShaderRecordProbe(BuildShaderRecordProbe(event));
+  }
+
+  if (!config_.verbose || !ShouldLogHighFrequencyEvent(event.event_index)) {
+    return;
+  }
+
   REXLOG_INFO(
       "BO2 native renderer render hook #{} {}({:#010x}) lr={:#010x} "
       "r3={:#010x} r4={:#010x} r5={:#010x} r6={:#010x} "
+      "r7={:#010x} r8={:#010x} r9={:#010x} r10={:#010x} "
       "write={:#010x}->{:#010x} limit={:#010x}->{:#010x} ret={:#010x}",
       event.event_index, event.function_name, event.function_address,
       static_cast<uint32_t>(event.link_register), event.r3, event.r4, event.r5,
-      event.r6, event.write_begin, event.write_end, event.write_limit_begin,
-      event.write_limit_end, event.return_value);
+      event.r6, event.r7, event.r8, event.r9, event.r10, event.write_begin,
+      event.write_end, event.write_limit_begin, event.write_limit_end,
+      event.return_value);
 }
 
 void NativeRenderer::OnPM4Packet(PM4PacketInfo packet) {
