@@ -61,12 +61,12 @@ Result:
 
 `--backend d3d12` now has a first offline resource-backed geometry path. It selects a captured indexed draw with real index and vertex snapshots, canonicalizes the decoded Xenos vertex data into a native D3D12 input layout, binds upload-buffer vertex/index resources, compiles a hash-keyed manual HLSL override pair when present, and submits `DrawIndexedInstanced`.
 
-This is still not full BO2 scene rendering. Draw `1209` can now run without `--allow-diagnostic-shader` because a manual HLSL override pair exists under `shader_work\native_overrides`, and the pair can be reused through `shader_work\cache\shader_cache_index.json`. The override is interface-compatible with the currently canonicalized position/color/UV vertex stream, but it is not an automatic Xenos shader translation and it does not bind captured BO2 constant payloads, textures, or render state yet. Without a matching cache entry, override, translation, or explicit diagnostic fallback, `--backend d3d12` fails closed.
+This is still not full BO2 scene rendering. Draw `1209` can now run without `--allow-diagnostic-shader` because a manual HLSL override pair exists under `shader_work\native_overrides`, and the pair can be reused through `shader_work\cache\shader_cache_index.json`. The override is interface-compatible with the currently canonicalized position/color/UV vertex stream and now consumes a flattened captured constant payload block at `b1`, but it is not an automatic Xenos shader translation and it does not bind textures or render state yet. Without a matching cache entry, override, translation, or explicit diagnostic fallback, `--backend d3d12` fails closed.
 
 Current missing pieces:
 
 - Automatic Xenos shader translation and persistent DXIL shader cache
-- Captured constant-buffer binding into the native root signature
+- Complete captured constant-buffer layout binding beyond the current flattened `b1` root constants
 - Texture/sampler state
 - Render target/depth/blend/raster state
 - Multi-draw/full-frame state sequencing for all captured draw types
@@ -83,8 +83,8 @@ Current captured pieces from `native_captures\vertex_fetch_capture_001`:
 - Diagnostic D3D12 after the real path remains working: `native-renderer-d3d12-diagnostic-final.bmp`, SHA-256 `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`
 - Fresh shader-payload capture `native_captures\shader_payload_capture_001`: `587/587` shader uploads with payload, `73/73` constant uploads with payload, `28` indexed draw snapshots, `218` vertex fetch snapshots
 - Draw `1209` with explicit diagnostic shader fallback: `native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
-- Draw `1209` with manual overrides `vs_5D918D91043B3ED0.hlsl` and `ps_C4ED2979F29C9139.hlsl`: `native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-manual-override.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
-- Draw `1209` with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache`: exit code `0`, cache-only output SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
+- Draw `1209` with manual overrides `vs_5D918D91043B3ED0.hlsl` and `ps_C4ED2979F29C9139.hlsl`: `native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-constant-bound.bmp`, SHA-256 `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`
+- Draw `1209` with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache`: exit code `0`, cache-only output SHA-256 `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`
 - Draw `1209` with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root native_captures\empty_shader_cache` and no `--allow-diagnostic-shader`: exit code `1`, expected fail-closed message with the exact missing VS/PS hashes
 
 ## Build note

@@ -25,10 +25,10 @@ The compiled cache currently stores D3DCompile output (`.dxbc`) because `dxc.exe
 Verified cache artifacts for draw `1209`:
 
 - `shader_work\cache\shader_cache_index.json`
-- `shader_work\cache\d3d12\manual_vs_5D918D91043B3ED0_vs_5_0_src7E9F55F7C18FD853.dxbc`
-- `shader_work\cache\d3d12\manual_ps_C4ED2979F29C9139_ps_5_0_src32791D60D2A98EFB.dxbc`
-- `shader_work\cache\logs\manual_vs_5D918D91043B3ED0_vs_5_0_src7E9F55F7C18FD853.log`
-- `shader_work\cache\logs\manual_ps_C4ED2979F29C9139_ps_5_0_src32791D60D2A98EFB.log`
+- `shader_work\cache\d3d12\manual_vs_5D918D91043B3ED0_vs_5_0_layout2_src7E9F55F7C18FD853.dxbc`
+- `shader_work\cache\d3d12\manual_ps_C4ED2979F29C9139_ps_5_0_layout2_src43AD01F616D81230.dxbc`
+- `shader_work\cache\logs\manual_vs_5D918D91043B3ED0_vs_5_0_layout2_src7E9F55F7C18FD853.log`
+- `shader_work\cache\logs\manual_ps_C4ED2979F29C9139_ps_5_0_layout2_src43AD01F616D81230.log`
 
 Verified behavior:
 

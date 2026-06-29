@@ -84,8 +84,8 @@ Decoded resources:
 
 D3D12 behavior:
 
-- `--backend d3d12 --draw 1209` loads manual overrides from `shader_work\native_overrides\overrides.json`, compiles/cache-writes D3D12 shader blobs if needed, and writes `native-renderer-d3d12-real-draw1209-manual-override.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
-- `--backend d3d12 --draw 1209 --shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache` succeeds from `shader_work\cache\shader_cache_index.json` and compiled `.dxbc` blobs without override source.
+- `--backend d3d12 --draw 1209` loads manual overrides from `shader_work\native_overrides\overrides.json`, compiles/cache-writes D3D12 shader blobs if needed, binds flattened captured constant payloads at root slot `1` / HLSL `b1`, and writes `native-renderer-d3d12-real-draw1209-constant-bound.bmp`, SHA-256 `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`.
+- `--backend d3d12 --draw 1209 --shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache` succeeds from `shader_work\cache\shader_cache_index.json` and compiled `.dxbc` blobs without override source, producing the same `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60` output.
 - `--backend d3d12 --draw 1209 --shader-override-root native_captures\empty_shader_overrides --shader-cache-root native_captures\empty_shader_cache` fails closed without a cached or override shader pair and reports the missing `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139` pair.
 - `--backend d3d12 --draw 1209 --allow-diagnostic-shader` writes `native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
 

@@ -11,7 +11,7 @@ The working GPU-output backends are:
 - `d3d12-diagnostic`, which renders synthetic debug rectangles from captured BO2 events.
 - `d3d12`, which now renders the first resource-backed captured BO2 indexed draw from replay data using real captured vertex and index buffers with either a matching manual HLSL override pair or the explicitly requested temporary diagnostic shader fallback.
 
-Neither path is full BO2 scene rendering yet. The `d3d12` path proves native D3D12 vertex/index buffer binding, manual override shader manifest parsing, compiled shader-cache hits, and `DrawIndexedInstanced` with captured BO2 geometry, but it still lacks automatic translated BO2 shaders, captured constant-buffer binding, textures/samplers, render-target/depth state, and full-frame state replay. Without a matching cache entry, override, or translated shader, real `d3d12` fails closed.
+Neither path is full BO2 scene rendering yet. The `d3d12` path proves native D3D12 vertex/index buffer binding, manual override shader manifest parsing, compiled shader-cache hits, flattened captured constant root binding, and `DrawIndexedInstanced` with captured BO2 geometry, but it still lacks automatic translated BO2 shaders, full constant-layout reconstruction, textures/samplers, render-target/depth state, and full-frame state replay. Without a matching cache entry, override, or translated shader, real `d3d12` fails closed.
 
 ## Real D3D12 gate
 
@@ -28,22 +28,22 @@ Draw `1209` now has a hash-keyed manual D3D12 override pair:
 Verified command:
 
 ```powershell
-native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --draw 1209 --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-manual-override.bmp --no-summary
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --draw 1209 --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-constant-bound.bmp --no-summary
 ```
 
 - Exit code: `0`
-- Output: `native-renderer-d3d12-real-draw1209-manual-override.bmp`
-- SHA-256: `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
-- Shader status: manual HLSL override loaded through `overrides.json`, compiled by the replay backend, and cached as D3DCompile `.dxbc`. This is not automatic Xenos translation and not DXC/DXIL yet.
+- Output: `native-renderer-d3d12-real-draw1209-constant-bound.bmp`
+- SHA-256: `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`
+- Shader status: manual HLSL override loaded through `overrides.json`, compiled by the replay backend, cached as D3DCompile `.dxbc`, and bound with flattened captured constants at `b1`. This is not automatic Xenos translation and not DXC/DXIL yet.
 
 Cache-only strict command:
 
 ```powershell
-native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --draw 1209 --shader-override-root C:\Users\braxt\bo2-recompiled\native_captures\empty_shader_overrides --shader-cache-root C:\Users\braxt\bo2-recompiled\shader_work\cache --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-cache-note-empty-override.bmp --no-summary
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --draw 1209 --shader-override-root C:\Users\braxt\bo2-recompiled\native_captures\empty_shader_overrides --shader-cache-root C:\Users\braxt\bo2-recompiled\shader_work\cache --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-constant-bound-cache-only.bmp --no-summary
 ```
 
 - Exit code: `0`
-- Output SHA-256: `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
+- Output SHA-256: `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`
 - Evidence: succeeds with an empty override root because `shader_work\cache\shader_cache_index.json` maps the runtime hashes to compiled `.dxbc` blobs.
 
 Strict missing-cache-and-override path:
@@ -72,12 +72,12 @@ Draw `1209` in `native_captures\shader_payload_capture_001` has enough packet da
 
 - Real: draw packet, index metadata, raw index bytes, decoded indices `3,0,2,2,0,1`, shader hashes and uploaded shader payload dwords, two constant ranges with payload, `vf95` at guest physical `0x0501E030`, stride `32`, attributes with Xenos formats `38`, `6`, and `37`, `128/128` raw vertex bytes, and decoded position/color/UV components.
 - Implemented: D3D12 canonical input layout, upload-buffer vertex/index resources, and `DrawIndexedInstanced` for this draw.
-- Implemented for draw `1209`: shader cache-index lookup, manifest override lookup, HLSL compilation/cache write, canonical D3D12 input layout, upload-buffer vertex/index resources, and `DrawIndexedInstanced`.
-- Missing: automatic Xenos shader translation, DXC/DXIL compilation, captured constant-buffer binding, render target/depth state, texture/sampler state, and full-frame multi-draw replay.
+- Implemented for draw `1209`: shader cache-index lookup, manifest override lookup, HLSL compilation/cache write, flattened captured constants at `b1`, canonical D3D12 input layout, upload-buffer vertex/index resources, and `DrawIndexedInstanced`.
+- Missing: automatic Xenos shader translation, DXC/DXIL compilation, full constant-layout reconstruction, render target/depth state, texture/sampler state, and full-frame multi-draw replay.
 
 ## Next implementation targets
 
-1. Add constant-buffer binding from captured payloads.
+1. Replace flattened constant root data with layout-aware constant buffers from shader metadata.
 2. Decode texture/sampler and render-target/depth/blend/raster state for the same frame.
 3. Expand D3D12 real replay from one selected draw to all supported draws in the captured frame.
 4. Add DXC/DXIL support and reuse the same cache index for translated shaders.

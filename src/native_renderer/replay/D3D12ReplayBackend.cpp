@@ -290,6 +290,11 @@ struct PreparedRealDraw {
   bool uses_32bit_indices = false;
 };
 
+struct PreparedCapturedConstants {
+  std::array<uint32_t, 32> dwords{};
+  uint32_t count = 0;
+};
+
 struct NativeShaderOverridePair {
   std::filesystem::path vertex_path;
   std::filesystem::path pixel_path;
@@ -496,16 +501,22 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
                                 const std::filesystem::path &pixel_cache_path,
                                 const std::filesystem::path &pixel_log_path,
                                 std::string &error) {
-  D3D12_ROOT_PARAMETER root_parameter{};
-  root_parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-  root_parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-  root_parameter.Constants.ShaderRegister = 0;
-  root_parameter.Constants.RegisterSpace = 0;
-  root_parameter.Constants.Num32BitValues = 4;
+  D3D12_ROOT_PARAMETER root_parameters[2]{};
+  root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  root_parameters[0].Constants.ShaderRegister = 0;
+  root_parameters[0].Constants.RegisterSpace = 0;
+  root_parameters[0].Constants.Num32BitValues = 4;
+  root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  root_parameters[1].Constants.ShaderRegister = 1;
+  root_parameters[1].Constants.RegisterSpace = 0;
+  root_parameters[1].Constants.Num32BitValues = 32;
 
   D3D12_ROOT_SIGNATURE_DESC root_desc{};
-  root_desc.NumParameters = 1;
-  root_desc.pParameters = &root_parameter;
+  root_desc.NumParameters =
+      static_cast<UINT>(sizeof(root_parameters) / sizeof(root_parameters[0]));
+  root_desc.pParameters = root_parameters;
   root_desc.Flags =
       D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -591,6 +602,11 @@ cbuffer FrameConstants : register(b0)
   float2 _pad;
 };
 
+cbuffer CapturedConstants : register(b1)
+{
+  float4 captured_constants[8];
+};
+
 struct VSIn
 {
   float4 position : POSITION;
@@ -621,7 +637,10 @@ float4 PSMain(VSOut input) : SV_Target0
 {
   float2 uv = saturate(input.uv);
   float3 tint = float3(0.25f + 0.75f * uv.x, 0.25f + 0.75f * uv.y, 1.0f);
-  return float4(saturate(input.color.rgb * tint), 1.0f);
+  float constant_bias = saturate(abs(captured_constants[0].x) * 8.0f);
+  return float4(saturate(input.color.rgb * tint +
+                         float3(constant_bias, constant_bias * 0.25f, 0.0f)),
+                1.0f);
 }
 )";
 }
@@ -756,8 +775,10 @@ bool FindCacheShaderPath(const std::filesystem::path &root,
 std::string MakeOverrideCacheKey(const char *short_stage, uint64_t hash,
                                  const std::string &profile,
                                  const std::string &source) {
+  constexpr const char *kBindingLayoutVersion = "layout2";
   return std::string("manual_") + short_stage + "_" + ShaderHashFileKey(hash) +
-         "_" + profile + "_src" + ShaderHashFileKey(Fnv1a64(source));
+         "_" + profile + "_" + kBindingLayoutVersion + "_src" +
+         ShaderHashFileKey(Fnv1a64(source));
 }
 
 std::filesystem::path FindShaderOverridePath(
@@ -785,21 +806,26 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
                                   const ReplayCliOptions &options,
                                   NativeShaderOverridePair &pair,
                                   std::string &error) {
-  std::string cache_error;
-  if (FindCacheShaderPath(options.shader_cache_root, "vs", "vertex",
-                          draw_state.vertex_shader.hash,
-                          pair.vertex_cache_path, pair.vertex_path,
-                          pair.vertex_profile, pair.vertex_cache_key,
-                          cache_error) &&
-      FindCacheShaderPath(options.shader_cache_root, "ps", "pixel",
-                          draw_state.pixel_shader.hash, pair.pixel_cache_path,
-                          pair.pixel_path, pair.pixel_profile,
-                          pair.pixel_cache_key, cache_error)) {
-    return true;
-  }
-  if (!cache_error.empty()) {
-    error = cache_error;
-    return false;
+  std::error_code ec;
+  const bool override_manifest_present = std::filesystem::is_regular_file(
+      options.shader_override_root / "overrides.json", ec);
+  if (!override_manifest_present || ec) {
+    std::string cache_error;
+    if (FindCacheShaderPath(options.shader_cache_root, "vs", "vertex",
+                            draw_state.vertex_shader.hash,
+                            pair.vertex_cache_path, pair.vertex_path,
+                            pair.vertex_profile, pair.vertex_cache_key,
+                            cache_error) &&
+        FindCacheShaderPath(options.shader_cache_root, "ps", "pixel",
+                            draw_state.pixel_shader.hash, pair.pixel_cache_path,
+                            pair.pixel_path, pair.pixel_profile,
+                            pair.pixel_cache_key, cache_error)) {
+      return true;
+    }
+    if (!cache_error.empty()) {
+      error = cache_error;
+      return false;
+    }
   }
 
   std::string manifest_error;
@@ -1056,6 +1082,36 @@ bool WriteOverrideCacheIndex(const ReplayDrawState &draw_state,
     return false;
   }
   return true;
+}
+
+PreparedCapturedConstants BuildCapturedConstants(
+    const ReplayDrawState &draw_state) {
+  PreparedCapturedConstants prepared;
+  std::vector<const PM4ConstantRecord *> records;
+  records.reserve(draw_state.bound_constants.size());
+  for (const PM4ConstantRecord &record : draw_state.bound_constants) {
+    if (!record.payload_missing && !record.payload_truncated &&
+        !record.dwords.empty()) {
+      records.push_back(&record);
+    }
+  }
+  std::sort(records.begin(), records.end(),
+            [](const PM4ConstantRecord *lhs, const PM4ConstantRecord *rhs) {
+              if (lhs->seq != rhs->seq) {
+                return lhs->seq < rhs->seq;
+              }
+              return lhs->index < rhs->index;
+            });
+
+  for (const PM4ConstantRecord *record : records) {
+    for (const uint32_t dword : record->dwords) {
+      if (prepared.count >= prepared.dwords.size()) {
+        return prepared;
+      }
+      prepared.dwords[prepared.count++] = dword;
+    }
+  }
+  return prepared;
 }
 
 bool CreateDebugPipeline(ID3D12Device *device,
@@ -1734,6 +1790,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   const float constants[4] = {static_cast<float>(width),
                               static_cast<float>(height), 0.0f, 0.0f};
   list->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
+  const PreparedCapturedConstants captured_constants =
+      BuildCapturedConstants(draw_state);
+  list->SetGraphicsRoot32BitConstants(
+      1, static_cast<UINT>(captured_constants.dwords.size()),
+      captured_constants.dwords.data(), 0);
 
   D3D12_VERTEX_BUFFER_VIEW vertex_view{};
   vertex_view.BufferLocation = vertex_buffer->GetGPUVirtualAddress();

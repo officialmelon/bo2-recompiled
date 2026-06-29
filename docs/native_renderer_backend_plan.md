@@ -29,7 +29,7 @@ The native backend should consume a normalized stream, not raw JSON:
 7. `DrawAutoIndexed` for `PM4_DRAW_INDX_2` / `source_select=2`.
 8. `Present(frontbuffer, width, height)`.
 
-The replay tool now reconstructs items 1, 2, 3, 5, 6, 7, and 8 enough to print state for fresh captures. Constant payloads, index bytes, vertex fetch records, and bounded vertex bytes are present in `vertex_fetch_capture_001`. D3D12 can now draw item 6 for draw `1004` with real captured geometry. Item 4, shader replacement/translation, constants binding, and texture/sampler binding still need work before a real backend can draw BO2 scenes correctly.
+The replay tool now reconstructs items 1, 2, 3, 5, 6, 7, and 8 enough to print state for fresh captures. Constant payloads, index bytes, vertex fetch records, and bounded vertex bytes are present in current captures. D3D12 can now draw item 6 for draw `1209` with real captured geometry, a manual override shader pair, and a flattened captured-constant block. Item 4 still needs automatic shader replacement/translation, real constant-layout reconstruction, and texture/sampler binding before a real backend can draw BO2 scenes correctly.
 
 ## D3D12 first backend
 
@@ -127,7 +127,7 @@ This proves the BO2-owned backend path, but it is still a diagnostic renderer un
 - Captured draw state now includes bounded vertex fetch buffers where the active vertex shader exposes bindings, but texture/sampler bindings are still missing.
 - Fresh captured constants include payload values; older captures only have address/count metadata.
 - Shader replacement table is not connected to runtime hashes.
-- Full D3D12 replay is blocked past draw `1004`: the draw has real index metadata, raw index bytes, decoded vertex fetch state, bounded vertex bytes, and two bound constant ranges, and now renders through a canonical D3D12 input layout, but there are still no replacement shaders, no constant-buffer binding, no texture/sampler state, and no render-target/depth state.
+- Full D3D12 replay is blocked past the supported draw `1209`: the draw has real index metadata, raw index bytes, decoded vertex fetch state, bounded vertex bytes, and two bound constant ranges, and now renders through a canonical D3D12 input layout with a manual override shader pair and flattened captured constants. There is still no automatic Xenos shader translation, no layout-aware constant buffers, no texture/sampler state, and no render-target/depth state.
 - Frame boundaries are present-driven; most current PM4 work is pre-frame in replay terms.
 - Android/ARM64 direct generated calls can still bypass dispatcher hooks outside the CP sink.
 - ReXGlue SDK callback changes are required for each new class of live resource snapshot. The BO2 hook path compiles with or without new fields, but fields remain `missing` until the SDK side is rebuilt.
@@ -135,7 +135,7 @@ This proves the BO2-owned backend path, but it is still a diagnostic renderer un
 ## Next implementation steps
 
 1. Add a shader replacement registry keyed by `(stage, hash)` with minimal passthrough/debug shaders for the top replay pairs.
-2. Bind captured constant payloads for draw `1004`.
+2. Replace the flattened draw-`1209` constant root block with shader-layout-aware constant buffers.
 3. Add `ReplayRenderState` as a stable normalized state object between JSONL replay and real backends.
 4. Add a D3D12 replay swapchain/window path.
 5. Expand real replay from draw `1004` to all supported indexed draws in the captured frame.
