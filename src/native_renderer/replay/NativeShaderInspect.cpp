@@ -1,8 +1,10 @@
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -10,6 +12,17 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <bcrypt.h>
+#endif
 
 namespace {
 
@@ -36,6 +49,11 @@ struct RuntimeShaderUsage {
   uint64_t payload_dwords = 0;
   uint64_t payload_truncated_count = 0;
   uint32_t max_payload_dwords = 0;
+  std::string payload_sha256_le;
+  std::string payload_sha256_be;
+  std::string payload_trimmed_sha256_le;
+  std::string payload_trimmed_sha256_be;
+  uint64_t payload_hash_mismatch_count = 0;
 };
 
 struct RuntimeShaderPairUsage {
@@ -133,6 +151,13 @@ std::optional<uint64_t> ParseHexU64(std::string text) {
   }
 }
 
+uint32_t ParseU32HexOrZero(const std::string &text) {
+  if (auto value = ParseHexU64(text)) {
+    return static_cast<uint32_t>(*value);
+  }
+  return 0;
+}
+
 uint32_t ParseU32OrZero(std::string text) {
   if (text.empty()) {
     return 0;
@@ -142,6 +167,42 @@ uint32_t ParseU32OrZero(std::string text) {
   } catch (...) {
     return 0;
   }
+}
+
+std::vector<std::string> ExtractJsonStringArray(std::string_view block,
+                                                std::string_view key) {
+  std::vector<std::string> values;
+  const std::string needle = "\"" + std::string(key) + "\"";
+  std::size_t pos = block.find(needle);
+  if (pos == std::string_view::npos) {
+    return values;
+  }
+  pos = block.find(':', pos + needle.size());
+  if (pos == std::string_view::npos) {
+    return values;
+  }
+  pos = block.find('[', pos + 1);
+  if (pos == std::string_view::npos) {
+    return values;
+  }
+  const std::size_t end = block.find(']', pos + 1);
+  if (end == std::string_view::npos) {
+    return values;
+  }
+
+  while (pos < end) {
+    pos = block.find('"', pos + 1);
+    if (pos == std::string_view::npos || pos >= end) {
+      break;
+    }
+    const std::size_t begin = pos + 1;
+    pos = block.find('"', begin);
+    if (pos == std::string_view::npos || pos > end) {
+      break;
+    }
+    values.emplace_back(block.substr(begin, pos - begin));
+  }
+  return values;
 }
 
 std::string ExtractJsonString(std::string_view block, std::string_view key) {
@@ -221,6 +282,133 @@ uint64_t ExtractJsonHexU64(std::string_view block, std::string_view key) {
     return *value;
   }
   return 0;
+}
+
+std::string HexBytes(const uint8_t *bytes, std::size_t count) {
+  std::ostringstream out;
+  out << std::hex << std::setfill('0') << std::nouppercase;
+  for (std::size_t i = 0; i < count; ++i) {
+    out << std::setw(2) << static_cast<uint32_t>(bytes[i]);
+  }
+  return out.str();
+}
+
+std::string Sha256Hex(const std::vector<uint8_t> &bytes) {
+#if defined(_WIN32)
+  BCRYPT_ALG_HANDLE algorithm = nullptr;
+  BCRYPT_HASH_HANDLE hash = nullptr;
+  std::array<uint8_t, 32> digest{};
+  DWORD hash_length = 0;
+  DWORD result_size = 0;
+
+  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr,
+                                  0) < 0) {
+    return {};
+  }
+  auto close_algorithm = [&]() {
+    if (algorithm) {
+      BCryptCloseAlgorithmProvider(algorithm, 0);
+    }
+  };
+
+  if (BCryptGetProperty(algorithm, BCRYPT_HASH_LENGTH,
+                        reinterpret_cast<PUCHAR>(&hash_length),
+                        sizeof(hash_length), &result_size, 0) < 0 ||
+      hash_length != digest.size()) {
+    close_algorithm();
+    return {};
+  }
+  if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) < 0) {
+    close_algorithm();
+    return {};
+  }
+  const auto destroy_hash = [&]() {
+    if (hash) {
+      BCryptDestroyHash(hash);
+    }
+  };
+  if (!bytes.empty() &&
+      BCryptHashData(hash, const_cast<PUCHAR>(bytes.data()),
+                     static_cast<ULONG>(bytes.size()), 0) < 0) {
+    destroy_hash();
+    close_algorithm();
+    return {};
+  }
+  if (BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()),
+                       0) < 0) {
+    destroy_hash();
+    close_algorithm();
+    return {};
+  }
+  destroy_hash();
+  close_algorithm();
+  return HexBytes(digest.data(), digest.size());
+#else
+  (void)bytes;
+  return {};
+#endif
+}
+
+std::vector<uint8_t> DwordsToBytes(const std::vector<uint32_t> &dwords,
+                                   bool little_endian) {
+  std::vector<uint8_t> bytes;
+  bytes.reserve(dwords.size() * 4);
+  for (uint32_t dword : dwords) {
+    if (little_endian) {
+      bytes.push_back(static_cast<uint8_t>(dword & 0xFFu));
+      bytes.push_back(static_cast<uint8_t>((dword >> 8) & 0xFFu));
+      bytes.push_back(static_cast<uint8_t>((dword >> 16) & 0xFFu));
+      bytes.push_back(static_cast<uint8_t>((dword >> 24) & 0xFFu));
+    } else {
+      bytes.push_back(static_cast<uint8_t>((dword >> 24) & 0xFFu));
+      bytes.push_back(static_cast<uint8_t>((dword >> 16) & 0xFFu));
+      bytes.push_back(static_cast<uint8_t>((dword >> 8) & 0xFFu));
+      bytes.push_back(static_cast<uint8_t>(dword & 0xFFu));
+    }
+  }
+  return bytes;
+}
+
+std::vector<uint32_t> ParsePayloadDwords(std::string_view line) {
+  std::vector<uint32_t> dwords;
+  for (const std::string &text : ExtractJsonStringArray(line, "dwords")) {
+    dwords.push_back(ParseU32HexOrZero(text));
+  }
+  return dwords;
+}
+
+std::vector<uint32_t> TrimTrailingZeroDwords(std::vector<uint32_t> dwords) {
+  while (!dwords.empty() && dwords.back() == 0) {
+    dwords.pop_back();
+  }
+  return dwords;
+}
+
+void RecordPayloadHashes(RuntimeShaderUsage &usage,
+                         const std::vector<uint32_t> &dwords) {
+  if (dwords.empty()) {
+    return;
+  }
+
+  const std::string raw_le = Sha256Hex(DwordsToBytes(dwords, true));
+  const std::string raw_be = Sha256Hex(DwordsToBytes(dwords, false));
+  const std::vector<uint32_t> trimmed = TrimTrailingZeroDwords(dwords);
+  const std::string trimmed_le = Sha256Hex(DwordsToBytes(trimmed, true));
+  const std::string trimmed_be = Sha256Hex(DwordsToBytes(trimmed, false));
+
+  if (usage.payload_sha256_le.empty()) {
+    usage.payload_sha256_le = raw_le;
+    usage.payload_sha256_be = raw_be;
+    usage.payload_trimmed_sha256_le = trimmed_le;
+    usage.payload_trimmed_sha256_be = trimmed_be;
+    return;
+  }
+
+  if (usage.payload_sha256_le != raw_le || usage.payload_sha256_be != raw_be ||
+      usage.payload_trimmed_sha256_le != trimmed_le ||
+      usage.payload_trimmed_sha256_be != trimmed_be) {
+    ++usage.payload_hash_mismatch_count;
+  }
 }
 
 std::optional<std::string_view> RecordAround(std::string_view text,
@@ -339,6 +527,7 @@ bool LoadRuntimeShaderCapture(const std::filesystem::path &path,
             std::max(usage.max_payload_dwords, payload_dwords);
         ++capture.shader_payload_loads;
         capture.shader_payload_dwords += payload_dwords;
+        RecordPayloadHashes(usage, ParsePayloadDwords(line));
       }
       if (payload_truncated) {
         ++usage.payload_truncated_count;
@@ -435,7 +624,19 @@ void PrintRuntimeShaders(const RuntimeShaderCapture &capture,
               << " payload_dwords=" << usage.payload_dwords
               << " max_payload=" << usage.max_payload_dwords
               << " payload_truncated=" << usage.payload_truncated_count
+              << " payload_hash_mismatches="
+              << usage.payload_hash_mismatch_count
               << "\n";
+    if (!usage.payload_sha256_le.empty()) {
+      std::cout << "    payload_sha256_le=" << usage.payload_sha256_le
+                << "\n"
+                << "    payload_sha256_be=" << usage.payload_sha256_be
+                << "\n"
+                << "    payload_trimmed_sha256_le="
+                << usage.payload_trimmed_sha256_le << "\n"
+                << "    payload_trimmed_sha256_be="
+                << usage.payload_trimmed_sha256_be << "\n";
+    }
   }
 
   std::cout << "\nRuntime shader pairs:\n";
@@ -467,6 +668,22 @@ void MatchRuntimeShaders(std::string_view index_text,
     }
 
     const std::size_t pos = lower_index.find(hash_text);
+    const std::size_t raw_le_pos =
+        usage.payload_sha256_le.empty()
+            ? std::string::npos
+            : lower_index.find(ToLower(usage.payload_sha256_le));
+    const std::size_t raw_be_pos =
+        usage.payload_sha256_be.empty()
+            ? std::string::npos
+            : lower_index.find(ToLower(usage.payload_sha256_be));
+    const std::size_t trimmed_le_pos =
+        usage.payload_trimmed_sha256_le.empty()
+            ? std::string::npos
+            : lower_index.find(ToLower(usage.payload_trimmed_sha256_le));
+    const std::size_t trimmed_be_pos =
+        usage.payload_trimmed_sha256_be.empty()
+            ? std::string::npos
+            : lower_index.find(ToLower(usage.payload_trimmed_sha256_be));
     std::cout << "  " << StageName(usage.stage) << " 0x" << std::hex
               << std::uppercase << usage.hash << std::dec
               << " draws=" << usage.draw_count
@@ -474,7 +691,27 @@ void MatchRuntimeShaders(std::string_view index_text,
               << " payload_loads=" << usage.payload_load_count
               << " missing_payload=" << usage.payload_missing_count
               << " exact_substring_match="
-              << (pos == std::string::npos ? "no" : "yes") << "\n";
+              << (pos == std::string::npos ? "no" : "yes")
+              << " payload_raw_le_match="
+              << (raw_le_pos == std::string::npos ? "no" : "yes")
+              << " payload_raw_be_match="
+              << (raw_be_pos == std::string::npos ? "no" : "yes")
+              << " payload_trimmed_le_match="
+              << (trimmed_le_pos == std::string::npos ? "no" : "yes")
+              << " payload_trimmed_be_match="
+              << (trimmed_be_pos == std::string::npos ? "no" : "yes")
+              << " payload_hash_mismatches="
+              << usage.payload_hash_mismatch_count << "\n";
+    if (!usage.payload_sha256_le.empty()) {
+      std::cout << "    payload_sha256_le=" << usage.payload_sha256_le
+                << "\n"
+                << "    payload_sha256_be=" << usage.payload_sha256_be
+                << "\n"
+                << "    payload_trimmed_sha256_le="
+                << usage.payload_trimmed_sha256_le << "\n"
+                << "    payload_trimmed_sha256_be="
+                << usage.payload_trimmed_sha256_be << "\n";
+    }
     if (pos != std::string::npos) {
       ++matched;
       if (auto record = RecordAround(index_text, pos)) {

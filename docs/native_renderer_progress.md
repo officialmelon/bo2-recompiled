@@ -22,7 +22,7 @@ Last updated: 2026-06-28
 - `native_render_replay.exe --backend d3d12-diagnostic` produced BO2-owned native GPU-output artifacts from replayed draw events: first clear tiles, then a shader-pipeline synthetic geometry pass.
 - `native_render_replay.exe --backend d3d12` now produces a BO2-owned native GPU-output artifact from captured draw `1004` using real replayed vertex/index payloads, D3D12 upload buffers, and `DrawIndexedInstanced`. This is captured BO2 geometry with a diagnostic native shader, not shader-correct scene rendering.
 - `native_shader_inspect.exe` has been added as a standalone shader index inspection target. The current implementation loads `shader_work/shaders/index.json`, prints summary counts, previews first pixel/vertex containers, and searches static container/microcode records by hash substring.
-- `native_shader_inspect.exe` now reads native captures, ranks runtime-used shader hashes and shader pairs, and checks whether runtime 64-bit hashes appear directly in the static shader index. `vertex_fetch_capture_001` has `8` unique runtime shaders, `7` pairs, and `0/8` direct static-index matches.
+- `native_shader_inspect.exe` now reads native captures, ranks runtime-used shader hashes and shader pairs, computes captured PM4 shader-payload SHA-256 variants, and checks whether runtime IDs or payload hashes appear directly in the static shader index. `shader_payload_capture_001` has `8` unique runtime shaders, `7` pairs, and `0/8` matches across runtime IDs, raw payload LE/BE hashes, and trailing-zero-trimmed payload LE/BE hashes.
 - Backend bring-up plan now lives in `docs/native_renderer_backend_plan.md`; replay format and verified results live in `docs/native_renderer_replay.md`.
 - Runtime renderer selection is controlled by the ReXGlue cvar `native_renderer_mode`.
 
@@ -140,7 +140,7 @@ Runtime verification:
 - Full shader-payload rebuild completed with `default`, `native_render_replay`, and `native_shader_inspect` linked successfully. Build log: `default\out\build\win-amd64-clangmsvc-debug\native-renderer-shader-payload-build.out.log`; exit file: `native-renderer-shader-payload-build.exit.txt` = `0`.
 - Fresh shader-payload capture `C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl` contains `12000` JSONL events, `53` frames, `2654` draws, `587/587` shader uploads with payload (`13230` dwords), `73/73` constant uploads with payload, `28` indexed draw snapshots, and `218` vertex fetch snapshots. Validation result: `Validation OK: 12000 events, 53 frames, 2654 draws`.
 - Target draw `1209` in `shader_payload_capture_001` is a real indexed `PM4_DRAW_INDX` quad with index bytes `00 03 00 00 00 02 00 02 00 00 00 01`, decoded indices `3,0,2,2,0,1`, `vf95` at `0x0501E030`, stride `32`, Xenos formats `38`, `6`, `37`, and decoded `1280x720` position/color/UV vertices.
-- Runtime shader direct static-index matches remain `0/8` on the shader-payload capture. SHA-256 experiments over little-endian and big-endian PM4 payload bytes for runtime shaders `0x5D918D91043B3ED0`, `0xC4ED2979F29C9139`, `0xB6C9863F710683EC`, and `0xA4A965C189287B99` found no direct `shader_work/shaders/index.json` match.
+- Runtime shader direct static-index matches remain `0/8` on the shader-payload capture. `native_shader_inspect.exe` now computes raw little-endian, raw big-endian, trailing-zero-trimmed little-endian, and trailing-zero-trimmed big-endian SHA-256 values for each captured runtime shader payload. All eight runtime shaders have stable payload hashes across repeated uploads, but all four payload-hash match rules report `no` against `shader_work/shaders/index.json`.
 - `--backend d3d12` now fails closed unless a real translated/cached/override shader is available. The temporary resource-backed diagnostic shader path requires explicit `--allow-diagnostic-shader`; with that flag, draw `1209` writes `native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
 - The earlier 180-second full-build timeout was superseded by the shader-payload rebuild above. The current known build state is successful for `default`, `native_render_replay`, and `native_shader_inspect`.
 
@@ -177,12 +177,12 @@ Runtime verification:
 - Android/ARM64 direct generated calls can still bypass dispatcher hooks. An ARM64-safe generated-function detour or generated-call rewrite is still needed before every logged candidate is guaranteed to fire on Android.
 - The XEX equivalents for the static material asset-load functions are not fully mapped. The current map is strongest for runtime packet emitters and shader/material binding.
 - The cleanest XEX draw-packet target is now `0x8258CF68` (`PM4_DRAW_INDX_2` with variable initiator).
-- Shader replacement exists only as a documented pipeline direction; no native shader override table is bound into the renderer yet. Runtime shader ranking now exists, but runtime-to-static shader identity is still unproven.
+- Shader replacement exists only as a documented pipeline direction; no native shader override table is bound into the renderer yet. Runtime shader ranking and reproducible payload-hash evidence now exist, but runtime-to-static shader identity is still unproven.
 
 ## Next highest-impact targets
 
 1. Add an ARM64-safe generated-call interception path or generated-call rewrite, so Android direct calls cannot bypass dispatcher hooks.
-2. Capture raw PM4 shader payload bytes and/or material shader record metadata so runtime hashes can be matched to static shader containers or explicit overrides.
+2. Capture material shader record metadata and use Ghidra-backed shader/material records so runtime hashes can be matched to static shader containers or explicit overrides.
 3. Bind captured constant payloads into the D3D12 real path for draw `1004`.
 4. Extend the CP trace sink/capture writer with texture fetch state, render target binds, depth/stencil state, and sidecar resource manifests for large snapshots.
 5. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends.

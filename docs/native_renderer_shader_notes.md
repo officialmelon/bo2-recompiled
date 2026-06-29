@@ -123,9 +123,9 @@ Verified capture `shader_payload_capture_001` after adding PM4 shader payload ca
 - Shader payload coverage: `587/587`, `13230` payload dwords, no missing or truncated shader payloads
 - Target draw `1209`: VS `0x5D918D91043B3ED0`, PS `0xC4ED2979F29C9139`, both with captured PM4 shader payloads
 - Direct static-index matching remains `0/8`
-- SHA-256 of captured PM4 payload dwords in little-endian and big-endian byte order did not match `shader_work/shaders/index.json` for runtime hashes `0x5D918D91043B3ED0`, `0xC4ED2979F29C9139`, `0xB6C9863F710683EC`, or `0xA4A965C189287B99`
+- `native_shader_inspect.exe` computes raw little-endian, raw big-endian, trailing-zero-trimmed little-endian, and trailing-zero-trimmed big-endian SHA-256 values for captured PM4 payload dwords. All `8` runtime shaders in this capture have stable payload hashes across repeated uploads, but all four payload-hash rules still report no `shader_work/shaders/index.json` match.
 
-Current shader identity conclusion: runtime 64-bit IDs and raw PM4 upload payload hashes are not enough to map directly to extracted container or microcode hashes. The next evidence target is shader record/material metadata from the XEX/PC PDB path, plus stripped/aligned/padded payload hash variants.
+Current shader identity conclusion: runtime 64-bit IDs and directly hashed PM4 upload payloads are not enough to map to extracted container or microcode hashes. The next evidence target is shader record/material metadata from the XEX/PC PDB path, plus aligned/padded payload hash variants and explicit override mapping.
 
 Top runtime shader pairs in `vertex_fetch_capture_001`:
 
@@ -150,7 +150,7 @@ Ghidra PDB evidence:
 - `Material_LoadPassVertexShader` and `Material_LoadPassPixelShader` parse `vertexShader` / `pixelShader` tokens, then call `Material_SetPassShaderArguments_DX`.
 - `Material_SetPassShaderArguments_DX` reflects shader bytecode and records input/output/resource argument metadata.
 
-Inference: the runtime 64-bit PM4 hashes in the capture are not proven static SHA-256 container or microcode hashes. The next matching rule must capture raw PM4 shader payload bytes and/or material shader-record metadata, then compare exact payload hashes, byte-swapped payload hashes, stripped/aligned payload hashes, and material name/hash-table records.
+Inference: the runtime 64-bit PM4 hashes in the capture are not proven static SHA-256 container or microcode hashes. Raw PM4 shader payload bytes are now captured for the tested runtime shaders, and exact/byte-swapped/trailing-zero-trimmed payload hashes still do not match the static index. The next matching rule must capture material shader-record metadata, compare aligned/padded payload variants, and use material name/hash-table records or explicit overrides.
 
 ## Shader inspection tool
 

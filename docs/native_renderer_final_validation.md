@@ -361,7 +361,19 @@ native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shad
 - Unique runtime shaders: `8`
 - Runtime shader pairs: `7`
 - Direct runtime-hash static-index matches: `0/8`
-- SHA-256 of captured PM4 payload dwords in little-endian and big-endian byte order did not match the static shader index for the tested top/target runtime shaders.
+- `native_shader_inspect.exe` now computes raw little-endian, raw big-endian, trailing-zero-trimmed little-endian, and trailing-zero-trimmed big-endian SHA-256 values for each captured runtime shader payload.
+- All `8` runtime shaders report `payload_hash_mismatches=0`, so repeated uploads for the same runtime hash are stable in this capture.
+- Static-index matches remain `0/8` for runtime IDs and for all four payload-hash variants.
+
+Inspector rebuild used for payload-hash reporting:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"" -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j1 native_shader_inspect"
+```
+
+- Build log: `default\out\build\win-amd64-clangmsvc-debug\native-renderer-shader-inspect-payload-hashes-build.out.log`
+- Exit file: `native-renderer-shader-inspect-payload-hashes-build.exit.txt` = `0`
+- Result: linked `native_shader_inspect.exe`
 
 D3D12 gate:
 
@@ -383,11 +395,11 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 
 ## Current hard blocker
 
-The current fresh capture can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, and constant payloads for target draw `1209`. D3D12 can render that captured geometry only with the explicit diagnostic shader fallback. It still cannot feed a real D3D12/Vulkan scene backend because it lacks shader-correct native shaders or overrides, texture/sampler state, render-target/depth state, constant-buffer binding, and full-frame sequencing.
+The current fresh capture can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, and constant payloads for target draw `1209`. D3D12 can render that captured geometry only with the explicit diagnostic shader fallback. Runtime shader payload hashes are now reproducible but still do not identify static shader records directly. The renderer still cannot feed a real D3D12/Vulkan scene backend because it lacks shader-correct native shaders or overrides, texture/sampler state, render-target/depth state, constant-buffer binding, and full-frame sequencing.
 
 ## Next required work
 
-1. Implement shader runtime-hash matching and manual override plumbing for the `0x5D918D91043B3ED0` / `0xC4ED2979F29C9139` pair.
+1. Capture or recover material/shader record metadata for the `0x5D918D91043B3ED0` / `0xC4ED2979F29C9139` pair, then implement runtime-hash matching or manual override plumbing with evidence.
 2. Bind captured constants through a real root signature/constant-buffer layout instead of only using diagnostic shader constants.
 3. Decode texture/sampler and render-target/depth/blend/raster state for the same tested frame.
 4. Expand D3D12 strict replay from one selected draw to all supported draws in a captured frame.

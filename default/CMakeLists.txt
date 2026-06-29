@@ -86,6 +86,10 @@ endif()
 
 add_executable(native_shader_inspect ${NATIVE_SHADER_INSPECT_SOURCES})
 target_compile_features(native_shader_inspect PRIVATE cxx_std_23)
+if(WIN32)
+    target_compile_definitions(native_shader_inspect PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(native_shader_inspect PRIVATE bcrypt)
+endif()
 
 rexglue_setup_target(default)
 
