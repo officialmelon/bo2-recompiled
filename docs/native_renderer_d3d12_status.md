@@ -59,13 +59,14 @@ Result:
 
 ## Real backend
 
-`--backend d3d12` now has a first offline resource-backed geometry path. It selects a captured indexed draw with real index and vertex snapshots, canonicalizes the decoded Xenos vertex data into a native D3D12 input layout, binds upload-buffer vertex/index resources, and submits `DrawIndexedInstanced`.
+`--backend d3d12` now has a first offline resource-backed geometry path. It selects a captured indexed draw with real index and vertex snapshots, canonicalizes the decoded Xenos vertex data into a native D3D12 input layout, binds upload-buffer vertex/index resources, compiles a hash-keyed manual HLSL override pair when present, and submits `DrawIndexedInstanced`.
 
-This is still not full BO2 scene rendering. The temporary shader used by this path is a diagnostic native shader that visualizes captured color/UV data; it now requires explicit `--allow-diagnostic-shader`. Without that flag, `--backend d3d12` fails closed until a translated, cached, or override BO2 shader pair is available.
+This is still not full BO2 scene rendering. Draw `1209` can now run without `--allow-diagnostic-shader` only because a documented manual HLSL override pair exists under `shader_work\native_overrides\d3d12`. The override is interface-compatible with the currently canonicalized position/color/UV vertex stream, but it is not an automatic Xenos shader translation and it does not bind captured BO2 constant payloads, textures, or render state yet. Without a matching override, translation, or cache entry, `--backend d3d12` fails closed.
 
 Current missing pieces:
 
-- Replacement or translated native shaders
+- Automatic Xenos shader translation and persistent DXIL shader cache
+- Captured constant-buffer binding into the native root signature
 - Texture/sampler state
 - Render target/depth/blend/raster state
 - Multi-draw/full-frame state sequencing for all captured draw types
@@ -82,8 +83,12 @@ Current captured pieces from `native_captures\vertex_fetch_capture_001`:
 - Diagnostic D3D12 after the real path remains working: `native-renderer-d3d12-diagnostic-final.bmp`, SHA-256 `D9FA1C81D99553D78089CFEC9987DA2D1D6ABB051351A456C4CAF0731A9450E3`
 - Fresh shader-payload capture `native_captures\shader_payload_capture_001`: `587/587` shader uploads with payload, `73/73` constant uploads with payload, `28` indexed draw snapshots, `218` vertex fetch snapshots
 - Draw `1209` with explicit diagnostic shader fallback: `native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
-- Draw `1209` without `--allow-diagnostic-shader`: exit code `1`, expected fail-closed message because no translated/cached/override shader pair exists yet
+- Draw `1209` with manual overrides `vs_5D918D91043B3ED0.hlsl` and `ps_C4ED2979F29C9139.hlsl`: `native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-manual-override.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
+- Draw `1209` with `--shader-override-root native_captures\empty_shader_overrides` and no `--allow-diagnostic-shader`: exit code `1`, expected fail-closed message with the exact missing VS/PS hashes
 
 ## Build note
 
-The CMake build graph was regenerated with Visual Studio CMake. `default`, `native_render_replay`, and `native_shader_inspect` build successfully through Ninja under `VsDevCmd`; latest verified shader-payload build exit file is `native-renderer-shader-payload-build.exit.txt` = `0`.
+The CMake build graph was regenerated with Visual Studio CMake. `default`, `native_render_replay`, and `native_shader_inspect` build successfully through Ninja under `VsDevCmd`; latest targeted override-path builds:
+
+- `native_render_replay`: exit `0`, `native_render_replay.exe` size `1076736`, last write `2026-06-29 17:21:11`
+- `native_shader_inspect`: exit `0`, `native_shader_inspect.exe` size `812544`, last write `2026-06-29 20:42:39`

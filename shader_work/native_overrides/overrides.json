@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "overrides": [
+    {
+      "backend": "d3d12",
+      "stage": "vertex",
+      "runtime_hash": "0x5D918D91043B3ED0",
+      "entry": "VSMain",
+      "profile": "vs_5_0",
+      "path": "d3d12/vs_5D918D91043B3ED0.hlsl",
+      "source": "manual canonical draw-1209 fullscreen-quad override"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "pixel",
+      "runtime_hash": "0xC4ED2979F29C9139",
+      "entry": "PSMain",
+      "profile": "ps_5_0",
+      "path": "d3d12/ps_C4ED2979F29C9139.hlsl",
+      "source": "manual canonical draw-1209 fullscreen-quad override"
+    }
+  ]
+}

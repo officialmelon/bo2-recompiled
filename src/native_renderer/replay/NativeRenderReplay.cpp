@@ -1778,6 +1778,9 @@ void PrintHelp() {
       << "  --backend <name>       Replay backend selector: "
          "null/d3d12-diagnostic/d3d12/vulkan-diagnostic/vulkan\n"
       << "  --d3d12-output <path>  BMP output for D3D12 replay backends\n"
+      << "  --shader-override-root <path>\n"
+         "                          Root containing native shader overrides "
+         "(default shader_work/native_overrides)\n"
       << "  --d3d12-draws <count>  Replay draw tiles to render (default 4096)\n"
       << "  --allow-diagnostic-shader\n"
          "                          Permit --backend d3d12 to use the "
@@ -2744,6 +2747,12 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
         return 2;
       }
       cli.d3d12_output_path = value;
+    } else if (arg == "--shader-override-root") {
+      const char *value = require_value("--shader-override-root");
+      if (!value) {
+        return 2;
+      }
+      cli.shader_override_root = value;
     } else if (arg == "--d3d12-draws") {
       const char *value = require_value("--d3d12-draws");
       if (!value || !ParseSizeArgument(value, cli.d3d12_draw_limit)) {
@@ -2820,6 +2829,11 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
     if (!RunD3D12RealReplayBackend(capture, cli, backend_error)) {
       std::cerr << "D3D12 real replay unavailable: " << backend_error << "\n";
       return 1;
+    }
+    if (!cli.allow_diagnostic_shader) {
+      std::cout << "D3D12 real replay note: used native shader override root "
+                << std::filesystem::absolute(cli.shader_override_root).string()
+                << "\n";
     }
     const std::filesystem::path output =
         cli.d3d12_output_path.empty()

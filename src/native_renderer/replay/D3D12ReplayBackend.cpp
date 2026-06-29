@@ -32,7 +32,8 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 bool CompileShader(const char *source, const char *entry, const char *target,
-                   ComPtr<ID3DBlob> &blob, std::string &error);
+                   const char *source_name, ComPtr<ID3DBlob> &blob,
+                   std::string &error);
 
 std::string HrError(const char *what, HRESULT hr) {
   return std::string(what) + " failed with HRESULT 0x" +
@@ -282,6 +283,13 @@ struct PreparedRealDraw {
   bool uses_32bit_indices = false;
 };
 
+struct NativeShaderOverridePair {
+  std::filesystem::path vertex_path;
+  std::filesystem::path pixel_path;
+  std::string vertex_source;
+  std::string pixel_source;
+};
+
 bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
                             std::vector<RealReplayVertex> &vertices) {
   if (fetch.payload_missing || fetch.payload_truncated ||
@@ -457,7 +465,12 @@ bool CreateUploadBuffer(ID3D12Device *device, const void *data,
 bool CreateRealGeometryPipeline(ID3D12Device *device,
                                 ComPtr<ID3D12RootSignature> &root_signature,
                                 ComPtr<ID3D12PipelineState> &pipeline_state,
-                                DXGI_FORMAT format, std::string &error) {
+                                DXGI_FORMAT format,
+                                const char *vertex_shader_source,
+                                const char *vertex_shader_name,
+                                const char *pixel_shader_source,
+                                const char *pixel_shader_name,
+                                std::string &error) {
   D3D12_ROOT_PARAMETER root_parameter{};
   root_parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
   root_parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -495,51 +508,12 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
     return false;
   }
 
-  constexpr const char *kShaderSource = R"(
-cbuffer FrameConstants : register(b0)
-{
-  float2 surface_size;
-  float2 _pad;
-};
-
-struct VSIn
-{
-  float4 position : POSITION;
-  float4 color : COLOR0;
-  float2 uv : TEXCOORD0;
-};
-
-struct VSOut
-{
-  float4 position : SV_Position;
-  float4 color : COLOR0;
-  float2 uv : TEXCOORD0;
-};
-
-VSOut VSMain(VSIn input)
-{
-  VSOut output;
-  float2 ndc;
-  ndc.x = input.position.x / surface_size.x * 2.0f - 1.0f;
-  ndc.y = 1.0f - input.position.y / surface_size.y * 2.0f;
-  output.position = float4(ndc, input.position.z, 1.0f);
-  output.color = input.color;
-  output.uv = input.uv;
-  return output;
-}
-
-float4 PSMain(VSOut input) : SV_Target0
-{
-  float2 uv = saturate(input.uv);
-  float3 tint = float3(0.25f + 0.75f * uv.x, 0.25f + 0.75f * uv.y, 1.0f);
-  return float4(saturate(input.color.rgb * tint), 1.0f);
-}
-)";
-
   ComPtr<ID3DBlob> vertex_shader;
   ComPtr<ID3DBlob> pixel_shader;
-  if (!CompileShader(kShaderSource, "VSMain", "vs_5_0", vertex_shader, error) ||
-      !CompileShader(kShaderSource, "PSMain", "ps_5_0", pixel_shader, error)) {
+  if (!CompileShader(vertex_shader_source, "VSMain", "vs_5_0",
+                     vertex_shader_name, vertex_shader, error) ||
+      !CompileShader(pixel_shader_source, "PSMain", "ps_5_0",
+                     pixel_shader_name, pixel_shader, error)) {
     return false;
   }
 
@@ -580,16 +554,139 @@ float4 PSMain(VSOut input) : SV_Target0
                  error);
 }
 
+const char *DiagnosticRealGeometryShaderSource() {
+  return R"(
+cbuffer FrameConstants : register(b0)
+{
+  float2 surface_size;
+  float2 _pad;
+};
+
+struct VSIn
+{
+  float4 position : POSITION;
+  float4 color : COLOR0;
+  float2 uv : TEXCOORD0;
+};
+
+struct VSOut
+{
+  float4 position : SV_Position;
+  float4 color : COLOR0;
+  float2 uv : TEXCOORD0;
+};
+
+VSOut VSMain(VSIn input)
+{
+  VSOut output;
+  float2 ndc;
+  ndc.x = input.position.x / surface_size.x * 2.0f - 1.0f;
+  ndc.y = 1.0f - input.position.y / surface_size.y * 2.0f;
+  output.position = float4(ndc, input.position.z, 1.0f);
+  output.color = input.color;
+  output.uv = input.uv;
+  return output;
+}
+
+float4 PSMain(VSOut input) : SV_Target0
+{
+  float2 uv = saturate(input.uv);
+  float3 tint = float3(0.25f + 0.75f * uv.x, 0.25f + 0.75f * uv.y, 1.0f);
+  return float4(saturate(input.color.rgb * tint), 1.0f);
+}
+)";
+}
+
+bool ReadTextFile(const std::filesystem::path &path, std::string &text,
+                  std::string &error) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    error = "could not open shader override " + path.string();
+    return false;
+  }
+
+  file.seekg(0, std::ios::end);
+  const std::ifstream::pos_type size = file.tellg();
+  if (size == std::ifstream::pos_type(-1)) {
+    error = "could not size shader override " + path.string();
+    return false;
+  }
+  text.resize(static_cast<std::size_t>(size));
+  file.seekg(0, std::ios::beg);
+  if (!text.empty()) {
+    file.read(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!file) {
+      error = "could not read shader override " + path.string();
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string ShaderHashFileKey(uint64_t hash) {
+  const std::string hex = FormatHex64(hash);
+  return hex.size() > 2 && hex[0] == '0' && hex[1] == 'x' ? hex.substr(2)
+                                                          : hex;
+}
+
+std::filesystem::path FindShaderOverridePath(
+    const std::filesystem::path &root, const char *short_stage,
+    const char *long_stage, uint64_t hash) {
+  const std::string key = ShaderHashFileKey(hash);
+  const std::filesystem::path stage_root = root / "d3d12";
+  const std::array<std::filesystem::path, 4> candidates = {
+      stage_root / (std::string(short_stage) + "_" + key + ".hlsl"),
+      stage_root / (std::string(long_stage) + "_" + key + ".hlsl"),
+      stage_root / (key + "." + short_stage + ".hlsl"),
+      stage_root / (key + ".hlsl"),
+  };
+
+  for (const std::filesystem::path &candidate : candidates) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(candidate, ec) && !ec) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
+bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
+                                  const ReplayCliOptions &options,
+                                  NativeShaderOverridePair &pair,
+                                  std::string &error) {
+  pair.vertex_path =
+      FindShaderOverridePath(options.shader_override_root, "vs", "vertex",
+                             draw_state.vertex_shader.hash);
+  pair.pixel_path =
+      FindShaderOverridePath(options.shader_override_root, "ps", "pixel",
+                             draw_state.pixel_shader.hash);
+  if (pair.vertex_path.empty() || pair.pixel_path.empty()) {
+    error = "no translated, cached, or override shader pair is available for "
+            "draw " +
+            std::to_string(draw_state.draw_index) + " (VS=" +
+            FormatHex64(draw_state.vertex_shader.hash) + ", PS=" +
+            FormatHex64(draw_state.pixel_shader.hash) + ", override_root=" +
+            options.shader_override_root.string() +
+            "). Re-run with --allow-diagnostic-shader only for the temporary "
+            "resource-backed geometry diagnostic path.";
+    return false;
+  }
+
+  return ReadTextFile(pair.vertex_path, pair.vertex_source, error) &&
+         ReadTextFile(pair.pixel_path, pair.pixel_source, error);
+}
+
 bool CompileShader(const char *source, const char *entry, const char *target,
-                   ComPtr<ID3DBlob> &blob, std::string &error) {
+                   const char *source_name, ComPtr<ID3DBlob> &blob,
+                   std::string &error) {
   UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
 #if defined(_DEBUG)
   flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
   ComPtr<ID3DBlob> errors;
   const HRESULT hr =
-      D3DCompile(source, std::strlen(source), "NativeRenderReplayDebug.hlsl",
-                 nullptr, nullptr, entry, target, flags, 0, &blob, &errors);
+      D3DCompile(source, std::strlen(source), source_name, nullptr, nullptr,
+                 entry, target, flags, 0, &blob, &errors);
   if (SUCCEEDED(hr)) {
     return true;
   }
@@ -678,8 +775,10 @@ float4 PSMain(VSOut input) : SV_Target0
 
   ComPtr<ID3DBlob> vertex_shader;
   ComPtr<ID3DBlob> pixel_shader;
-  if (!CompileShader(kShaderSource, "VSMain", "vs_5_0", vertex_shader, error) ||
-      !CompileShader(kShaderSource, "PSMain", "ps_5_0", pixel_shader, error)) {
+  if (!CompileShader(kShaderSource, "VSMain", "vs_5_0",
+                     "NativeRenderReplayDebugVS.hlsl", vertex_shader, error) ||
+      !CompileShader(kShaderSource, "PSMain", "ps_5_0",
+                     "NativeRenderReplayDebugPS.hlsl", pixel_shader, error)) {
     return false;
   }
 
@@ -1097,20 +1196,31 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
                                const ReplayCliOptions &options,
                                std::string &error) {
 #if defined(_WIN32)
-  if (!options.allow_diagnostic_shader) {
-    error =
-        "no translated, cached, or override shader pair is available for the "
-        "selected draw. Re-run with --allow-diagnostic-shader only for the "
-        "temporary resource-backed geometry diagnostic path.";
-    return false;
-  }
-
   PreparedRealDraw prepared;
   if (!PrepareFirstRealDraw(capture, options, prepared, error)) {
     return false;
   }
 
   const ReplayDrawState &draw_state = capture.draws[prepared.draw_index];
+  NativeShaderOverridePair override_pair;
+  const char *vertex_shader_source = nullptr;
+  const char *pixel_shader_source = nullptr;
+  std::string vertex_shader_name_storage = "NativeRenderReplayDiagnostic.hlsl";
+  std::string pixel_shader_name_storage = "NativeRenderReplayDiagnostic.hlsl";
+  if (LoadNativeShaderOverridePair(draw_state, options, override_pair, error)) {
+    vertex_shader_source = override_pair.vertex_source.c_str();
+    pixel_shader_source = override_pair.pixel_source.c_str();
+    vertex_shader_name_storage = override_pair.vertex_path.string();
+    pixel_shader_name_storage = override_pair.pixel_path.string();
+  } else if (options.allow_diagnostic_shader) {
+    vertex_shader_source = DiagnosticRealGeometryShaderSource();
+    pixel_shader_source = DiagnosticRealGeometryShaderSource();
+    vertex_shader_name_storage = "NativeRenderReplayDiagnosticVS.hlsl";
+    pixel_shader_name_storage = "NativeRenderReplayDiagnosticPS.hlsl";
+  } else {
+    return false;
+  }
+
   const ReplaySurfaceSize size = ChooseSurfaceSize(capture);
   const uint32_t width = std::clamp<uint32_t>(size.width, 64, 3840);
   const uint32_t height = std::clamp<uint32_t>(size.height, 64, 2160);
@@ -1197,7 +1307,10 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   ComPtr<ID3D12RootSignature> root_signature;
   ComPtr<ID3D12PipelineState> pipeline_state;
   if (!CreateRealGeometryPipeline(device.Get(), root_signature, pipeline_state,
-                                  format, error)) {
+                                  format, vertex_shader_source,
+                                  vertex_shader_name_storage.c_str(),
+                                  pixel_shader_source,
+                                  pixel_shader_name_storage.c_str(), error)) {
     return false;
   }
 

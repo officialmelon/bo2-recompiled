@@ -149,6 +149,16 @@ Probe layout observations:
 
 Conclusion: shader-record names are now observable at runtime and should become an additional registry key, but the extracted shader-work index still does not directly identify these names/suffixes. The next matching attempt should hash the secondary pointer payloads with the same raw, byte-swapped, trimmed, aligned, and container-stripped variants used for PM4 payloads, and then fall back to a manual override table keyed by `(stage, runtime_hash, shader_name)`.
 
+## Manual Override Checkpoint
+
+Draw `1209` in `shader_payload_capture_001` now has a documented D3D12 manual override pair:
+
+- VS runtime hash `0x5D918D91043B3ED0`: `shader_work\native_overrides\d3d12\vs_5D918D91043B3ED0.hlsl`
+- PS runtime hash `0xC4ED2979F29C9139`: `shader_work\native_overrides\d3d12\ps_C4ED2979F29C9139.hlsl`
+- Manifest: `shader_work\native_overrides\overrides.json`
+
+The backend accepts these files in strict `--backend d3d12` mode without `--allow-diagnostic-shader` and emits `DrawIndexedInstanced` using the real captured index and vertex buffers for draw `1209`. This is a manual interface-compatible shader replacement, not decoded Xenos shader translation. The override still uses only the canonicalized position/color/UV stream and the backend surface-size root constants; captured BO2 constant payloads are available in replay state but are not bound to the shader yet.
+
 Top runtime shader pairs in `vertex_fetch_capture_001`:
 
 | VS | PS | Draws |

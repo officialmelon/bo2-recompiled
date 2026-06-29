@@ -402,8 +402,17 @@ D3D12 gate:
 native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --draw 1209 --no-summary
 ```
 
+- Exit code: `0` when the default override root contains the manual draw-1209 override pair.
+- Output: `native-renderer-d3d12-real-draw1209-manual-override.bmp`
+- SHA-256: `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
+- Status: real captured index/vertex resources plus manual HLSL overrides, not automatic Xenos shader translation and not full scene rendering.
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --draw 1209 --shader-override-root C:\Users\braxt\bo2-recompiled\native_captures\empty_shader_overrides --no-summary
+```
+
 - Exit code: `1`
-- Expected result: fails closed because no translated, cached, or override shader pair is available.
+- Expected result: fails closed because no translated, cached, or override shader pair is available in the selected override root.
 
 ```powershell
 native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\events.jsonl --backend d3d12 --draw 1209 --allow-diagnostic-shader --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_capture_001\native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp --no-summary
@@ -416,12 +425,13 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 
 ## Current hard blocker
 
-The current fresh capture can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, and constant payloads for target draw `1209`. D3D12 can render that captured geometry only with the explicit diagnostic shader fallback. Runtime shader payload hashes are reproducible, and runtime shader/material record names are now captured, but neither currently maps directly to the extracted shader-work index. The renderer still cannot feed a real D3D12/Vulkan scene backend because it lacks shader-correct native shaders or overrides, texture/sampler state, render-target/depth state, constant-buffer binding, and full-frame sequencing.
+The current fresh capture can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, and constant payloads for target draw `1209`. D3D12 can render that captured geometry with hash-keyed manual HLSL overrides or with the explicit diagnostic shader fallback. Runtime shader payload hashes are reproducible, and runtime shader/material record names are now captured, but neither currently maps directly to the extracted shader-work index. The renderer still cannot feed a real D3D12/Vulkan scene backend because it lacks automatic shader translation/cache, texture/sampler state, render-target/depth state, captured constant-buffer binding, and full-frame sequencing.
 
 ## Next required work
 
-1. Capture or recover material/shader record metadata for the `0x5D918D91043B3ED0` / `0xC4ED2979F29C9139` pair, then implement runtime-hash matching or manual override plumbing with evidence.
-2. Bind captured constants through a real root signature/constant-buffer layout instead of only using diagnostic shader constants.
-3. Decode texture/sampler and render-target/depth/blend/raster state for the same tested frame.
-4. Expand D3D12 strict replay from one selected draw to all supported draws in a captured frame.
-5. Add sidecar resource manifests for larger vertex/texture/RT snapshots.
+1. Parse `shader_work\native_overrides\overrides.json` and persist compiled override outputs in the shader cache.
+2. Capture or recover material/shader record metadata for the `0x5D918D91043B3ED0` / `0xC4ED2979F29C9139` pair, then implement runtime-hash matching with evidence.
+3. Bind captured constants through a real root signature/constant-buffer layout instead of only using backend surface-size constants.
+4. Decode texture/sampler and render-target/depth/blend/raster state for the same tested frame.
+5. Expand D3D12 strict replay from one selected draw to all supported draws in a captured frame.
+6. Add sidecar resource manifests for larger vertex/texture/RT snapshots.

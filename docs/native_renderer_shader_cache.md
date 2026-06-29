@@ -6,6 +6,14 @@ Last updated: 2026-06-29
 
 `native_shader_inspect.exe` has been added as the first shader registry inspection tool.
 
+A first manual D3D12 override pair exists for the draw `1209` runtime shader hashes:
+
+- Manifest: `shader_work\native_overrides\overrides.json`
+- Vertex override: `shader_work\native_overrides\d3d12\vs_5D918D91043B3ED0.hlsl`
+- Pixel override: `shader_work\native_overrides\d3d12\ps_C4ED2979F29C9139.hlsl`
+
+The D3D12 replay backend currently resolves overrides by deterministic runtime-hash filenames under `shader_work\native_overrides\d3d12` and compiles them through `D3DCompile` at replay time. The manifest is not parsed yet, and compiled DXIL is not persisted yet.
+
 Current supported commands:
 
 ```powershell
@@ -66,7 +74,7 @@ Top/target payload hash examples from `shader_payload_capture_001`:
 - HLSL/SPIR-V generation.
 - DXC integration.
 - Persistent compiled shader cache.
-- Manual override table.
+- Parsed manual override table and persistent compiled override cache.
 
 ## Current matching rule
 

@@ -378,6 +378,8 @@ struct ReplayLoadOptions {
 struct ReplayCliOptions {
   std::filesystem::path capture_path;
   std::filesystem::path d3d12_output_path;
+  std::filesystem::path shader_override_root =
+      std::filesystem::path("shader_work") / "native_overrides";
   bool show_summary = true;
   bool dump_draws = false;
   bool dump_constants = false;

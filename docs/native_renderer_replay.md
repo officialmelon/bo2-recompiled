@@ -4,7 +4,7 @@ Last updated: 2026-06-29
 
 `native_render_replay.exe` is the first offline replay executable for the BO2 native renderer work. It reads the JSONL written by `native_renderer_capture_path`, reconstructs frame/draw/shader/constant state, and reports enough state per draw to drive backend bring-up without booting the game for every iteration.
 
-The tool also has D3D12 replay backends. `d3d12-diagnostic` renders an offscreen BMP from replayed draw events using BO2-owned D3D12 commands, including a small HLSL shader pipeline and synthetic triangle draws. `d3d12` now renders the first supported captured indexed draw with real replayed vertex/index data and a diagnostic native shader. Neither path is a full BO2 scene renderer yet.
+The tool also has D3D12 replay backends. `d3d12-diagnostic` renders an offscreen BMP from replayed draw events using BO2-owned D3D12 commands, including a small HLSL shader pipeline and synthetic triangle draws. `d3d12` now renders the first supported captured indexed draw with real replayed vertex/index data and either a hash-keyed manual HLSL override pair or an explicitly requested diagnostic native shader. Neither path is a full BO2 scene renderer yet.
 
 ## Build
 
@@ -44,6 +44,7 @@ Options:
 - `--shader-usage --top-shaders <n>`: show shader hash and shader-pair draw usage.
 - `--backend null|offline|d3d12-diagnostic|d3d12|vulkan-diagnostic|vulkan`: backend selector. `d3d12-diagnostic` runs the offscreen D3D12 debug renderer. `d3d12` is the real resource-backed path and fails closed unless real translated/cached/override shaders are available or `--allow-diagnostic-shader` is explicitly supplied. `vulkan*` fails closed until a Vulkan backend exists.
 - `--d3d12-output <path>`: BMP output path for the D3D12 replay backend.
+- `--shader-override-root <path>`: root containing native shader overrides. Default: `shader_work\native_overrides`. The current D3D12 resolver looks under `<root>\d3d12` for filenames keyed by runtime shader hash, such as `vs_5D918D91043B3ED0.hlsl` and `ps_C4ED2979F29C9139.hlsl`.
 - `--d3d12-draws <count>`: number of replay draw tiles to render; default is `4096`.
 - `--allow-diagnostic-shader`: permits `--backend d3d12` to use the temporary diagnostic shader fallback for resource-backed geometry bring-up. Output with this flag is not shader-correct BO2 rendering.
 - `--validate`: parse/analyze only and return non-zero on parse errors or strict replay validation errors such as indexed draws with missing index snapshots.
@@ -82,7 +83,8 @@ Decoded resources:
 
 D3D12 behavior:
 
-- `--backend d3d12 --draw 1209` now fails closed without a real shader pair: no translated, cached, or override shader is available.
+- `--backend d3d12 --draw 1209` loads manual overrides from `shader_work\native_overrides\d3d12` and writes `native-renderer-d3d12-real-draw1209-manual-override.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
+- `--backend d3d12 --draw 1209 --shader-override-root native_captures\empty_shader_overrides` fails closed without a real shader pair and reports the missing `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139` pair.
 - `--backend d3d12 --draw 1209 --allow-diagnostic-shader` writes `native-renderer-d3d12-real-draw1209-explicit-diagnostic.bmp`, SHA-256 `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`.
 
 ## Verified index-payload capture
