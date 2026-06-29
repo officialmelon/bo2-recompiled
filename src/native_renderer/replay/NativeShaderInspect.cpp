@@ -62,17 +62,38 @@ struct RuntimeShaderPairUsage {
   uint64_t draw_count = 0;
 };
 
+struct ShaderRecordProbeUsage {
+  uint64_t seq = 0;
+  uint64_t event = 0;
+  std::string function;
+  uint32_t function_address = 0;
+  uint64_t link_register = 0;
+  uint32_t primary_address = 0;
+  uint32_t secondary_address = 0;
+  std::string shader_name;
+  std::string shader_name_suffix;
+  std::string stage_guess;
+  uint32_t primary_dword_count = 0;
+  uint32_t secondary_dword_count = 0;
+  std::string secondary_sha256_le;
+  std::string secondary_sha256_be;
+  std::string secondary_trimmed_sha256_le;
+  std::string secondary_trimmed_sha256_be;
+};
+
 struct RuntimeShaderCapture {
   std::filesystem::path path;
   uint64_t lines = 0;
   uint64_t shader_events = 0;
   uint64_t draw_events = 0;
+  uint64_t shader_record_probe_events = 0;
   uint64_t shader_payload_loads = 0;
   uint64_t shader_payload_missing = 0;
   uint64_t shader_payload_dwords = 0;
   uint64_t shader_payload_truncated = 0;
   std::vector<RuntimeShaderUsage> shaders;
   std::vector<RuntimeShaderPairUsage> pairs;
+  std::vector<ShaderRecordProbeUsage> probes;
 };
 
 std::string ToLower(std::string value) {
@@ -369,12 +390,17 @@ std::vector<uint8_t> DwordsToBytes(const std::vector<uint32_t> &dwords,
   return bytes;
 }
 
-std::vector<uint32_t> ParsePayloadDwords(std::string_view line) {
+std::vector<uint32_t> ParseDwordArray(std::string_view line,
+                                      std::string_view key) {
   std::vector<uint32_t> dwords;
-  for (const std::string &text : ExtractJsonStringArray(line, "dwords")) {
+  for (const std::string &text : ExtractJsonStringArray(line, key)) {
     dwords.push_back(ParseU32HexOrZero(text));
   }
   return dwords;
+}
+
+std::vector<uint32_t> ParsePayloadDwords(std::string_view line) {
+  return ParseDwordArray(line, "dwords");
 }
 
 std::vector<uint32_t> TrimTrailingZeroDwords(std::vector<uint32_t> dwords) {
@@ -382,6 +408,73 @@ std::vector<uint32_t> TrimTrailingZeroDwords(std::vector<uint32_t> dwords) {
     dwords.pop_back();
   }
   return dwords;
+}
+
+std::vector<std::string> ExtractAsciiRunsFromDwords(
+    const std::vector<uint32_t> &dwords) {
+  std::vector<std::string> runs;
+  std::string current;
+  auto flush = [&]() {
+    if (current.size() >= 8) {
+      runs.push_back(current);
+    }
+    current.clear();
+  };
+
+  for (const uint32_t dword : dwords) {
+    for (int shift = 24; shift >= 0; shift -= 8) {
+      const char ch = static_cast<char>((dword >> shift) & 0xFF);
+      if (ch >= 0x20 && ch <= 0x7E) {
+        current.push_back(ch);
+      } else {
+        flush();
+      }
+    }
+  }
+  flush();
+  return runs;
+}
+
+std::string ExtractShaderNameFromDwords(const std::vector<uint32_t> &dwords) {
+  for (const std::string &run : ExtractAsciiRunsFromDwords(dwords)) {
+    const std::size_t pos = run.find("pimp_shader_");
+    if (pos != std::string::npos) {
+      return run.substr(pos);
+    }
+  }
+  return {};
+}
+
+bool IsHexString(std::string_view text) {
+  return std::all_of(text.begin(), text.end(), [](unsigned char ch) {
+    return std::isxdigit(ch) != 0;
+  });
+}
+
+std::string ExtractShaderNameSuffix(std::string_view name) {
+  const std::size_t dot = name.rfind(".updb");
+  const std::size_t end = dot == std::string_view::npos ? name.size() : dot;
+  const std::size_t underscore = name.rfind('_', end);
+  if (underscore == std::string_view::npos || underscore + 1 >= end) {
+    return {};
+  }
+  const std::string suffix(name.substr(underscore + 1, end - underscore - 1));
+  if (suffix.size() == 32 && IsHexString(suffix)) {
+    return suffix;
+  }
+  return {};
+}
+
+std::string GuessStageFromShaderName(std::string_view name) {
+  if (name.find("_ps_main_") != std::string_view::npos ||
+      name.find("_ps_3_0_") != std::string_view::npos) {
+    return "PS";
+  }
+  if (name.find("_vs_main_") != std::string_view::npos ||
+      name.find("_vs_3_0_") != std::string_view::npos) {
+    return "VS";
+  }
+  return "??";
 }
 
 void RecordPayloadHashes(RuntimeShaderUsage &usage,
@@ -409,6 +502,20 @@ void RecordPayloadHashes(RuntimeShaderUsage &usage,
       usage.payload_trimmed_sha256_be != trimmed_be) {
     ++usage.payload_hash_mismatch_count;
   }
+}
+
+void RecordProbeSecondaryHashes(ShaderRecordProbeUsage &usage,
+                                const std::vector<uint32_t> &dwords) {
+  if (dwords.empty()) {
+    return;
+  }
+  usage.secondary_sha256_le = Sha256Hex(DwordsToBytes(dwords, true));
+  usage.secondary_sha256_be = Sha256Hex(DwordsToBytes(dwords, false));
+  const std::vector<uint32_t> trimmed = TrimTrailingZeroDwords(dwords);
+  usage.secondary_trimmed_sha256_le =
+      Sha256Hex(DwordsToBytes(trimmed, true));
+  usage.secondary_trimmed_sha256_be =
+      Sha256Hex(DwordsToBytes(trimmed, false));
 }
 
 std::optional<std::string_view> RecordAround(std::string_view text,
@@ -533,6 +640,33 @@ bool LoadRuntimeShaderCapture(const std::filesystem::path &path,
         ++usage.payload_truncated_count;
         ++capture.shader_payload_truncated;
       }
+    } else if (line.find("\"type\":\"shader_record_probe\"") !=
+               std::string::npos) {
+      ++capture.shader_record_probe_events;
+      ShaderRecordProbeUsage probe{};
+      probe.seq = ParseU32OrZero(ExtractJsonNumberText(line, "seq"));
+      probe.event = ParseU32OrZero(ExtractJsonNumberText(line, "event"));
+      probe.function = ExtractJsonString(line, "function");
+      probe.function_address = static_cast<uint32_t>(
+          ExtractJsonHexU64(line, "function_address"));
+      probe.link_register = ExtractJsonHexU64(line, "link_register");
+      probe.primary_address =
+          static_cast<uint32_t>(ExtractJsonHexU64(line, "primary_address"));
+      probe.secondary_address =
+          static_cast<uint32_t>(ExtractJsonHexU64(line, "secondary_address"));
+      probe.primary_dword_count =
+          ParseU32OrZero(ExtractJsonNumberText(line, "primary_dword_count"));
+      probe.secondary_dword_count =
+          ParseU32OrZero(ExtractJsonNumberText(line, "secondary_dword_count"));
+      const std::vector<uint32_t> primary_dwords =
+          ParseDwordArray(line, "primary_dwords");
+      const std::vector<uint32_t> secondary_dwords =
+          ParseDwordArray(line, "secondary_dwords");
+      probe.shader_name = ExtractShaderNameFromDwords(primary_dwords);
+      probe.shader_name_suffix = ExtractShaderNameSuffix(probe.shader_name);
+      probe.stage_guess = GuessStageFromShaderName(probe.shader_name);
+      RecordProbeSecondaryHashes(probe, secondary_dwords);
+      capture.probes.push_back(std::move(probe));
     } else if (line.find("\"type\":\"pm4_draw\"") != std::string::npos) {
       ++capture.draw_events;
       const uint64_t vs = ExtractJsonHexU64(line, "vertex_shader_hash");
@@ -603,7 +737,9 @@ void PrintRuntimeShaders(const RuntimeShaderCapture &capture,
             << " shader_events=" << capture.shader_events
             << " draw_events=" << capture.draw_events
             << " unique_shaders=" << capture.shaders.size()
-            << " shader_pairs=" << capture.pairs.size() << "\n";
+            << " shader_pairs=" << capture.pairs.size()
+            << " shader_record_probes="
+            << capture.shader_record_probe_events << "\n";
   std::cout << "  shader_payloads with_payload="
             << capture.shader_payload_loads
             << " missing_payload=" << capture.shader_payload_missing
@@ -647,6 +783,38 @@ void PrintRuntimeShaders(const RuntimeShaderCapture &capture,
     std::cout << "  VS=0x" << std::hex << std::uppercase << pair.vertex_hash
               << " PS=0x" << pair.pixel_hash << std::dec
               << " draws=" << pair.draw_count << "\n";
+  }
+
+  if (!capture.probes.empty()) {
+    std::cout << "\nShader record probes:\n";
+    const std::size_t probe_count =
+        std::min<std::size_t>(top_count, capture.probes.size());
+    for (std::size_t i = 0; i < probe_count; ++i) {
+      const ShaderRecordProbeUsage &probe = capture.probes[i];
+      std::cout << "  probe[" << i << "] seq=" << probe.seq
+                << " event=" << probe.event << " " << probe.function
+                << " stage_guess=" << probe.stage_guess
+                << " primary=0x" << std::hex << std::uppercase
+                << probe.primary_address << " secondary=0x"
+                << probe.secondary_address << std::dec << "\n";
+      if (!probe.shader_name.empty()) {
+        std::cout << "    shader_name=" << probe.shader_name << "\n";
+      }
+      if (!probe.shader_name_suffix.empty()) {
+        std::cout << "    shader_name_suffix=" << probe.shader_name_suffix
+                  << "\n";
+      }
+      if (!probe.secondary_sha256_le.empty()) {
+        std::cout << "    secondary_sha256_le="
+                  << probe.secondary_sha256_le << "\n"
+                  << "    secondary_sha256_be="
+                  << probe.secondary_sha256_be << "\n"
+                  << "    secondary_trimmed_sha256_le="
+                  << probe.secondary_trimmed_sha256_le << "\n"
+                  << "    secondary_trimmed_sha256_be="
+                  << probe.secondary_trimmed_sha256_be << "\n";
+      }
+    }
   }
 }
 
@@ -726,6 +894,81 @@ void MatchRuntimeShaders(std::string_view index_text,
                  "container or microcode hashes. Next matching rules need the "
                  "captured PM4 shader payload bytes, byte-swapped payload "
                  "hashes, and shader record metadata.\n";
+  }
+
+  if (!capture.probes.empty()) {
+    uint64_t probe_name_matches = 0;
+    uint64_t probe_suffix_matches = 0;
+    uint64_t probe_secondary_matches = 0;
+    std::cout << "\nShader record probe index match:\n";
+    const std::size_t probe_count =
+        std::min<std::size_t>(top_count, capture.probes.size());
+    for (std::size_t i = 0; i < probe_count; ++i) {
+      const ShaderRecordProbeUsage &probe = capture.probes[i];
+      const std::string lower_name = ToLower(probe.shader_name);
+      const std::string lower_suffix = ToLower(probe.shader_name_suffix);
+      const bool name_match =
+          !lower_name.empty() &&
+          lower_index.find(lower_name) != std::string::npos;
+      const bool suffix_match =
+          !lower_suffix.empty() &&
+          lower_index.find(lower_suffix) != std::string::npos;
+      const bool secondary_le_match =
+          !probe.secondary_sha256_le.empty() &&
+          lower_index.find(ToLower(probe.secondary_sha256_le)) !=
+              std::string::npos;
+      const bool secondary_be_match =
+          !probe.secondary_sha256_be.empty() &&
+          lower_index.find(ToLower(probe.secondary_sha256_be)) !=
+              std::string::npos;
+      const bool secondary_trimmed_le_match =
+          !probe.secondary_trimmed_sha256_le.empty() &&
+          lower_index.find(ToLower(probe.secondary_trimmed_sha256_le)) !=
+              std::string::npos;
+      const bool secondary_trimmed_be_match =
+          !probe.secondary_trimmed_sha256_be.empty() &&
+          lower_index.find(ToLower(probe.secondary_trimmed_sha256_be)) !=
+              std::string::npos;
+      if (name_match) {
+        ++probe_name_matches;
+      }
+      if (suffix_match) {
+        ++probe_suffix_matches;
+      }
+      if (secondary_le_match || secondary_be_match ||
+          secondary_trimmed_le_match || secondary_trimmed_be_match) {
+        ++probe_secondary_matches;
+      }
+      std::cout << "  probe[" << i << "] " << probe.stage_guess
+                << " name=" << probe.shader_name
+                << " name_match=" << (name_match ? "yes" : "no")
+                << " suffix_match=" << (suffix_match ? "yes" : "no")
+                << " secondary_raw_le_match="
+                << (secondary_le_match ? "yes" : "no")
+                << " secondary_raw_be_match="
+                << (secondary_be_match ? "yes" : "no")
+                << " secondary_trimmed_le_match="
+                << (secondary_trimmed_le_match ? "yes" : "no")
+                << " secondary_trimmed_be_match="
+                << (secondary_trimmed_be_match ? "yes" : "no") << "\n";
+      if (!probe.shader_name_suffix.empty()) {
+        std::cout << "    suffix=" << probe.shader_name_suffix << "\n";
+      }
+      if (!probe.secondary_sha256_le.empty()) {
+        std::cout << "    secondary_sha256_le="
+                  << probe.secondary_sha256_le << "\n"
+                  << "    secondary_sha256_be="
+                  << probe.secondary_sha256_be << "\n"
+                  << "    secondary_trimmed_sha256_le="
+                  << probe.secondary_trimmed_sha256_le << "\n"
+                  << "    secondary_trimmed_sha256_be="
+                  << probe.secondary_trimmed_sha256_be << "\n";
+      }
+    }
+    std::cout << "Shader record probe matches: names=" << probe_name_matches
+              << "/" << probe_count << " suffixes=" << probe_suffix_matches
+              << "/" << probe_count << " secondary_payloads="
+              << probe_secondary_matches << "/" << probe_count << "\n";
   }
 }
 

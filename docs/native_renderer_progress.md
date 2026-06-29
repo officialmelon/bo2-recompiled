@@ -147,6 +147,8 @@ Runtime verification:
 - Fresh shader-record capture `C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_003\events.jsonl` contains `4514` events, `22` frames, `1026` draws, `190/190` shader uploads with payload, `66` vertex fetch snapshots, and `2` `shader_record_probe` events. Validation result: `Validation OK: 4514 events, 22 frames, 1026 draws`.
 - `--shader-record-probes` now decodes printable big-endian ASCII runs from captured dword snapshots and normalizes shader names starting at `pimp_shader_`. The two verified probe names are `pimp_shader_cinematic_519f564_ps_main_ps_3_0_534c8cc25dea1826410cc2974d7e9a80.updb` and `pimp_shader_radiant_190f4788_vs_main_vs_3_0_e10bcefc8da60302d0bbf12b675d091c.updb`.
 - Direct lookup of `534c8cc25dea1826410cc2974d7e9a80` and `e10bcefc8da60302d0bbf12b675d091c` in `shader_work\shaders\index.json` / `index.csv` returned no matches. This proves the captured XEX shader-record names are useful runtime identity metadata, but they are not direct keys into the current extracted shader-work index.
+- `native_shader_inspect.exe` now parses `shader_record_probe` events, prints stage guesses plus normalized probe names, hashes secondary pointer payloads in little-endian, big-endian, and trailing-zero-trimmed forms, and includes probe-name/probe-payload matching in `--match-runtime-shaders`.
+- Probe-aware matching on `shader_probe_capture_003` reports `Runtime shader direct matches: 0/4` and `Shader record probe matches: names=0/2 suffixes=0/2 secondary_payloads=0/2`.
 
 ## What works
 

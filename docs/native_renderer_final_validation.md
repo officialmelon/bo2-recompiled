@@ -392,6 +392,8 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
   - `pimp_shader_cinematic_519f564_ps_main_ps_3_0_534c8cc25dea1826410cc2974d7e9a80.updb`
   - `pimp_shader_radiant_190f4788_vs_main_vs_3_0_e10bcefc8da60302d0bbf12b675d091c.updb`
 - Direct search of `534c8cc25dea1826410cc2974d7e9a80` and `e10bcefc8da60302d0bbf12b675d091c` in `shader_work\shaders\index.json` / `index.csv` returned no matches.
+- `native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_003\events.jsonl --list-runtime-shaders --match-runtime-shaders --top-shaders 10` now reports probe stage guesses, normalized names, suffixes, and secondary pointer payload hashes.
+- Probe-aware inspector result: `Runtime shader direct matches: 0/4`; `Shader record probe matches: names=0/2 suffixes=0/2 secondary_payloads=0/2`.
 - Status: useful shader/material record identity evidence, but not a complete runtime-to-static shader mapping.
 
 D3D12 gate:

@@ -144,6 +144,8 @@ Probe layout observations:
 - The first record is a pixel-shader record (`ps_main_ps_3_0`) and its secondary pointer begins with nonzero floats followed by Xenos-looking shader words.
 - The second record is a vertex-shader record (`vs_main_vs_3_0`) and its secondary pointer has leading zeros followed by Xenos-looking shader words.
 - The 32-hex suffixes in these names, `534c8cc25dea1826410cc2974d7e9a80` and `e10bcefc8da60302d0bbf12b675d091c`, do not appear in `shader_work\shaders\index.json` or `shader_work\shaders\index.csv`.
+- `native_shader_inspect.exe` now parses `shader_record_probe` rows from captures and reports stage guess, normalized shader name, name suffix, and raw/byte-swapped/trailing-zero-trimmed SHA-256 values of the secondary pointer payload.
+- Probe-aware index matching on `shader_probe_capture_003` reports `names=0/2`, `suffixes=0/2`, and `secondary_payloads=0/2` against `shader_work\shaders\index.json`.
 
 Conclusion: shader-record names are now observable at runtime and should become an additional registry key, but the extracted shader-work index still does not directly identify these names/suffixes. The next matching attempt should hash the secondary pointer payloads with the same raw, byte-swapped, trimmed, aligned, and container-stripped variants used for PM4 payloads, and then fall back to a manual override table keyed by `(stage, runtime_hash, shader_name)`.
 
