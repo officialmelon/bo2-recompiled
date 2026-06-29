@@ -472,6 +472,202 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
     file_ << "]}";
   }
   file_ << ']';
+  WriteU64Field("texture_fetch_count", draw.texture_fetch_count);
+  WriteBoolField("texture_fetch_truncated", draw.texture_fetch_truncated);
+  WriteFieldPrefix("texture_fetches");
+  file_ << '[';
+  const uint32_t texture_fetch_count = std::min<uint32_t>(
+      draw.texture_fetch_count, draw.texture_fetches.size());
+  for (uint32_t i = 0; i < texture_fetch_count; ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    const TextureFetchInfo &fetch = draw.texture_fetches[i];
+    file_ << '{';
+    bool first_fetch_field = true;
+    auto fetch_prefix = [&]() {
+      if (!first_fetch_field) {
+        file_ << ',';
+      }
+      first_fetch_field = false;
+    };
+    auto fetch_u64 = [&](const char *name, uint64_t value) {
+      fetch_prefix();
+      file_ << '"' << name << "\":" << value;
+    };
+    auto fetch_i64 = [&](const char *name, int64_t value) {
+      fetch_prefix();
+      file_ << '"' << name << "\":" << value;
+    };
+    auto fetch_bool = [&](const char *name, bool value) {
+      fetch_prefix();
+      file_ << '"' << name << "\":" << (value ? "true" : "false");
+    };
+    auto fetch_hex = [&](const char *name, uint64_t value, int width) {
+      fetch_prefix();
+      file_ << '"' << name << "\":\"" << HexValue(value, width) << '"';
+    };
+    fetch_u64("shader_type", fetch.shader_type);
+    fetch_u64("binding_index", fetch.binding_index);
+    fetch_u64("fetch_constant", fetch.fetch_constant);
+    fetch_prefix();
+    file_ << "\"dwords\":[";
+    for (uint32_t j = 0; j < fetch.dwords.size(); ++j) {
+      if (j) {
+        file_ << ',';
+      }
+      file_ << '"' << HexValue(fetch.dwords[j], 8) << '"';
+    }
+    file_ << ']';
+    fetch_u64("type", fetch.type);
+    fetch_hex("base_address", fetch.base_address, 8);
+    fetch_hex("base_address_bytes", fetch.base_address_bytes, 8);
+    fetch_hex("mip_address", fetch.mip_address, 8);
+    fetch_hex("mip_address_bytes", fetch.mip_address_bytes, 8);
+    fetch_u64("pitch", fetch.pitch);
+    fetch_bool("tiled", fetch.tiled);
+    fetch_u64("format", fetch.format);
+    fetch_u64("endian", fetch.endian);
+    fetch_u64("request_size", fetch.request_size);
+    fetch_bool("stacked", fetch.stacked);
+    fetch_u64("width", fetch.width);
+    fetch_u64("height", fetch.height);
+    fetch_u64("depth_or_stack", fetch.depth_or_stack);
+    fetch_u64("num_format", fetch.num_format);
+    fetch_hex("swizzle", fetch.swizzle, 4);
+    fetch_i64("exp_adjust", fetch.exp_adjust);
+    fetch_u64("mag_filter", fetch.mag_filter);
+    fetch_u64("min_filter", fetch.min_filter);
+    fetch_u64("mip_filter", fetch.mip_filter);
+    fetch_u64("aniso_filter", fetch.aniso_filter);
+    fetch_u64("arbitrary_filter", fetch.arbitrary_filter);
+    fetch_u64("border_size", fetch.border_size);
+    fetch_u64("vol_mag_filter", fetch.vol_mag_filter);
+    fetch_u64("vol_min_filter", fetch.vol_min_filter);
+    fetch_u64("mip_min_level", fetch.mip_min_level);
+    fetch_u64("mip_max_level", fetch.mip_max_level);
+    fetch_i64("lod_bias", fetch.lod_bias);
+    fetch_i64("grad_exp_adjust_h", fetch.grad_exp_adjust_h);
+    fetch_i64("grad_exp_adjust_v", fetch.grad_exp_adjust_v);
+    fetch_u64("border_color", fetch.border_color);
+    fetch_u64("force_bc_w_to_max", fetch.force_bc_w_to_max);
+    fetch_u64("tri_clamp", fetch.tri_clamp);
+    fetch_i64("aniso_bias", fetch.aniso_bias);
+    fetch_u64("dimension", fetch.dimension);
+    fetch_bool("packed_mips", fetch.packed_mips);
+    fetch_u64("payload_byte_count", fetch.payload_byte_count);
+    fetch_bool("payload_truncated", fetch.payload_truncated);
+    fetch_bool("payload_missing", fetch.payload_missing);
+    fetch_prefix();
+    file_ << "\"payload_bytes\":[";
+    const uint32_t payload_count = std::min<uint32_t>(
+        fetch.payload_byte_count, fetch.payload_bytes.size());
+    for (uint32_t j = 0; j < payload_count; ++j) {
+      if (j) {
+        file_ << ',';
+      }
+      file_ << '"' << HexValue(fetch.payload_bytes[j], 2) << '"';
+    }
+    file_ << "]}";
+  }
+  file_ << ']';
+  WriteFieldPrefix("render_state");
+  file_ << '{';
+  const RenderStateInfo &state = draw.render_state;
+  bool first_state_field = true;
+  auto state_prefix = [&]() {
+    if (!first_state_field) {
+      file_ << ',';
+    }
+    first_state_field = false;
+  };
+  auto state_u64 = [&](const char *name, uint64_t value) {
+    state_prefix();
+    file_ << '"' << name << "\":" << value;
+  };
+  auto state_i64 = [&](const char *name, int64_t value) {
+    state_prefix();
+    file_ << '"' << name << "\":" << value;
+  };
+  auto state_bool = [&](const char *name, bool value) {
+    state_prefix();
+    file_ << '"' << name << "\":" << (value ? "true" : "false");
+  };
+  auto state_hex = [&](const char *name, uint64_t value, int width) {
+    state_prefix();
+    file_ << '"' << name << "\":\"" << HexValue(value, width) << '"';
+  };
+  auto state_hex_array = [&](const char *name, const auto &values, int width) {
+    state_prefix();
+    file_ << '"' << name << "\":[";
+    for (uint32_t i = 0; i < values.size(); ++i) {
+      if (i) {
+        file_ << ',';
+      }
+      file_ << '"' << HexValue(values[i], width) << '"';
+    }
+    file_ << ']';
+  };
+  auto state_u64_array = [&](const char *name, const auto &values) {
+    state_prefix();
+    file_ << '"' << name << "\":[";
+    for (uint32_t i = 0; i < values.size(); ++i) {
+      if (i) {
+        file_ << ',';
+      }
+      file_ << values[i];
+    }
+    file_ << ']';
+  };
+  auto state_i64_array = [&](const char *name, const auto &values) {
+    state_prefix();
+    file_ << '"' << name << "\":[";
+    for (uint32_t i = 0; i < values.size(); ++i) {
+      if (i) {
+        file_ << ',';
+      }
+      file_ << static_cast<int64_t>(values[i]);
+    }
+    file_ << ']';
+  };
+  state_hex("rb_modecontrol", state.rb_modecontrol, 8);
+  state_hex("rb_surface_info", state.rb_surface_info, 8);
+  state_hex("rb_colorcontrol", state.rb_colorcontrol, 8);
+  state_hex("rb_color_mask", state.rb_color_mask, 8);
+  state_hex("rb_depthcontrol", state.rb_depthcontrol, 8);
+  state_hex("rb_stencilrefmask", state.rb_stencilrefmask, 8);
+  state_hex("rb_stencilrefmask_bf", state.rb_stencilrefmask_bf, 8);
+  state_hex("rb_depth_info", state.rb_depth_info, 8);
+  state_hex("rb_alpha_ref", state.rb_alpha_ref, 8);
+  state_hex("pa_sc_screen_scissor_tl", state.pa_sc_screen_scissor_tl, 8);
+  state_hex("pa_sc_screen_scissor_br", state.pa_sc_screen_scissor_br, 8);
+  state_hex("pa_sc_window_offset", state.pa_sc_window_offset, 8);
+  state_hex("pa_sc_window_scissor_tl", state.pa_sc_window_scissor_tl, 8);
+  state_hex("pa_sc_window_scissor_br", state.pa_sc_window_scissor_br, 8);
+  state_hex("pa_cl_clip_cntl", state.pa_cl_clip_cntl, 8);
+  state_hex("pa_cl_vte_cntl", state.pa_cl_vte_cntl, 8);
+  state_hex("pa_su_sc_mode_cntl", state.pa_su_sc_mode_cntl, 8);
+  state_hex("pa_su_vtx_cntl", state.pa_su_vtx_cntl, 8);
+  state_hex("sq_program_cntl", state.sq_program_cntl, 8);
+  state_hex("sq_context_misc", state.sq_context_misc, 8);
+  state_hex_array("viewport_registers", state.viewport_registers, 8);
+  state_hex_array("rb_color_info", state.rb_color_info, 8);
+  state_hex_array("rb_blendcontrol", state.rb_blendcontrol, 8);
+  state_u64("surface_pitch", state.surface_pitch);
+  state_u64("msaa_samples", state.msaa_samples);
+  state_u64("depth_base", state.depth_base);
+  state_u64("depth_format", state.depth_format);
+  state_u64_array("color_base", state.color_base);
+  state_u64_array("color_format", state.color_format);
+  state_i64_array("color_exp_bias", state.color_exp_bias);
+  state_bool("depth_test_enable", state.depth_test_enable);
+  state_bool("depth_write_enable", state.depth_write_enable);
+  state_bool("stencil_enable", state.stencil_enable);
+  state_u64("depth_func", state.depth_func);
+  state_u64("cull_mode", state.cull_mode);
+  state_u64("fill_mode", state.fill_mode);
+  state_u64("front_face", state.front_face);
+  file_ << '}';
   WriteU64Field("major_mode", draw.major_mode);
   WriteBoolField("explicit_major_mode", draw.explicit_major_mode);
   WriteHex32Field("viz_query_condition", draw.viz_query_condition);

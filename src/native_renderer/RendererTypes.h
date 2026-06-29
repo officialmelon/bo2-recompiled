@@ -197,9 +197,102 @@ struct VertexFetchInfo {
   bool payload_missing = true;
 };
 
+struct TextureFetchInfo {
+  static constexpr std::size_t kMaxPayloadBytes = 4096;
+
+  uint32_t shader_type = 0;
+  uint32_t binding_index = 0;
+  uint32_t fetch_constant = 0;
+  std::array<uint32_t, 6> dwords{};
+  uint32_t type = 0;
+  uint32_t base_address = 0;
+  uint32_t base_address_bytes = 0;
+  uint32_t mip_address = 0;
+  uint32_t mip_address_bytes = 0;
+  uint32_t pitch = 0;
+  bool tiled = false;
+  uint32_t format = 0;
+  uint32_t endian = 0;
+  uint32_t request_size = 0;
+  bool stacked = false;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t depth_or_stack = 0;
+  uint32_t num_format = 0;
+  uint32_t swizzle = 0;
+  int32_t exp_adjust = 0;
+  uint32_t mag_filter = 0;
+  uint32_t min_filter = 0;
+  uint32_t mip_filter = 0;
+  uint32_t aniso_filter = 0;
+  uint32_t arbitrary_filter = 0;
+  uint32_t border_size = 0;
+  uint32_t vol_mag_filter = 0;
+  uint32_t vol_min_filter = 0;
+  uint32_t mip_min_level = 0;
+  uint32_t mip_max_level = 0;
+  int32_t lod_bias = 0;
+  int32_t grad_exp_adjust_h = 0;
+  int32_t grad_exp_adjust_v = 0;
+  uint32_t border_color = 0;
+  uint32_t force_bc_w_to_max = 0;
+  uint32_t tri_clamp = 0;
+  int32_t aniso_bias = 0;
+  uint32_t dimension = 0;
+  bool packed_mips = false;
+  uint32_t payload_byte_count = 0;
+  std::array<uint8_t, kMaxPayloadBytes> payload_bytes{};
+  bool payload_truncated = false;
+  bool payload_missing = true;
+};
+
+struct RenderStateInfo {
+  static constexpr std::size_t kColorTargetCount = 4;
+  static constexpr std::size_t kViewportRegisterCount = 6;
+
+  uint32_t rb_modecontrol = 0;
+  uint32_t rb_surface_info = 0;
+  uint32_t rb_colorcontrol = 0;
+  uint32_t rb_color_mask = 0;
+  uint32_t rb_depthcontrol = 0;
+  uint32_t rb_stencilrefmask = 0;
+  uint32_t rb_stencilrefmask_bf = 0;
+  uint32_t rb_depth_info = 0;
+  uint32_t rb_alpha_ref = 0;
+  uint32_t pa_sc_screen_scissor_tl = 0;
+  uint32_t pa_sc_screen_scissor_br = 0;
+  uint32_t pa_sc_window_offset = 0;
+  uint32_t pa_sc_window_scissor_tl = 0;
+  uint32_t pa_sc_window_scissor_br = 0;
+  uint32_t pa_cl_clip_cntl = 0;
+  uint32_t pa_cl_vte_cntl = 0;
+  uint32_t pa_su_sc_mode_cntl = 0;
+  uint32_t pa_su_vtx_cntl = 0;
+  uint32_t sq_program_cntl = 0;
+  uint32_t sq_context_misc = 0;
+  std::array<uint32_t, kViewportRegisterCount> viewport_registers{};
+  std::array<uint32_t, kColorTargetCount> rb_color_info{};
+  std::array<uint32_t, kColorTargetCount> rb_blendcontrol{};
+  uint32_t surface_pitch = 0;
+  uint32_t msaa_samples = 0;
+  uint32_t depth_base = 0;
+  uint32_t depth_format = 0;
+  std::array<uint32_t, kColorTargetCount> color_base{};
+  std::array<uint32_t, kColorTargetCount> color_format{};
+  std::array<int32_t, kColorTargetCount> color_exp_bias{};
+  bool depth_test_enable = false;
+  bool depth_write_enable = false;
+  bool stencil_enable = false;
+  uint32_t depth_func = 0;
+  uint32_t cull_mode = 0;
+  uint32_t fill_mode = 0;
+  uint32_t front_face = 0;
+};
+
 struct PM4DrawInfo {
   static constexpr std::size_t kMaxIndexPayloadBytes = 1024;
   static constexpr std::size_t kMaxVertexFetches = 32;
+  static constexpr std::size_t kMaxTextureFetches = 64;
 
   uint64_t event_index = 0;
   std::string_view opcode_name;
@@ -224,6 +317,10 @@ struct PM4DrawInfo {
   uint32_t vertex_fetch_count = 0;
   std::array<VertexFetchInfo, kMaxVertexFetches> vertex_fetches{};
   bool vertex_fetch_truncated = false;
+  uint32_t texture_fetch_count = 0;
+  std::array<TextureFetchInfo, kMaxTextureFetches> texture_fetches{};
+  bool texture_fetch_truncated = false;
+  RenderStateInfo render_state{};
   uint32_t major_mode = 0;
   bool explicit_major_mode = false;
   uint32_t viz_query_condition = 0;

@@ -423,9 +423,32 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 - SHA-256: `B13E590D3818996F8B8A0C5B3E422D1541955A2D91D03C6AFC0CB7A5B464DB16`
 - Status: resource-backed captured geometry with an explicit diagnostic shader fallback, not shader-correct BO2 rendering.
 
+State/texture/render-state capture validation:
+
+```powershell
+default.exe --native_renderer_mode native --native_renderer_shader_record_probe_mode off --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\state_capture_004\events.jsonl --native_renderer_capture_limit 12000 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\state_capture_004\events.jsonl --validate
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\state_capture_004\events.jsonl --resource-summary
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\state_capture_004\events.jsonl --draw 799 --dump-bound-state
+```
+
+- Capture: `C:\Users\braxt\bo2-recompiled\native_captures\state_capture_004\events.jsonl`
+- Validation: `Validation OK: 12000 events, 48 frames, 2475 draws`
+- Shader payloads: `691/691`
+- Constant payloads: `136/136`
+- Index snapshots: `30`
+- Vertex fetch records: `251`
+- Texture fetch records: `344`, snapshots `344`, payload bytes `1409024`, missing `0`, truncated `0`
+- Render state: `2475/2475` draws
+- Shader-record probes: `0`
+- Draw `799`: real indices, `vf95` vertex fetch bytes, four pixel texture fetch records, two constant ranges, and decoded render state (`surface_pitch=1280`, `depth_base=608`, `depth_format=1`, color base `1328`, depth test/write disabled, cull mode `2`)
+- D3D12 diagnostic replay: exit code `0`, output `native-renderer-state-capture-004-d3d12-diagnostic.bmp`
+- D3D12 real replay: exit code `0`, `4/4` submitted draws for `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139`, output `native-renderer-state-capture-004-d3d12-real.bmp`
+- Status: capture/replay now carries texture fetches and render state, but D3D12 real replay does not yet bind textures/samplers or apply render state.
+
 ## Current hard blocker
 
-The current fresh capture can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, and constant payloads for target draw `1209`. D3D12 can render that captured geometry with manifest-backed manual HLSL overrides, flattened captured constants, a compiled `.dxbc` cache hit, or the explicit diagnostic shader fallback. Runtime shader payload hashes are reproducible, and runtime shader/material record names are now captured, but neither currently maps directly to the extracted shader-work index. The renderer still cannot feed a real D3D12/Vulkan scene backend because it lacks automatic Xenos shader translation, DXC/DXIL, texture/sampler state, render-target/depth state, full constant-layout reconstruction, and full-frame sequencing.
+The current fresh captures can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, constant payloads, texture fetch payload prefixes, and decoded render-state registers for target draws. D3D12 can render the supported captured geometry with manifest-backed manual HLSL overrides, flattened captured constants, a compiled `.dxbc` cache hit, or the explicit diagnostic shader fallback. Runtime shader payload hashes are reproducible, and runtime shader/material record names are now captured, but neither currently maps directly to the extracted shader-work index. The renderer still cannot feed a real D3D12/Vulkan scene backend because it lacks automatic Xenos shader translation, DXC/DXIL, texture/sampler decode and binding, render-target/depth resource snapshots, D3D12 render-state application, full constant-layout reconstruction, and full-frame sequencing.
 
 Latest D3D12 multi-draw evidence: `native_render_replay.exe --backend d3d12 --d3d12-draws 64` on `shader_payload_capture_001` reports `11 supported draw(s)` out of `11` captured draws for `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139`, output SHA-256 `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`.
 

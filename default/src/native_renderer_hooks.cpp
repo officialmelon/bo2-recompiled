@@ -151,6 +151,135 @@ void CopyDrawVertexFetchesIfPresent(const DrawEvent *event,
   }
 }
 
+template <typename DrawEvent>
+void CopyDrawTextureFetchesIfPresent(const DrawEvent *event,
+                                     bo2::native::PM4DrawInfo &draw) {
+  if constexpr (requires {
+                  event->texture_fetch_count;
+                  event->texture_fetch_truncated;
+                  event->texture_fetches[0].fetch_constant;
+                  event->texture_fetches[0].payload_bytes[0];
+                }) {
+    draw.texture_fetch_count = std::min<uint32_t>(
+        event->texture_fetch_count, draw.texture_fetches.size());
+    draw.texture_fetch_truncated = event->texture_fetch_truncated ||
+                                   event->texture_fetch_count >
+                                       draw.texture_fetches.size();
+    for (uint32_t i = 0; i < draw.texture_fetch_count; ++i) {
+      const auto &source = event->texture_fetches[i];
+      auto &target = draw.texture_fetches[i];
+      target.shader_type = source.shader_type;
+      target.binding_index = source.binding_index;
+      target.fetch_constant = source.fetch_constant;
+      for (uint32_t j = 0; j < target.dwords.size(); ++j) {
+        target.dwords[j] = source.dwords[j];
+      }
+      target.type = source.type;
+      target.base_address = source.base_address;
+      target.base_address_bytes = source.base_address_bytes;
+      target.mip_address = source.mip_address;
+      target.mip_address_bytes = source.mip_address_bytes;
+      target.pitch = source.pitch;
+      target.tiled = source.tiled;
+      target.format = source.format;
+      target.endian = source.endian;
+      target.request_size = source.request_size;
+      target.stacked = source.stacked;
+      target.width = source.width;
+      target.height = source.height;
+      target.depth_or_stack = source.depth_or_stack;
+      target.num_format = source.num_format;
+      target.swizzle = source.swizzle;
+      target.exp_adjust = source.exp_adjust;
+      target.mag_filter = source.mag_filter;
+      target.min_filter = source.min_filter;
+      target.mip_filter = source.mip_filter;
+      target.aniso_filter = source.aniso_filter;
+      target.arbitrary_filter = source.arbitrary_filter;
+      target.border_size = source.border_size;
+      target.vol_mag_filter = source.vol_mag_filter;
+      target.vol_min_filter = source.vol_min_filter;
+      target.mip_min_level = source.mip_min_level;
+      target.mip_max_level = source.mip_max_level;
+      target.lod_bias = source.lod_bias;
+      target.grad_exp_adjust_h = source.grad_exp_adjust_h;
+      target.grad_exp_adjust_v = source.grad_exp_adjust_v;
+      target.border_color = source.border_color;
+      target.force_bc_w_to_max = source.force_bc_w_to_max;
+      target.tri_clamp = source.tri_clamp;
+      target.aniso_bias = source.aniso_bias;
+      target.dimension = source.dimension;
+      target.packed_mips = source.packed_mips;
+      target.payload_byte_count = std::min<uint32_t>(
+          source.payload_byte_count, target.payload_bytes.size());
+      for (uint32_t j = 0; j < target.payload_byte_count; ++j) {
+        target.payload_bytes[j] = source.payload_bytes[j];
+      }
+      target.payload_truncated = source.payload_truncated ||
+                                 source.payload_byte_count >
+                                     target.payload_bytes.size();
+      target.payload_missing = source.payload_missing;
+    }
+  } else {
+    draw.texture_fetch_count = 0;
+    draw.texture_fetch_truncated = false;
+  }
+}
+
+template <typename DrawEvent>
+void CopyDrawRenderStateIfPresent(const DrawEvent *event,
+                                  bo2::native::PM4DrawInfo &draw) {
+  if constexpr (requires {
+                  event->render_state.rb_surface_info;
+                  event->render_state.viewport_registers[0];
+                  event->render_state.rb_color_info[0];
+                }) {
+    const auto &source = event->render_state;
+    auto &target = draw.render_state;
+    target.rb_modecontrol = source.rb_modecontrol;
+    target.rb_surface_info = source.rb_surface_info;
+    target.rb_colorcontrol = source.rb_colorcontrol;
+    target.rb_color_mask = source.rb_color_mask;
+    target.rb_depthcontrol = source.rb_depthcontrol;
+    target.rb_stencilrefmask = source.rb_stencilrefmask;
+    target.rb_stencilrefmask_bf = source.rb_stencilrefmask_bf;
+    target.rb_depth_info = source.rb_depth_info;
+    target.rb_alpha_ref = source.rb_alpha_ref;
+    target.pa_sc_screen_scissor_tl = source.pa_sc_screen_scissor_tl;
+    target.pa_sc_screen_scissor_br = source.pa_sc_screen_scissor_br;
+    target.pa_sc_window_offset = source.pa_sc_window_offset;
+    target.pa_sc_window_scissor_tl = source.pa_sc_window_scissor_tl;
+    target.pa_sc_window_scissor_br = source.pa_sc_window_scissor_br;
+    target.pa_cl_clip_cntl = source.pa_cl_clip_cntl;
+    target.pa_cl_vte_cntl = source.pa_cl_vte_cntl;
+    target.pa_su_sc_mode_cntl = source.pa_su_sc_mode_cntl;
+    target.pa_su_vtx_cntl = source.pa_su_vtx_cntl;
+    target.sq_program_cntl = source.sq_program_cntl;
+    target.sq_context_misc = source.sq_context_misc;
+    for (uint32_t i = 0; i < target.viewport_registers.size(); ++i) {
+      target.viewport_registers[i] = source.viewport_registers[i];
+    }
+    for (uint32_t i = 0; i < target.rb_color_info.size(); ++i) {
+      target.rb_color_info[i] = source.rb_color_info[i];
+      target.rb_blendcontrol[i] = source.rb_blendcontrol[i];
+      target.color_base[i] = source.color_base[i];
+      target.color_format[i] = source.color_format[i];
+      target.color_exp_bias[i] = source.color_exp_bias[i];
+    }
+    target.surface_pitch = source.surface_pitch;
+    target.msaa_samples = source.msaa_samples;
+    target.depth_base = source.depth_base;
+    target.depth_format = source.depth_format;
+    target.depth_test_enable = source.depth_test_enable;
+    target.depth_write_enable = source.depth_write_enable;
+    target.stencil_enable = source.stencil_enable;
+    target.depth_func = source.depth_func;
+    target.cull_mode = source.cull_mode;
+    target.fill_mode = source.fill_mode;
+    target.front_face = source.front_face;
+  }
+}
+
 void OnNativeRendererDraw(const rex::graphics::NativeRendererDrawEvent *event,
                           void *) {
   if (!event) {
@@ -174,6 +303,8 @@ void OnNativeRendererDraw(const rex::graphics::NativeRendererDrawEvent *event,
   draw.index_endianness = event->index_endianness;
   CopyDrawIndexPayloadIfPresent(event, draw);
   CopyDrawVertexFetchesIfPresent(event, draw);
+  CopyDrawTextureFetchesIfPresent(event, draw);
+  CopyDrawRenderStateIfPresent(event, draw);
   draw.major_mode = event->major_mode;
   draw.explicit_major_mode = event->explicit_major_mode;
   draw.viz_query_condition = event->viz_query_condition;

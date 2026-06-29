@@ -354,3 +354,35 @@ pimp_shader_radiant_190f4788_vs_main_vs_3_0_e10bcefc8da60302d0bbf12b675d091c.upd
 ```
 
 Important caveat: this capture exits naturally before the older `shader_payload_capture_001` draw `1209` window. Use it for shader/material record-layout evidence, not as the primary full draw/resource capture. The current primary draw/resource capture remains `shader_payload_capture_001`.
+
+## Texture And Render-State Replay
+
+Fresh capture `native_captures\state_capture_004\events.jsonl` is the current primary capture for texture and render-state replay coverage:
+
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --validate
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --resource-summary
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --draw 799 --dump-bound-state
+```
+
+Verified results:
+
+- Validation: `Validation OK: 12000 events, 48 frames, 2475 draws`
+- Shader payloads: `691/691`
+- Constant payloads: `136/136`
+- Index snapshots: `30`, `360` bytes
+- Vertex fetch records: `251`, `40984` payload bytes, `50` truncated bounded vertex snapshots
+- Texture fetch records: `344`, `344` bounded snapshots, `1409024` payload bytes, `0` missing, `0` truncated
+- Render state: present on all `2475` draws
+- Shader-record probes: `0` in this normal capture path
+
+Draw `799` is the first combined target:
+
+```text
+draw[799] seq=3555 PM4_DRAW_INDX indices=6 prim=4 indexed=yes index_base=0x04FF24E0 index_len=12 index_fmt=0 endian=1
+  VS=0x5D918D91043B3ED0 PS=0xC4ED2979F29C9139 constants_total=2 vertex_fetches=1/1 texture_fetches=4/4 render_state=yes
+```
+
+The bound-state dump reports four pixel texture fetch bindings at `0x05B67000` / `0x05B6B000`, each decoded as 1x1 tiled format `6` with endian `2` and `4096` captured payload bytes, plus render state with `surface_pitch=1280`, `depth_base=608`, `depth_format=1`, color base `1328`, color mask `0x0000000F`, depth test/write disabled, stencil disabled, and cull mode `2`.
+
+Current replay limitation: texture payloads and render-state registers are parsed and visible in replay, but the D3D12 real backend does not yet create SRVs/samplers from those texture snapshots or apply the captured render-target/depth/blend/raster state.

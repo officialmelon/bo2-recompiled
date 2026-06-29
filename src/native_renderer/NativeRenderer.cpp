@@ -20,6 +20,8 @@ REXCVAR_DEFINE_STRING(native_renderer_mode, "emulated", "Renderer",
                       "Renderer mode: emulated, native, native_null");
 REXCVAR_DEFINE_BOOL(native_renderer_verbose, true, "Renderer",
                     "Enable verbose native renderer logging");
+REXCVAR_DEFINE_STRING(native_renderer_shader_record_probe_mode, "off", "Renderer",
+                      "Shader/material record probe capture: off, on");
 
 namespace bo2::native {
 
@@ -95,6 +97,10 @@ bool IsShaderRecordProbeAddress(uint32_t address) {
     default:
       return false;
   }
+}
+
+bool ShaderRecordProbesEnabled() {
+  return Normalize(REXCVAR_GET(native_renderer_shader_record_probe_mode)) == "on";
 }
 
 void CaptureDwordSnapshot(
@@ -368,7 +374,8 @@ void NativeRenderer::OnCommandBufferEventEnd(CommandBufferEventInfo& event,
     event.write_limit_end = ReadGuestU32(event.command_buffer_object + 56);
   }
 
-  if (IsShaderRecordProbeAddress(event.function_address) && EnsureBackend()) {
+  if (ShaderRecordProbesEnabled() &&
+      IsShaderRecordProbeAddress(event.function_address) && EnsureBackend()) {
     backend_->SubmitShaderRecordProbe(BuildShaderRecordProbe(event));
   }
 

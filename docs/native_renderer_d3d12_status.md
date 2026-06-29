@@ -88,6 +88,18 @@ Current captured pieces from `native_captures\vertex_fetch_capture_001`:
 - Auto real replay without `--draw` now batches every fully supported draw using the first supported shader pair. For `shader_payload_capture_001`, it submits `11/11` captured draws for `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139` and writes `native-renderer-d3d12-real-supported-pair-multidraw-log.bmp`, SHA-256 `63031BF1F61F4E06E571428360D9DF93130E12AEE16FEAFC9CF9545F16C9EE60`
 - Draw `1209` with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root native_captures\empty_shader_cache` and no `--allow-diagnostic-shader`: exit code `1`, expected fail-closed message with the exact missing VS/PS hashes
 
+Latest state-capture replay results:
+
+- Capture: `native_captures\state_capture_004\events.jsonl`
+- Validation: `Validation OK: 12000 events, 48 frames, 2475 draws`
+- New replay data available to the backend: `344` texture fetch snapshots with `1409024` payload bytes and render state on all `2475` draws.
+- Combined target draw: `799`, with real index bytes, `vf95` vertex bytes, four texture fetch records, two constant ranges, and render state.
+- Diagnostic command: `native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --backend d3d12-diagnostic --d3d12-output native-renderer-state-capture-004-d3d12-diagnostic.bmp --d3d12-draws 512 --no-summary`
+- Diagnostic result: exit code `0`, output `native-renderer-state-capture-004-d3d12-diagnostic.bmp`
+- Real command: `native_render_replay.exe --capture native_captures\state_capture_004\events.jsonl --backend d3d12 --d3d12-output native-renderer-state-capture-004-d3d12-real.bmp --d3d12-draws 256 --no-summary`
+- Real result: exit code `0`, `D3D12 real replay submitted 4 supported draw(s) for shader pair VS=0x5D918D91043B3ED0 PS=0xC4ED2979F29C9139 out of 4 captured draw(s) with that pair`.
+- Limitation: D3D12 real replay still ignores the captured texture fetches and render state for actual binding/state setup. The output remains the existing manual-override supported geometry path, not full BO2 scene rendering.
+
 ## Build note
 
 The CMake build graph was regenerated with Visual Studio CMake. `default`, `native_render_replay`, and `native_shader_inspect` build successfully through Ninja under `VsDevCmd`; latest targeted override-path builds:

@@ -524,6 +524,34 @@ std::vector<uint32_t> GetU32Array(const Object &object,
 }
 
 template <typename Object>
+std::vector<int32_t> GetI32Array(const Object &object, std::string_view key) {
+  std::vector<int32_t> values;
+  const JsonValue *value = FindValue(object, key);
+  if (!value || value->type != JsonValueType::Array) {
+    return values;
+  }
+
+  values.reserve(value->array_value.size());
+  for (const JsonValue &element : value->array_value) {
+    if (element.type == JsonValueType::Number) {
+      if (element.number_value >= std::numeric_limits<int32_t>::min() &&
+          element.number_value <= std::numeric_limits<int32_t>::max()) {
+        values.push_back(static_cast<int32_t>(element.number_value));
+      }
+      continue;
+    }
+    if (element.type == JsonValueType::String) {
+      uint64_t parsed = 0;
+      if (ParseIntegerText(element.string_value, parsed) &&
+          parsed <= static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+        values.push_back(static_cast<int32_t>(parsed));
+      }
+    }
+  }
+  return values;
+}
+
+template <typename Object>
 std::vector<uint8_t> GetU8Array(const Object &object,
                                 std::string_view key) {
   std::vector<uint8_t> bytes;
@@ -624,6 +652,133 @@ std::vector<VertexFetchRecord> ParseVertexFetches(const JsonObject &object) {
     fetches.push_back(std::move(fetch));
   }
   return fetches;
+}
+
+std::vector<TextureFetchRecord> ParseTextureFetches(const JsonObject &object) {
+  std::vector<TextureFetchRecord> fetches;
+  const JsonValue *value = FindValue(object, "texture_fetches");
+  if (!value || value->type != JsonValueType::Array) {
+    return fetches;
+  }
+
+  fetches.reserve(value->array_value.size());
+  for (const JsonValue &element : value->array_value) {
+    if (element.type != JsonValueType::Object) {
+      continue;
+    }
+    const auto &fetch_object = element.object_value;
+    TextureFetchRecord fetch{};
+    fetch.shader_type = GetU32(fetch_object, "shader_type");
+    fetch.binding_index = GetU32(fetch_object, "binding_index");
+    fetch.fetch_constant = GetU32(fetch_object, "fetch_constant");
+    fetch.dwords = GetU32Array(fetch_object, "dwords");
+    fetch.type = GetU32(fetch_object, "type");
+    fetch.base_address = GetU32(fetch_object, "base_address");
+    fetch.base_address_bytes =
+        GetU32(fetch_object, "base_address_bytes", fetch.base_address << 12);
+    fetch.mip_address = GetU32(fetch_object, "mip_address");
+    fetch.mip_address_bytes =
+        GetU32(fetch_object, "mip_address_bytes", fetch.mip_address << 12);
+    fetch.pitch = GetU32(fetch_object, "pitch");
+    fetch.tiled = GetBool(fetch_object, "tiled");
+    fetch.format = GetU32(fetch_object, "format");
+    fetch.endian = GetU32(fetch_object, "endian");
+    fetch.request_size = GetU32(fetch_object, "request_size");
+    fetch.stacked = GetBool(fetch_object, "stacked");
+    fetch.width = GetU32(fetch_object, "width");
+    fetch.height = GetU32(fetch_object, "height");
+    fetch.depth_or_stack = GetU32(fetch_object, "depth_or_stack");
+    fetch.num_format = GetU32(fetch_object, "num_format");
+    fetch.swizzle = GetU32(fetch_object, "swizzle");
+    fetch.exp_adjust = GetI32(fetch_object, "exp_adjust");
+    fetch.mag_filter = GetU32(fetch_object, "mag_filter");
+    fetch.min_filter = GetU32(fetch_object, "min_filter");
+    fetch.mip_filter = GetU32(fetch_object, "mip_filter");
+    fetch.aniso_filter = GetU32(fetch_object, "aniso_filter");
+    fetch.arbitrary_filter = GetU32(fetch_object, "arbitrary_filter");
+    fetch.border_size = GetU32(fetch_object, "border_size");
+    fetch.vol_mag_filter = GetU32(fetch_object, "vol_mag_filter");
+    fetch.vol_min_filter = GetU32(fetch_object, "vol_min_filter");
+    fetch.mip_min_level = GetU32(fetch_object, "mip_min_level");
+    fetch.mip_max_level = GetU32(fetch_object, "mip_max_level");
+    fetch.lod_bias = GetI32(fetch_object, "lod_bias");
+    fetch.grad_exp_adjust_h = GetI32(fetch_object, "grad_exp_adjust_h");
+    fetch.grad_exp_adjust_v = GetI32(fetch_object, "grad_exp_adjust_v");
+    fetch.border_color = GetU32(fetch_object, "border_color");
+    fetch.force_bc_w_to_max = GetU32(fetch_object, "force_bc_w_to_max");
+    fetch.tri_clamp = GetU32(fetch_object, "tri_clamp");
+    fetch.aniso_bias = GetI32(fetch_object, "aniso_bias");
+    fetch.dimension = GetU32(fetch_object, "dimension");
+    fetch.packed_mips = GetBool(fetch_object, "packed_mips");
+    fetch.payload_byte_count = GetU32(fetch_object, "payload_byte_count");
+    fetch.payload_bytes = GetU8Array(fetch_object, "payload_bytes");
+    if (fetch.payload_byte_count == 0 && !fetch.payload_bytes.empty()) {
+      fetch.payload_byte_count =
+          static_cast<uint32_t>(fetch.payload_bytes.size());
+    }
+    fetch.payload_truncated = GetBool(fetch_object, "payload_truncated");
+    fetch.payload_missing =
+        GetBool(fetch_object, "payload_missing",
+                !FindValue(fetch_object, "payload_bytes"));
+    if (!fetch.payload_bytes.empty()) {
+      fetch.payload_missing = false;
+    }
+    fetches.push_back(std::move(fetch));
+  }
+  return fetches;
+}
+
+RenderStateRecord ParseRenderState(const JsonObject &object) {
+  RenderStateRecord state{};
+  const JsonValue *value = FindValue(object, "render_state");
+  if (!value || value->type != JsonValueType::Object) {
+    return state;
+  }
+  const auto &state_object = value->object_value;
+  state.present = true;
+  state.rb_modecontrol = GetU32(state_object, "rb_modecontrol");
+  state.rb_surface_info = GetU32(state_object, "rb_surface_info");
+  state.rb_colorcontrol = GetU32(state_object, "rb_colorcontrol");
+  state.rb_color_mask = GetU32(state_object, "rb_color_mask");
+  state.rb_depthcontrol = GetU32(state_object, "rb_depthcontrol");
+  state.rb_stencilrefmask = GetU32(state_object, "rb_stencilrefmask");
+  state.rb_stencilrefmask_bf = GetU32(state_object, "rb_stencilrefmask_bf");
+  state.rb_depth_info = GetU32(state_object, "rb_depth_info");
+  state.rb_alpha_ref = GetU32(state_object, "rb_alpha_ref");
+  state.pa_sc_screen_scissor_tl =
+      GetU32(state_object, "pa_sc_screen_scissor_tl");
+  state.pa_sc_screen_scissor_br =
+      GetU32(state_object, "pa_sc_screen_scissor_br");
+  state.pa_sc_window_offset = GetU32(state_object, "pa_sc_window_offset");
+  state.pa_sc_window_scissor_tl =
+      GetU32(state_object, "pa_sc_window_scissor_tl");
+  state.pa_sc_window_scissor_br =
+      GetU32(state_object, "pa_sc_window_scissor_br");
+  state.pa_cl_clip_cntl = GetU32(state_object, "pa_cl_clip_cntl");
+  state.pa_cl_vte_cntl = GetU32(state_object, "pa_cl_vte_cntl");
+  state.pa_su_sc_mode_cntl = GetU32(state_object, "pa_su_sc_mode_cntl");
+  state.pa_su_vtx_cntl = GetU32(state_object, "pa_su_vtx_cntl");
+  state.sq_program_cntl = GetU32(state_object, "sq_program_cntl");
+  state.sq_context_misc = GetU32(state_object, "sq_context_misc");
+  state.viewport_registers =
+      GetU32Array(state_object, "viewport_registers");
+  state.rb_color_info = GetU32Array(state_object, "rb_color_info");
+  state.rb_blendcontrol = GetU32Array(state_object, "rb_blendcontrol");
+  state.surface_pitch = GetU32(state_object, "surface_pitch");
+  state.msaa_samples = GetU32(state_object, "msaa_samples");
+  state.depth_base = GetU32(state_object, "depth_base");
+  state.depth_format = GetU32(state_object, "depth_format");
+  state.color_base = GetU32Array(state_object, "color_base");
+  state.color_format = GetU32Array(state_object, "color_format");
+  state.color_exp_bias = GetI32Array(state_object, "color_exp_bias");
+  state.depth_test_enable = GetBool(state_object, "depth_test_enable");
+  state.depth_write_enable = GetBool(state_object, "depth_write_enable");
+  state.stencil_enable = GetBool(state_object, "stencil_enable");
+  state.depth_func = GetU32(state_object, "depth_func");
+  state.cull_mode = GetU32(state_object, "cull_mode");
+  state.fill_mode = GetU32(state_object, "fill_mode");
+  state.front_face = GetU32(state_object, "front_face");
+  return state;
 }
 
 bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
@@ -770,6 +925,22 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
     if (event.draw.vertex_fetches.size() < event.draw.vertex_fetch_count) {
       event.draw.vertex_fetch_truncated = true;
     }
+    event.draw.texture_fetch_count = GetU32(object, "texture_fetch_count");
+    event.draw.texture_fetch_truncated =
+        GetBool(object, "texture_fetch_truncated");
+    event.draw.texture_fetch_state_present =
+        FindValue(object, "texture_fetch_count") ||
+        FindValue(object, "texture_fetches");
+    event.draw.texture_fetches = ParseTextureFetches(object);
+    if (event.draw.texture_fetch_count == 0 &&
+        !event.draw.texture_fetches.empty()) {
+      event.draw.texture_fetch_count =
+          static_cast<uint32_t>(event.draw.texture_fetches.size());
+    }
+    if (event.draw.texture_fetches.size() < event.draw.texture_fetch_count) {
+      event.draw.texture_fetch_truncated = true;
+    }
+    event.draw.render_state = ParseRenderState(object);
     event.draw.major_mode = GetU32(object, "major_mode");
     event.draw.explicit_major_mode = GetBool(object, "explicit_major_mode");
     event.draw.viz_query_condition = GetU32(object, "viz_query_condition");
@@ -1131,6 +1302,31 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
             ++capture.summary.vertex_payload_truncated;
           }
         }
+      }
+      if (!event.draw.texture_fetch_state_present) {
+        ++capture.summary.draws_missing_texture_fetch_state;
+      } else if (event.draw.texture_fetches.empty()) {
+        ++capture.summary.draws_missing_texture_fetch;
+      } else {
+        ++capture.summary.draws_with_texture_fetch;
+        capture.summary.texture_fetch_records +=
+            event.draw.texture_fetches.size();
+        for (const TextureFetchRecord &fetch : event.draw.texture_fetches) {
+          if (fetch.payload_missing || fetch.payload_bytes.empty()) {
+            ++capture.summary.texture_snapshots_missing;
+          } else {
+            ++capture.summary.texture_snapshots;
+            capture.summary.texture_payload_bytes += fetch.payload_bytes.size();
+          }
+          if (fetch.payload_truncated) {
+            ++capture.summary.texture_payload_truncated;
+          }
+        }
+      }
+      if (event.draw.render_state.present) {
+        ++capture.summary.draws_with_render_state;
+      } else {
+        ++capture.summary.draws_missing_render_state;
       }
 
       ++capture.summary.draw_opcode_counts[event.draw.opcode];
@@ -2127,6 +2323,22 @@ void PrintReplaySummary(const ReplayCapture &capture) {
             << " payload_bytes=" << capture.summary.vertex_payload_bytes
             << " truncated=" << capture.summary.vertex_payload_truncated
             << "\n";
+  std::cout << "Texture fetch: draws_with="
+            << capture.summary.draws_with_texture_fetch
+            << " draws_no_fetch="
+            << capture.summary.draws_missing_texture_fetch
+            << " state_missing="
+            << capture.summary.draws_missing_texture_fetch_state
+            << " records=" << capture.summary.texture_fetch_records
+            << " snapshots=" << capture.summary.texture_snapshots
+            << " missing=" << capture.summary.texture_snapshots_missing
+            << " payload_bytes=" << capture.summary.texture_payload_bytes
+            << " truncated=" << capture.summary.texture_payload_truncated
+            << "\n";
+  std::cout << "Render state: draws_with="
+            << capture.summary.draws_with_render_state
+            << " missing=" << capture.summary.draws_missing_render_state
+            << "\n";
 
   std::cout << "\nEvent counts:\n";
   for (const auto &[type, count] : capture.summary.event_counts) {
@@ -2250,6 +2462,10 @@ void PrintDrawDump(const ReplayCapture &capture,
               << " last_constant_seq=" << state.last_constant_seq
               << " vertex_fetches=" << draw.vertex_fetches.size() << "/"
               << draw.vertex_fetch_count
+              << " texture_fetches=" << draw.texture_fetches.size() << "/"
+              << draw.texture_fetch_count
+              << " render_state="
+              << (draw.render_state.present ? "yes" : "no")
               << " state=" << DrawStateFlags(state) << "\n";
     if (!state.recent_constants.empty()) {
       std::cout << "    recent_constants:";
@@ -2384,6 +2600,49 @@ void PrintBoundStateDump(const ReplayCapture &capture, std::size_t draw_index) {
             << draw.vertex_fetch_count
             << " truncated="
             << (draw.vertex_fetch_truncated ? "yes" : "no") << "\n";
+  std::cout << "  texture_fetches=" << draw.texture_fetches.size() << "/"
+            << draw.texture_fetch_count
+            << " truncated="
+            << (draw.texture_fetch_truncated ? "yes" : "no") << "\n";
+  for (const TextureFetchRecord &fetch : draw.texture_fetches) {
+    std::cout << "    tex shader_type=" << fetch.shader_type
+              << " binding=" << fetch.binding_index
+              << " fetch=" << fetch.fetch_constant
+              << " base=" << FormatHex32(fetch.base_address_bytes)
+              << " mip=" << FormatHex32(fetch.mip_address_bytes)
+              << " size=" << fetch.width << "x" << fetch.height
+              << "x" << fetch.depth_or_stack
+              << " format=" << fetch.format
+              << " dim=" << fetch.dimension
+              << " tiled=" << (fetch.tiled ? "yes" : "no")
+              << " endian=" << fetch.endian
+              << " payload=" << fetch.payload_bytes.size()
+              << (fetch.payload_missing ? " missing" : "")
+              << (fetch.payload_truncated ? " truncated" : "") << "\n";
+  }
+  if (draw.render_state.present) {
+    const RenderStateRecord &rs = draw.render_state;
+    std::cout << "  render_state surface_pitch=" << rs.surface_pitch
+              << " msaa=" << rs.msaa_samples
+              << " color_mask=" << FormatHex32(rs.rb_color_mask)
+              << " depth_base=" << rs.depth_base
+              << " depth_format=" << rs.depth_format
+              << " depth_test=" << (rs.depth_test_enable ? "yes" : "no")
+              << " depth_write=" << (rs.depth_write_enable ? "yes" : "no")
+              << " stencil=" << (rs.stencil_enable ? "yes" : "no")
+              << " cull=" << rs.cull_mode << "\n";
+    std::cout << "    color_formats:";
+    for (uint32_t format : rs.color_format) {
+      std::cout << " " << format;
+    }
+    std::cout << " bases:";
+    for (uint32_t base : rs.color_base) {
+      std::cout << " " << base;
+    }
+    std::cout << "\n";
+  } else {
+    std::cout << "  render_state: missing\n";
+  }
 
   if (state.bound_constants.empty()) {
     std::cout << "  bound_constants: none captured before this draw\n";
@@ -2631,8 +2890,23 @@ void PrintResourceSummary(const ReplayCapture &capture) {
             << " payload_bytes=" << capture.summary.vertex_payload_bytes
             << " truncated=" << capture.summary.vertex_payload_truncated
             << "\n";
+  std::cout << "  texture_fetch_records="
+            << capture.summary.texture_fetch_records
+            << " draws_with=" << capture.summary.draws_with_texture_fetch
+            << " draws_no_fetch="
+            << capture.summary.draws_missing_texture_fetch
+            << " state_missing="
+            << capture.summary.draws_missing_texture_fetch_state << "\n";
+  std::cout << "  texture_snapshots=" << capture.summary.texture_snapshots
+            << " missing=" << capture.summary.texture_snapshots_missing
+            << " payload_bytes=" << capture.summary.texture_payload_bytes
+            << " truncated=" << capture.summary.texture_payload_truncated
+            << "\n";
+  std::cout << "  render_state_draws="
+            << capture.summary.draws_with_render_state
+            << " missing=" << capture.summary.draws_missing_render_state
+            << "\n";
   std::cout << "  shader_record_probes=" << shader_record_probes << "\n";
-  std::cout << "  texture_snapshots=0\n";
   std::cout << "  render_target_snapshots=0\n";
   std::cout << "  sidecar_resource_manifest=missing\n";
   if (capture.summary.index_buffer_snapshots == 0 ||
@@ -2644,8 +2918,10 @@ void PrintResourceSummary(const ReplayCapture &capture) {
   } else {
     std::cout
         << "  real backend blocker: replay now has bounded index and vertex "
-           "snapshots, but still lacks texture and render-target resource "
-           "snapshots plus native shader replacements/translations.\n";
+           "snapshots. Fresh captures may also include bounded texture "
+           "snapshots and render state, but full render-target/depth snapshots "
+           "and automatic native shader translation are still required for "
+           "complete scene rendering.\n";
   }
 }
 
