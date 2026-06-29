@@ -100,6 +100,186 @@ D3D12_DEPTH_STENCIL_DESC DefaultDepthStencilDesc() {
   return desc;
 }
 
+D3D12_CULL_MODE D3D12CullModeFromXenos(uint32_t cull_mode) {
+  if ((cull_mode & 0x3) == 0) {
+    return D3D12_CULL_MODE_NONE;
+  }
+  if ((cull_mode & 0x3) == 1) {
+    return D3D12_CULL_MODE_FRONT;
+  }
+  if ((cull_mode & 0x3) == 2) {
+    return D3D12_CULL_MODE_BACK;
+  }
+  return D3D12_CULL_MODE_NONE;
+}
+
+D3D12_COMPARISON_FUNC D3D12CompareFuncFromXenos(uint32_t func) {
+  static constexpr D3D12_COMPARISON_FUNC kMap[8] = {
+      D3D12_COMPARISON_FUNC_NEVER,
+      D3D12_COMPARISON_FUNC_LESS,
+      D3D12_COMPARISON_FUNC_EQUAL,
+      D3D12_COMPARISON_FUNC_LESS_EQUAL,
+      D3D12_COMPARISON_FUNC_GREATER,
+      D3D12_COMPARISON_FUNC_NOT_EQUAL,
+      D3D12_COMPARISON_FUNC_GREATER_EQUAL,
+      D3D12_COMPARISON_FUNC_ALWAYS,
+  };
+  return kMap[func & 0x7];
+}
+
+D3D12_BLEND D3D12BlendFromXenos(uint32_t factor, bool alpha) {
+  static constexpr D3D12_BLEND kColorMap[32] = {
+      D3D12_BLEND_ZERO,
+      D3D12_BLEND_ONE,
+      D3D12_BLEND_ZERO,
+      D3D12_BLEND_ZERO,
+      D3D12_BLEND_SRC_COLOR,
+      D3D12_BLEND_INV_SRC_COLOR,
+      D3D12_BLEND_SRC_ALPHA,
+      D3D12_BLEND_INV_SRC_ALPHA,
+      D3D12_BLEND_DEST_COLOR,
+      D3D12_BLEND_INV_DEST_COLOR,
+      D3D12_BLEND_DEST_ALPHA,
+      D3D12_BLEND_INV_DEST_ALPHA,
+      D3D12_BLEND_BLEND_FACTOR,
+      D3D12_BLEND_INV_BLEND_FACTOR,
+      D3D12_BLEND_BLEND_FACTOR,
+      D3D12_BLEND_INV_BLEND_FACTOR,
+      D3D12_BLEND_SRC_ALPHA_SAT,
+  };
+  static constexpr D3D12_BLEND kAlphaMap[32] = {
+      D3D12_BLEND_ZERO,
+      D3D12_BLEND_ONE,
+      D3D12_BLEND_ZERO,
+      D3D12_BLEND_ZERO,
+      D3D12_BLEND_SRC_ALPHA,
+      D3D12_BLEND_INV_SRC_ALPHA,
+      D3D12_BLEND_SRC_ALPHA,
+      D3D12_BLEND_INV_SRC_ALPHA,
+      D3D12_BLEND_DEST_ALPHA,
+      D3D12_BLEND_INV_DEST_ALPHA,
+      D3D12_BLEND_DEST_ALPHA,
+      D3D12_BLEND_INV_DEST_ALPHA,
+      D3D12_BLEND_BLEND_FACTOR,
+      D3D12_BLEND_INV_BLEND_FACTOR,
+      D3D12_BLEND_BLEND_FACTOR,
+      D3D12_BLEND_INV_BLEND_FACTOR,
+      D3D12_BLEND_SRC_ALPHA_SAT,
+  };
+  return alpha ? kAlphaMap[factor & 0x1F] : kColorMap[factor & 0x1F];
+}
+
+D3D12_BLEND_OP D3D12BlendOpFromXenos(uint32_t op) {
+  static constexpr D3D12_BLEND_OP kMap[8] = {
+      D3D12_BLEND_OP_ADD,
+      D3D12_BLEND_OP_SUBTRACT,
+      D3D12_BLEND_OP_MIN,
+      D3D12_BLEND_OP_MAX,
+      D3D12_BLEND_OP_REV_SUBTRACT,
+      D3D12_BLEND_OP_ADD,
+      D3D12_BLEND_OP_ADD,
+      D3D12_BLEND_OP_ADD,
+  };
+  return kMap[op & 0x7];
+}
+
+D3D12_RASTERIZER_DESC RasterizerDescFromRenderState(
+    const RenderStateRecord *state) {
+  D3D12_RASTERIZER_DESC desc = DefaultRasterizerDesc();
+  if (!state || !state->present) {
+    return desc;
+  }
+  desc.CullMode = D3D12CullModeFromXenos(state->cull_mode);
+  desc.FrontCounterClockwise = state->front_face ? FALSE : TRUE;
+  desc.FillMode =
+      state->fill_mode ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
+  desc.DepthClipEnable = (state->pa_cl_clip_cntl & 0x00010000u) ? FALSE : TRUE;
+  return desc;
+}
+
+D3D12_BLEND_DESC BlendDescFromRenderState(const RenderStateRecord *state) {
+  D3D12_BLEND_DESC desc = DefaultBlendDesc();
+  if (!state || !state->present) {
+    return desc;
+  }
+
+  const uint32_t write_mask = state->rb_color_mask & 0xF;
+  const uint32_t blend_control =
+      state->rb_blendcontrol.empty() ? 0 : state->rb_blendcontrol[0];
+  const uint32_t src_blend = (blend_control >> 0) & 0x1F;
+  const uint32_t blend_op = (blend_control >> 5) & 0x7;
+  const uint32_t dest_blend = (blend_control >> 8) & 0x1F;
+  const uint32_t alpha_src_blend = (blend_control >> 16) & 0x1F;
+  const uint32_t alpha_blend_op = (blend_control >> 21) & 0x7;
+  const uint32_t alpha_dest_blend = (blend_control >> 24) & 0x1F;
+  const bool blend_enable =
+      !(src_blend == 1 && dest_blend == 0 && blend_op == 0 &&
+        alpha_src_blend == 1 && alpha_dest_blend == 0 &&
+        alpha_blend_op == 0);
+
+  D3D12_RENDER_TARGET_BLEND_DESC &rt = desc.RenderTarget[0];
+  rt.BlendEnable = blend_enable ? TRUE : FALSE;
+  rt.SrcBlend = D3D12BlendFromXenos(src_blend, false);
+  rt.DestBlend = D3D12BlendFromXenos(dest_blend, false);
+  rt.BlendOp = D3D12BlendOpFromXenos(blend_op);
+  rt.SrcBlendAlpha = D3D12BlendFromXenos(alpha_src_blend, true);
+  rt.DestBlendAlpha = D3D12BlendFromXenos(alpha_dest_blend, true);
+  rt.BlendOpAlpha = D3D12BlendOpFromXenos(alpha_blend_op);
+  rt.RenderTargetWriteMask =
+      static_cast<UINT8>(write_mask ? write_mask : D3D12_COLOR_WRITE_ENABLE_ALL);
+  return desc;
+}
+
+D3D12_DEPTH_STENCIL_DESC DepthStencilDescFromRenderState(
+    const RenderStateRecord *state) {
+  D3D12_DEPTH_STENCIL_DESC desc = DefaultDepthStencilDesc();
+  if (!state || !state->present) {
+    return desc;
+  }
+  if (!state->depth_test_enable && !state->depth_write_enable &&
+      !state->stencil_enable) {
+    return desc;
+  }
+
+  // The replay target does not have a captured depth resource yet. Keep the PSO
+  // valid while preserving the disabled-depth case exactly for current draws.
+  desc.DepthEnable = FALSE;
+  desc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+  desc.DepthFunc = D3D12CompareFuncFromXenos(state->depth_func);
+  desc.StencilEnable = FALSE;
+  return desc;
+}
+
+D3D12_RECT ScissorRectFromRenderState(const RenderStateRecord *state,
+                                      uint32_t width, uint32_t height) {
+  D3D12_RECT rect{};
+  rect.right = static_cast<LONG>(width);
+  rect.bottom = static_cast<LONG>(height);
+  if (!state || !state->present) {
+    return rect;
+  }
+
+  const uint32_t tl = state->pa_sc_screen_scissor_tl;
+  const uint32_t br = state->pa_sc_screen_scissor_br;
+  if (tl == 0 && (br == 0 || br == 0x20002000u)) {
+    return rect;
+  }
+
+  const int32_t left = static_cast<int32_t>(tl & 0x7FFF);
+  const int32_t top = static_cast<int32_t>((tl >> 16) & 0x7FFF);
+  const int32_t right = static_cast<int32_t>(br & 0x7FFF);
+  const int32_t bottom = static_cast<int32_t>((br >> 16) & 0x7FFF);
+  if (right <= left || bottom <= top) {
+    return rect;
+  }
+
+  rect.left = std::clamp<LONG>(left, 0, static_cast<LONG>(width));
+  rect.top = std::clamp<LONG>(top, 0, static_cast<LONG>(height));
+  rect.right = std::clamp<LONG>(right, rect.left, static_cast<LONG>(width));
+  rect.bottom = std::clamp<LONG>(bottom, rect.top, static_cast<LONG>(height));
+  return rect;
+}
+
 struct ReplaySurfaceSize {
   uint32_t width = 1280;
   uint32_t height = 720;
@@ -715,6 +895,7 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
                                 ComPtr<ID3D12RootSignature> &root_signature,
                                 ComPtr<ID3D12PipelineState> &pipeline_state,
                                 DXGI_FORMAT format,
+                                const RenderStateRecord *render_state,
                                 const char *vertex_shader_source,
                                 const char *vertex_shader_name,
                                 const char *vertex_shader_entry,
@@ -830,10 +1011,10 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
                  vertex_shader->GetBufferSize()};
   pso_desc.PS = {pixel_shader->GetBufferPointer(),
                  pixel_shader->GetBufferSize()};
-  pso_desc.BlendState = DefaultBlendDesc();
+  pso_desc.BlendState = BlendDescFromRenderState(render_state);
   pso_desc.SampleMask = UINT_MAX;
-  pso_desc.RasterizerState = DefaultRasterizerDesc();
-  pso_desc.DepthStencilState = DefaultDepthStencilDesc();
+  pso_desc.RasterizerState = RasterizerDescFromRenderState(render_state);
+  pso_desc.DepthStencilState = DepthStencilDescFromRenderState(render_state);
   pso_desc.InputLayout = {
       input_elements,
       static_cast<UINT>(sizeof(input_elements) / sizeof(input_elements[0]))};
@@ -1994,8 +2175,12 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
 
   ComPtr<ID3D12RootSignature> root_signature;
   ComPtr<ID3D12PipelineState> pipeline_state;
+  const RenderStateRecord *pipeline_render_state =
+      draw_state.draw.render_state.present ? &draw_state.draw.render_state
+                                           : nullptr;
   if (!CreateRealGeometryPipeline(device.Get(), root_signature, pipeline_state,
-                                  format, vertex_shader_source,
+                                  format, pipeline_render_state,
+                                  vertex_shader_source,
                                   vertex_shader_name_storage.c_str(),
                                   vertex_shader_entry, vertex_shader_profile,
                                   override_pair.vertex_cache_path,
@@ -2124,6 +2309,22 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             << " captured texture SRV(s), " << fallback_texture_count
             << " fallback texture SRV(s), unsupported_texture_attempts="
             << unsupported_texture_count << "\n";
+  if (pipeline_render_state) {
+    std::cout << "D3D12 real replay applied render state from draw "
+              << prepared.draw_index << ": color_mask="
+              << FormatHex32(pipeline_render_state->rb_color_mask)
+              << " cull=" << pipeline_render_state->cull_mode
+              << " depth_test="
+              << (pipeline_render_state->depth_test_enable ? "yes" : "no")
+              << " depth_write="
+              << (pipeline_render_state->depth_write_enable ? "yes" : "no")
+              << " stencil="
+              << (pipeline_render_state->stencil_enable ? "yes" : "no")
+              << "\n";
+  } else {
+    std::cout << "D3D12 real replay render state unavailable; using default "
+                 "D3D12 PSO state\n";
+  }
 
   D3D12_VIEWPORT viewport{};
   viewport.Width = static_cast<float>(width);
@@ -2131,9 +2332,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   viewport.MinDepth = 0.0f;
   viewport.MaxDepth = 1.0f;
 
-  D3D12_RECT scissor{};
-  scissor.right = static_cast<LONG>(width);
-  scissor.bottom = static_cast<LONG>(height);
+  D3D12_RECT scissor =
+      ScissorRectFromRenderState(pipeline_render_state, width, height);
 
   list->ClearRenderTargetView(rtv, clear_value.Color, 0, nullptr);
   ID3D12DescriptorHeap *descriptor_heaps[] = {srv_heap.Get()};

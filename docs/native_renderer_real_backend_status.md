@@ -85,13 +85,14 @@ Draw `1209` in `native_captures\shader_payload_capture_001` has enough packet da
 - Implemented for the draw-1209 shader pair: shader cache-index lookup, manifest override lookup, HLSL compilation/cache write, flattened captured constants at `b1`, canonical D3D12 input layout, upload-buffer vertex/index resources, and `DrawIndexedInstanced` for all `11/11` captured draws with that pair.
 - Latest capture-completeness evidence: `state_capture_004` validates `344` texture fetch snapshots, `1409024` texture payload bytes, and render-state records on `2475/2475` draws. Draw `799` carries the first complete packet set seen in replay: real indices, vertex fetch bytes, four texture fetch records, constants, and render state.
 - Latest D3D12 texture-binding evidence: real replay on `state_capture_004` submits the existing manual-override shader pair (`4/4` supported draws) and reports `D3D12 real replay bound 4 captured texture SRV(s), 0 fallback texture SRV(s), unsupported_texture_attempts=0`. The manual pixel override samples `t0` with static sampler `s0`, so captured format-6 texture data is now in the D3D12 command stream.
-- Missing: automatic Xenos shader translation, DXC/DXIL compilation, full constant-layout reconstruction, render-target/depth resource snapshots, full Xenos texture tiling/format coverage, D3D12 sampler-state mapping, D3D12 render-state application, and full-frame multi-draw replay.
+- Latest D3D12 render-state evidence: real replay on `state_capture_004` reports `D3D12 real replay applied render state from draw 799: color_mask=0x0000000F cull=2 depth_test=no depth_write=no stencil=no`. The replay PSO now consumes the captured rasterizer cull/front-face/fill/depth-clip subset, color write mask, blend factors/ops, and disabled depth/stencil state for the first supported draw.
+- Missing: automatic Xenos shader translation, DXC/DXIL compilation, full constant-layout reconstruction, render-target/depth resource snapshots, full Xenos texture tiling/format coverage, D3D12 sampler-state mapping, real DSV binding for depth-enabled draws, per-state PSO switching across heterogeneous draws, and full-frame multi-draw replay.
 
 ## Next implementation targets
 
 1. Expand texture decode beyond 1x1 tiled format `6`: full Xenos tiled addressing, linear row pitch, swizzle, and additional captured formats.
 2. Map captured sampler state to D3D12 sampler descriptors instead of the current static clamp/linear sampler.
-3. Apply the captured render state in D3D12: color/depth target descriptors, viewport/scissor, color mask, depth/stencil, cull/raster, and blend state.
+3. Expand captured render-state handling: real color/depth target descriptors, real DSV binding for depth-enabled draws, per-draw/per-state PSO switching, and complete stencil/blend coverage.
 4. Replace flattened constant root data with layout-aware constant buffers from shader metadata.
 5. Expand D3D12 real replay from one selected draw to all supported draws in the captured frame.
 6. Add DXC/DXIL support and reuse the same cache index for translated shaders.
