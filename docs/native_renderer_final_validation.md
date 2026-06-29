@@ -395,6 +395,8 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 - `native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_003\events.jsonl --list-runtime-shaders --match-runtime-shaders --top-shaders 10` now reports probe stage guesses, normalized names, suffixes, and secondary pointer payload hashes.
 - Probe-aware inspector result: `Runtime shader direct matches: 0/4`; `Shader record probe matches: names=0/2 suffixes=0/2 secondary_payloads=0/2`.
 - Status: useful shader/material record identity evidence, but not a complete runtime-to-static shader mapping.
+- 2026-06-29 inspector update parses `pimp_shader_*` names into family, short hash, entry, and profile. On `shader_probe_capture_003`, the probes decode as `family=cinematic short_hash=519f564 entry=main profile=ps_3_0` and `family=radiant short_hash=190f4788 entry=main profile=vs_3_0`.
+- Updated probe-aware index matching reports `Runtime shader direct matches: 0/4` and `Shader record probe matches: names=0/2 suffixes=0/2 short_hashes=0/2 secondary_payloads=0/2`, so the current `shader_work\shaders\index.json` still does not contain exact names, 32-hex suffixes, short hashes, or secondary-payload hashes for these probes.
 
 D3D12 gate:
 

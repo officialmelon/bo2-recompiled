@@ -51,6 +51,16 @@ The XEX is stripped and has no useful `shader`, `material`, `pixel`, `vertex`, `
 
 Replay follow-up MCP check: 2026-06-28. `CoDMPServer_PC.exe` is the default loaded MCP program and has the PDB-backed renderer symbols. Explicit program `default.xex` exposes the stripped XEX function table. MCP instruction searches in `default.xex` re-confirmed `PM4_DRAW_INDX_2` (`ori ..., 0x3600`) at `0x825829AC`, `0x82582C8C`, `0x8258A6C4`, `0x8258CFA0`, and `0x82596440`; `PM4_IM_LOAD_IMMEDIATE` (`ori ..., 0x2B00`) at `0x8257D3A8`, `0x82582948`, `0x82582A84`, `0x82582AE0`, `0x82589A20`, `0x82589A64`, `0x8258CD20`, `0x82594474`, `0x825944D4`, and `0x82597E68`; and `PM4_SET_SHADER_CONSTANTS` (`ori ..., 0x5600`) at `0x8258CE80`. `0x825828D8` decompiles as `xex_render_draw_autoindex_shader_bootstrap_candidate`; the other thunked starts force-decompile as save/restore placeholders, so generated C++ plus instruction-level evidence remains authoritative there.
 
+MCP decompiler pass: 2026-06-29. The active PC program decompiles `R_DrawIndexedPrimitive`, `R_FlushDirtyConstantBuffers`, `RB_BeginSurface`, `RB_DrawTessSurface`, `RB_SetTessTechnique`, and `Material_SetPassShaderArguments_DX`; explicit program `default.xex` confirms the command-buffer state object uses offset `0x30` as the write cursor and `0x38` as the reserve/end watermark across multiple packet emitters. `Function_8257AB00` is called when the cursor exceeds the watermark and returns the refreshed cursor. Useful decompiled XEX caller bodies:
+
+- `0x8258C860` clears state blocks at `+0x5690` and `+0x56C8`, emits state setup through `0x8257D918`, then calls `0x8257AB00`.
+- `0x8258C8E8` emits state/texture-style setup via `0x8257D918`, `0x82591928`, `0x8257D5C0`, then calls `0x8257AB00`.
+- `0x8258CC90` writes `0xC0003B00` (`PM4_INVALIDATE_STATE`) and advances `+0x30`.
+- `0x8258CF00` writes a four-dword packet beginning with `0x00025000`; role still needs packet decode.
+- `0x825828D8` decompiles cleanly and writes `0xC0003B00`, `0xC0102B00`, a copied immediate payload, and `0xC0003600` with initiator `0x00010081`.
+- `0x82598E58` writes a register packet with payload words `0x000005C8`, `0x00020000`, `0x00000F01`, then the state word from `+0x2B24`.
+- `0x82598EC8` toggles clock gating and writes two `0xC0022100` packets for registers `0x81` and `0x82` when disabling.
+
 ### High-confidence draw emitters
 
 | XEX function/range | Evidence | Likely role | Native renderer priority |

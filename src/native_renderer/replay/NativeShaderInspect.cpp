@@ -72,6 +72,10 @@ struct ShaderRecordProbeUsage {
   uint32_t secondary_address = 0;
   std::string shader_name;
   std::string shader_name_suffix;
+  std::string shader_name_family;
+  std::string shader_name_short_hash;
+  std::string shader_name_entry;
+  std::string shader_name_profile;
   std::string stage_guess;
   uint32_t primary_dword_count = 0;
   uint32_t secondary_dword_count = 0;
@@ -451,6 +455,33 @@ bool IsHexString(std::string_view text) {
   });
 }
 
+std::vector<std::string> SplitString(std::string_view text, char delimiter) {
+  std::vector<std::string> parts;
+  std::size_t start = 0;
+  while (start <= text.size()) {
+    const std::size_t end = text.find(delimiter, start);
+    if (end == std::string_view::npos) {
+      parts.emplace_back(text.substr(start));
+      break;
+    }
+    parts.emplace_back(text.substr(start, end - start));
+    start = end + 1;
+  }
+  return parts;
+}
+
+std::string JoinTokens(const std::vector<std::string> &tokens,
+                       std::size_t begin, std::size_t end) {
+  std::string joined;
+  for (std::size_t i = begin; i < end && i < tokens.size(); ++i) {
+    if (!joined.empty()) {
+      joined.push_back('_');
+    }
+    joined += tokens[i];
+  }
+  return joined;
+}
+
 std::string ExtractShaderNameSuffix(std::string_view name) {
   const std::size_t dot = name.rfind(".updb");
   const std::size_t end = dot == std::string_view::npos ? name.size() : dot;
@@ -463,6 +494,31 @@ std::string ExtractShaderNameSuffix(std::string_view name) {
     return suffix;
   }
   return {};
+}
+
+void ExtractShaderNameMetadata(std::string_view name,
+                               ShaderRecordProbeUsage &probe) {
+  const std::size_t dot = name.rfind(".updb");
+  const std::size_t end = dot == std::string_view::npos ? name.size() : dot;
+  const std::vector<std::string> tokens = SplitString(name.substr(0, end), '_');
+  if (tokens.size() < 8 || tokens[0] != "pimp" || tokens[1] != "shader") {
+    return;
+  }
+
+  for (std::size_t i = 2; i < tokens.size(); ++i) {
+    const bool likely_short_hash =
+        tokens[i].size() >= 6 && tokens[i].size() <= 8 &&
+        IsHexString(tokens[i]);
+    if (!likely_short_hash || i + 5 >= tokens.size()) {
+      continue;
+    }
+
+    probe.shader_name_family = JoinTokens(tokens, 2, i);
+    probe.shader_name_short_hash = tokens[i];
+    probe.shader_name_entry = tokens[i + 2];
+    probe.shader_name_profile = JoinTokens(tokens, i + 3, i + 6);
+    return;
+  }
 }
 
 std::string GuessStageFromShaderName(std::string_view name) {
@@ -665,6 +721,7 @@ bool LoadRuntimeShaderCapture(const std::filesystem::path &path,
       probe.shader_name = ExtractShaderNameFromDwords(primary_dwords);
       probe.shader_name_suffix = ExtractShaderNameSuffix(probe.shader_name);
       probe.stage_guess = GuessStageFromShaderName(probe.shader_name);
+      ExtractShaderNameMetadata(probe.shader_name, probe);
       RecordProbeSecondaryHashes(probe, secondary_dwords);
       capture.probes.push_back(std::move(probe));
     } else if (line.find("\"type\":\"pm4_draw\"") != std::string::npos) {
@@ -804,6 +861,12 @@ void PrintRuntimeShaders(const RuntimeShaderCapture &capture,
         std::cout << "    shader_name_suffix=" << probe.shader_name_suffix
                   << "\n";
       }
+      if (!probe.shader_name_short_hash.empty()) {
+        std::cout << "    shader_name_family=" << probe.shader_name_family
+                  << " short_hash=" << probe.shader_name_short_hash
+                  << " entry=" << probe.shader_name_entry
+                  << " profile=" << probe.shader_name_profile << "\n";
+      }
       if (!probe.secondary_sha256_le.empty()) {
         std::cout << "    secondary_sha256_le="
                   << probe.secondary_sha256_le << "\n"
@@ -899,6 +962,7 @@ void MatchRuntimeShaders(std::string_view index_text,
   if (!capture.probes.empty()) {
     uint64_t probe_name_matches = 0;
     uint64_t probe_suffix_matches = 0;
+    uint64_t probe_short_hash_matches = 0;
     uint64_t probe_secondary_matches = 0;
     std::cout << "\nShader record probe index match:\n";
     const std::size_t probe_count =
@@ -907,12 +971,17 @@ void MatchRuntimeShaders(std::string_view index_text,
       const ShaderRecordProbeUsage &probe = capture.probes[i];
       const std::string lower_name = ToLower(probe.shader_name);
       const std::string lower_suffix = ToLower(probe.shader_name_suffix);
+      const std::string lower_short_hash =
+          ToLower(probe.shader_name_short_hash);
       const bool name_match =
           !lower_name.empty() &&
           lower_index.find(lower_name) != std::string::npos;
       const bool suffix_match =
           !lower_suffix.empty() &&
           lower_index.find(lower_suffix) != std::string::npos;
+      const bool short_hash_match =
+          !lower_short_hash.empty() &&
+          lower_index.find(lower_short_hash) != std::string::npos;
       const bool secondary_le_match =
           !probe.secondary_sha256_le.empty() &&
           lower_index.find(ToLower(probe.secondary_sha256_le)) !=
@@ -935,6 +1004,9 @@ void MatchRuntimeShaders(std::string_view index_text,
       if (suffix_match) {
         ++probe_suffix_matches;
       }
+      if (short_hash_match) {
+        ++probe_short_hash_matches;
+      }
       if (secondary_le_match || secondary_be_match ||
           secondary_trimmed_le_match || secondary_trimmed_be_match) {
         ++probe_secondary_matches;
@@ -943,6 +1015,8 @@ void MatchRuntimeShaders(std::string_view index_text,
                 << " name=" << probe.shader_name
                 << " name_match=" << (name_match ? "yes" : "no")
                 << " suffix_match=" << (suffix_match ? "yes" : "no")
+                << " short_hash_match="
+                << (short_hash_match ? "yes" : "no")
                 << " secondary_raw_le_match="
                 << (secondary_le_match ? "yes" : "no")
                 << " secondary_raw_be_match="
@@ -953,6 +1027,12 @@ void MatchRuntimeShaders(std::string_view index_text,
                 << (secondary_trimmed_be_match ? "yes" : "no") << "\n";
       if (!probe.shader_name_suffix.empty()) {
         std::cout << "    suffix=" << probe.shader_name_suffix << "\n";
+      }
+      if (!probe.shader_name_short_hash.empty()) {
+        std::cout << "    family=" << probe.shader_name_family
+                  << " short_hash=" << probe.shader_name_short_hash
+                  << " entry=" << probe.shader_name_entry
+                  << " profile=" << probe.shader_name_profile << "\n";
       }
       if (!probe.secondary_sha256_le.empty()) {
         std::cout << "    secondary_sha256_le="
@@ -967,8 +1047,10 @@ void MatchRuntimeShaders(std::string_view index_text,
     }
     std::cout << "Shader record probe matches: names=" << probe_name_matches
               << "/" << probe_count << " suffixes=" << probe_suffix_matches
-              << "/" << probe_count << " secondary_payloads="
-              << probe_secondary_matches << "/" << probe_count << "\n";
+              << "/" << probe_count << " short_hashes="
+              << probe_short_hash_matches << "/" << probe_count
+              << " secondary_payloads=" << probe_secondary_matches << "/"
+              << probe_count << "\n";
   }
 }
 
