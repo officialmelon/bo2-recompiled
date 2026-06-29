@@ -203,9 +203,13 @@ void NullRendererBackend::SubmitPM4Swap(const PM4SwapInfo &swap) {
   }
 
   REXLOG_INFO("BO2 native renderer CP swap #{} frontbuffer={:#010x} size={}x{} "
-              "frame_counter={} packet={:#010x}",
+              "frame_counter={} payload={}/{} truncated={} missing={} "
+              "packet={:#010x}",
               swap.event_index, swap.frontbuffer_ptr, swap.width, swap.height,
-              swap.frame_counter, swap.packet_ptr);
+              swap.frame_counter, swap.frontbuffer_payload_byte_count,
+              swap.frontbuffer_payload_requested_byte_count,
+              swap.frontbuffer_payload_truncated,
+              swap.frontbuffer_payload_missing, swap.packet_ptr);
 }
 
 void NullRendererBackend::SubmitRenderCommand(const RenderCommand &command) {

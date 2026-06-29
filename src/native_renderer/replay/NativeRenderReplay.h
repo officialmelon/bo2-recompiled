@@ -255,6 +255,14 @@ struct PM4SwapRecord {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t frame_counter = 0;
+  uint32_t frontbuffer_payload_requested_byte_count = 0;
+  uint32_t frontbuffer_payload_byte_count = 0;
+  uint32_t frontbuffer_payload_resource_byte_count = 0;
+  std::string frontbuffer_payload_resource_path;
+  std::vector<uint8_t> frontbuffer_payload_bytes;
+  bool frontbuffer_payload_truncated = false;
+  bool frontbuffer_payload_missing = true;
+  bool frontbuffer_payload_loaded_from_resource = false;
 };
 
 struct RenderCommandRecord {
@@ -464,6 +472,12 @@ struct ReplaySummary {
   uint64_t texture_payload_sidecars = 0;
   uint64_t texture_payload_sidecar_bytes = 0;
   uint64_t texture_payload_truncated = 0;
+  uint64_t frontbuffer_snapshots = 0;
+  uint64_t frontbuffer_snapshots_missing = 0;
+  uint64_t frontbuffer_payload_bytes = 0;
+  uint64_t frontbuffer_payload_sidecars = 0;
+  uint64_t frontbuffer_payload_sidecar_bytes = 0;
+  uint64_t frontbuffer_payload_truncated = 0;
   uint64_t draws_with_render_state = 0;
   uint64_t draws_missing_render_state = 0;
   std::map<CaptureEventType, uint64_t> event_counts;

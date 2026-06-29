@@ -968,6 +968,29 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
     event.swap.width = GetU32(object, "width");
     event.swap.height = GetU32(object, "height");
     event.swap.frame_counter = GetU32(object, "frame_counter");
+    event.swap.frontbuffer_payload_requested_byte_count =
+        GetU32(object, "frontbuffer_payload_requested_byte_count");
+    event.swap.frontbuffer_payload_byte_count =
+        GetU32(object, "frontbuffer_payload_byte_count");
+    event.swap.frontbuffer_payload_resource_byte_count =
+        GetU32(object, "frontbuffer_payload_resource_byte_count");
+    event.swap.frontbuffer_payload_resource_path =
+        GetString(object, "frontbuffer_payload_resource_path");
+    event.swap.frontbuffer_payload_bytes =
+        GetU8Array(object, "frontbuffer_payload_bytes");
+    if (event.swap.frontbuffer_payload_byte_count == 0 &&
+        !event.swap.frontbuffer_payload_bytes.empty()) {
+      event.swap.frontbuffer_payload_byte_count =
+          static_cast<uint32_t>(event.swap.frontbuffer_payload_bytes.size());
+    }
+    event.swap.frontbuffer_payload_truncated =
+        GetBool(object, "frontbuffer_payload_truncated");
+    event.swap.frontbuffer_payload_missing =
+        GetBool(object, "frontbuffer_payload_missing",
+                !FindValue(object, "frontbuffer_payload_bytes"));
+    if (!event.swap.frontbuffer_payload_bytes.empty()) {
+      event.swap.frontbuffer_payload_missing = false;
+    }
     break;
   case CaptureEventType::RenderCommand:
     event.command.sequence = GetU64(object, "sequence");
@@ -1172,6 +1195,56 @@ void LoadTexturePayloadSidecars(ReplayCapture &capture,
         fetch.payload_byte_count =
             static_cast<uint32_t>(fetch.payload_bytes.size());
       }
+    }
+  }
+}
+
+void LoadFrontbufferPayloadSidecars(ReplayCapture &capture,
+                                    const ReplayLoadOptions &options) {
+  const std::filesystem::path base_dir = capture.path.parent_path();
+  for (CaptureEvent &event : capture.events) {
+    if (event.type != CaptureEventType::PM4Swap ||
+        event.swap.frontbuffer_payload_resource_path.empty()) {
+      continue;
+    }
+
+    std::filesystem::path resource_path(
+        event.swap.frontbuffer_payload_resource_path);
+    if (resource_path.is_relative()) {
+      resource_path = base_dir / resource_path;
+    }
+
+    std::vector<uint8_t> bytes;
+    std::string error;
+    if (!ReadSidecarResource(resource_path, bytes, error)) {
+      AddWarning(capture, options,
+                 "frontbuffer payload sidecar load failed for seq " +
+                     std::to_string(event.seq) + ": " + error);
+      continue;
+    }
+
+    if (event.swap.frontbuffer_payload_resource_byte_count != 0 &&
+        event.swap.frontbuffer_payload_resource_byte_count != bytes.size()) {
+      AddWarning(capture, options,
+                 "frontbuffer payload sidecar byte count mismatch for seq " +
+                     std::to_string(event.seq) + ": expected " +
+                     std::to_string(
+                         event.swap.frontbuffer_payload_resource_byte_count) +
+                     " got " + std::to_string(bytes.size()));
+    }
+
+    event.swap.frontbuffer_payload_bytes = std::move(bytes);
+    event.swap.frontbuffer_payload_loaded_from_resource = true;
+    event.swap.frontbuffer_payload_missing = false;
+    if (event.swap.frontbuffer_payload_resource_byte_count == 0) {
+      event.swap.frontbuffer_payload_resource_byte_count =
+          static_cast<uint32_t>(
+              event.swap.frontbuffer_payload_bytes.size());
+    }
+    if (event.swap.frontbuffer_payload_byte_count == 0) {
+      event.swap.frontbuffer_payload_byte_count =
+          static_cast<uint32_t>(
+              event.swap.frontbuffer_payload_bytes.size());
     }
   }
 }
@@ -1465,6 +1538,26 @@ void AnalyzeReplayCapture(ReplayCapture &capture,
       break;
     }
     case CaptureEventType::PM4Swap:
+      if (event.swap.frontbuffer_payload_missing ||
+          event.swap.frontbuffer_payload_bytes.empty()) {
+        ++capture.summary.frontbuffer_snapshots_missing;
+      } else {
+        ++capture.summary.frontbuffer_snapshots;
+        capture.summary.frontbuffer_payload_bytes +=
+            event.swap.frontbuffer_payload_bytes.size();
+      }
+      if (!event.swap.frontbuffer_payload_resource_path.empty()) {
+        ++capture.summary.frontbuffer_payload_sidecars;
+        capture.summary.frontbuffer_payload_sidecar_bytes +=
+            event.swap.frontbuffer_payload_bytes.size();
+      }
+      if (event.swap.frontbuffer_payload_truncated) {
+        ++capture.summary.frontbuffer_payload_truncated;
+      }
+      if (current_frame) {
+        ++capture.frames[*current_frame].swap_count;
+      }
+      break;
     case CaptureEventType::VdSwap:
     case CaptureEventType::PresentSnapshot:
       if (current_frame) {
@@ -2216,6 +2309,7 @@ bool LoadReplayCapture(const std::filesystem::path &path,
   }
 
   LoadTexturePayloadSidecars(capture, options);
+  LoadFrontbufferPayloadSidecars(capture, options);
   AnalyzeReplayCapture(capture, options);
   if (!options.keep_events) {
     capture.events.clear();
@@ -2451,6 +2545,16 @@ void PrintReplaySummary(const ReplayCapture &capture) {
             << capture.summary.draws_with_render_state
             << " missing=" << capture.summary.draws_missing_render_state
             << "\n";
+  std::cout << "Frontbuffer snapshots: snapshots="
+            << capture.summary.frontbuffer_snapshots
+            << " missing="
+            << capture.summary.frontbuffer_snapshots_missing
+            << " payload_bytes="
+            << capture.summary.frontbuffer_payload_bytes
+            << " sidecars="
+            << capture.summary.frontbuffer_payload_sidecars
+            << " truncated="
+            << capture.summary.frontbuffer_payload_truncated << "\n";
 
   std::cout << "\nEvent counts:\n";
   for (const auto &[type, count] : capture.summary.event_counts) {
@@ -3033,7 +3137,20 @@ void PrintResourceSummary(const ReplayCapture &capture) {
             << " missing=" << capture.summary.draws_missing_render_state
             << "\n";
   std::cout << "  shader_record_probes=" << shader_record_probes << "\n";
-  std::cout << "  render_target_snapshots=0\n";
+  std::cout << "  frontbuffer_snapshots="
+            << capture.summary.frontbuffer_snapshots
+            << " missing="
+            << capture.summary.frontbuffer_snapshots_missing
+            << " payload_bytes="
+            << capture.summary.frontbuffer_payload_bytes
+            << " sidecars="
+            << capture.summary.frontbuffer_payload_sidecars
+            << " sidecar_bytes="
+            << capture.summary.frontbuffer_payload_sidecar_bytes
+            << " truncated="
+            << capture.summary.frontbuffer_payload_truncated << "\n";
+  std::cout << "  render_target_snapshots=0"
+            << " (draw-time color/depth target bytes not captured yet)\n";
   const std::filesystem::path resource_dir =
       capture.path.parent_path() / "resources";
   const bool sidecar_json_present =

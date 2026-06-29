@@ -940,6 +940,40 @@ void NativeRenderCaptureWriter::WritePM4Swap(const PM4SwapInfo &swap) {
   WriteU64Field("width", swap.width);
   WriteU64Field("height", swap.height);
   WriteU64Field("frame_counter", swap.frame_counter);
+  WriteU64Field("frontbuffer_payload_requested_byte_count",
+                swap.frontbuffer_payload_requested_byte_count);
+  WriteU64Field("frontbuffer_payload_byte_count",
+                swap.frontbuffer_payload_byte_count);
+  WriteBoolField("frontbuffer_payload_truncated",
+                 swap.frontbuffer_payload_truncated);
+  WriteBoolField("frontbuffer_payload_missing", swap.frontbuffer_payload_missing);
+  const uint32_t payload_count = std::min<uint32_t>(
+      swap.frontbuffer_payload_byte_count, swap.frontbuffer_bytes.size());
+  constexpr uint32_t kInlineFrontbufferPayloadLimit = 256;
+  constexpr uint32_t kFrontbufferPayloadPreviewBytes = 64;
+  std::string payload_resource_path;
+  const bool payload_sidecar =
+      payload_count > kInlineFrontbufferPayloadLimit &&
+      WriteBinaryResource("frontbuffer_payload", swap.frontbuffer_bytes.data(),
+                          payload_count, payload_resource_path);
+  if (payload_sidecar) {
+    WriteU64Field("frontbuffer_payload_resource_byte_count", payload_count);
+    WriteStringField("frontbuffer_payload_resource_path",
+                     payload_resource_path);
+  }
+  WriteFieldPrefix("frontbuffer_payload_bytes");
+  file_ << '[';
+  const uint32_t inline_payload_count =
+      payload_sidecar
+          ? std::min<uint32_t>(payload_count, kFrontbufferPayloadPreviewBytes)
+          : payload_count;
+  for (uint32_t i = 0; i < inline_payload_count; ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(swap.frontbuffer_bytes[i], 2) << '"';
+  }
+  file_ << ']';
   EndEvent();
 }
 

@@ -408,6 +408,17 @@ void OnNativeRendererSwap(const rex::graphics::NativeRendererSwapEvent *event,
   swap.width = event->width;
   swap.height = event->height;
   swap.frame_counter = event->frame_counter;
+  swap.frontbuffer_payload_requested_byte_count =
+      event->frontbuffer_payload_requested_byte_count;
+  swap.frontbuffer_payload_byte_count = event->frontbuffer_payload_byte_count;
+  swap.frontbuffer_payload_truncated = event->frontbuffer_payload_truncated;
+  swap.frontbuffer_payload_missing = event->frontbuffer_payload_missing;
+  if (event->frontbuffer_bytes &&
+      event->frontbuffer_payload_byte_count != 0) {
+    swap.frontbuffer_bytes.assign(
+        event->frontbuffer_bytes,
+        event->frontbuffer_bytes + event->frontbuffer_payload_byte_count);
+  }
   bo2::native::NativeRenderer::Instance().OnPM4Swap(swap);
 }
 

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace bo2::native {
 
@@ -383,6 +384,11 @@ struct PM4SwapInfo {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t frame_counter = 0;
+  uint32_t frontbuffer_payload_requested_byte_count = 0;
+  uint32_t frontbuffer_payload_byte_count = 0;
+  std::vector<uint8_t> frontbuffer_bytes;
+  bool frontbuffer_payload_truncated = false;
+  bool frontbuffer_payload_missing = true;
 };
 
 const char *ToString(RendererMode mode);

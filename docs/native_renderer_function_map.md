@@ -112,6 +112,13 @@ False positives removed from the constant list: `0x82503178`, `0x82507C7C`, and 
 | `0x826EAF9C` | ReXGlue generated import slot for `__imp__VdSwap`; existing hook logs `VdSwap` arguments and the ReXGlue-written `PM4_XE_SWAP` packet. | Swap/present import. | Already hooked. |
 | `0x826EAF4C` | ReXGlue generated import slot for `__imp__VdSetSystemCommandBufferGpuIdentifierAddress`; existing hook records command-buffer GPU identifier address. | Command-buffer identity/config import. | Already hooked. |
 
+MCP follow-up on 2026-06-29: `0x8257E590` decompiles as a thunk, but `get_function_xrefs` for the `VdSwap` import slot `0x826EAF9C` finds the concrete call at `0x8257E918`. Assembly immediately before that call passes stack addresses and command-buffer state into `VdSwap`, then stores the post-call write cursor back to command-buffer object offset `0x30`. `get_function_callers` for the present thunk finds two higher-level XEX callers:
+
+- `0x82684B40`: obtains the current command-buffer token through `0x8257AC08`, optionally calls `0x824BCA00` on alternating frontbuffer resources, calls `0x8257E590`, then flips `DAT_84165a74`.
+- `0x826853C0`: loops through `0x8259CA98`, `0x82596750`, `0x8258A4D0`, `0x8257E590`, and frontbuffer toggle logic.
+
+`0x824BCA00` decompiles as a CPU-side tiled surface conversion/copy: it locks two resources with `FUN_8257c7a0`, iterates a tiled address formula, reads 32-bit source pixels, writes grayscale `0xFF` alpha values to the destination, then unlocks both surfaces. This is useful evidence for Xbox tiled surface addressing near present, but it is not yet proven to be the main scene color resolve. Fresh PM4 swap/frontbuffer sidecars now prove the frontbuffer memory is readable, but the tested early payloads are all zero, so the next reverse-engineering target is draw-time color/depth target snapshotting from render-state base registers and any resolve/copy path before `VdSwap`.
+
 ### PC/PDB reference anchors used
 
 Important PC renderer symbols from `CoDMPServer_PC.exe`:
