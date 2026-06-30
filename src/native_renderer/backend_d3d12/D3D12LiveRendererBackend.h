@@ -51,12 +51,15 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   };
 
   void SetUnsupportedLiveRenderErrorOnce();
+  FrameStats& ActiveStats();
 
   bool verbose_ = true;
   std::string app_name_;
   std::string last_error_;
   NativeRenderCaptureWriter capture_;
   FrameStats frame_stats_;
+  FrameStats pending_stats_;
+  bool in_frame_ = false;
   bool reported_live_render_gap_ = false;
 
 #if defined(_WIN32)

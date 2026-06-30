@@ -12,6 +12,8 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
   last_error_.clear();
   reported_live_render_gap_ = false;
   frame_stats_ = {};
+  pending_stats_ = {};
+  in_frame_ = false;
 
 #if !defined(_WIN32)
   last_error_ = "native_d3d12 live backend requires Windows";
@@ -62,7 +64,9 @@ void D3D12LiveRendererBackend::Shutdown() {
 }
 
 void D3D12LiveRendererBackend::BeginFrame(uint64_t frame_index) {
-  frame_stats_ = {};
+  frame_stats_ = pending_stats_;
+  pending_stats_ = {};
+  in_frame_ = true;
   capture_.WriteBeginFrame(frame_index);
   if (verbose_ && ShouldLogHighFrequencyEvent(frame_index)) {
     REXLOG_INFO("BO2 native D3D12 frame {} begin", frame_index);
@@ -97,29 +101,29 @@ void D3D12LiveRendererBackend::SubmitShaderRecordProbe(
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Packet(const PM4PacketInfo &packet) {
-  ++frame_stats_.packets;
+  ++ActiveStats().packets;
   capture_.WritePM4Packet(packet);
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Draw(const PM4DrawInfo &draw) {
-  ++frame_stats_.draws;
+  ++ActiveStats().draws;
   capture_.WritePM4Draw(draw);
   SetUnsupportedLiveRenderErrorOnce();
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Shader(const PM4ShaderInfo &shader) {
-  ++frame_stats_.shaders;
+  ++ActiveStats().shaders;
   capture_.WritePM4Shader(shader);
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Constants(
     const PM4ConstantInfo &constants) {
-  ++frame_stats_.constants;
+  ++ActiveStats().constants;
   capture_.WritePM4Constants(constants);
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Swap(const PM4SwapInfo &swap) {
-  ++frame_stats_.swaps;
+  ++ActiveStats().swaps;
   capture_.WritePM4Swap(swap);
 }
 
@@ -131,6 +135,7 @@ void D3D12LiveRendererBackend::SubmitRenderCommand(
 void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
   capture_.WriteEndFrame(frame_index);
   if (!verbose_ && !reported_live_render_gap_) {
+    in_frame_ = false;
     return;
   }
 
@@ -143,6 +148,7 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
         frame_stats_.shaders, frame_stats_.constants, frame_stats_.swaps);
   }
   reported_live_render_gap_ = true;
+  in_frame_ = false;
 }
 
 void D3D12LiveRendererBackend::SetUnsupportedLiveRenderErrorOnce() {
@@ -152,6 +158,10 @@ void D3D12LiveRendererBackend::SetUnsupportedLiveRenderErrorOnce() {
   last_error_ =
       "native_d3d12 live draw submission is not implemented yet; offline "
       "D3D12 replay remains the authoritative real renderer path";
+}
+
+D3D12LiveRendererBackend::FrameStats &D3D12LiveRendererBackend::ActiveStats() {
+  return in_frame_ ? frame_stats_ : pending_stats_;
 }
 
 }  // namespace bo2::native
