@@ -2755,39 +2755,64 @@ bool LoadShaderCacheIndex(const std::filesystem::path &path,
     }
   }
 
-  JsonObject root;
-  JsonLineParser parser(text);
-  if (!parser.ParseObject(root, error)) {
-    error = "could not parse shader cache index " + path.string() + ": " +
-            error;
-    return false;
-  }
-
-  const JsonValue *records_value = FindValue(root, "records");
-  if (!records_value || records_value->type != JsonValueType::Array) {
-    error = "shader cache index has no records array: " + path.string();
-    return false;
-  }
-
-  for (const JsonValue &element : records_value->array_value) {
-    if (element.type != JsonValueType::Object) {
-      continue;
-    }
-
-    const auto &object = element.object_value;
+  auto append_record = [&records](const auto &object) {
     ShaderCacheRecord record;
     record.backend = GetString(object, "backend");
     record.stage = GetString(object, "stage");
     record.runtime_hash = GetU64(object, "runtime_hash");
     record.profile = GetString(object, "profile");
     record.compiler = GetString(object, "compiler");
+    record.format = GetString(object, "format");
     record.cache_key = GetString(object, "cache_key");
     record.path = GetString(object, "path");
     record.source = GetString(object, "source");
+    record.diagnostic = GetBool(object, "diagnostic");
     if (!record.backend.empty() && !record.stage.empty() &&
         record.runtime_hash != 0 && !record.path.empty()) {
       records.push_back(std::move(record));
     }
+  };
+
+  JsonObject root;
+  JsonLineParser parser(text);
+  std::string object_error;
+  if (parser.ParseObject(root, object_error)) {
+    const JsonValue *records_value = FindValue(root, "records");
+    if (!records_value || records_value->type != JsonValueType::Array) {
+      error = "shader cache index has no records array: " + path.string();
+      return false;
+    }
+
+    for (const JsonValue &element : records_value->array_value) {
+      if (element.type != JsonValueType::Object) {
+        continue;
+      }
+      append_record(element.object_value);
+    }
+    return true;
+  }
+
+  std::istringstream lines(text);
+  std::string line;
+  std::size_t line_number = 0;
+  while (std::getline(lines, line)) {
+    ++line_number;
+    const auto first = line.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+      continue;
+    }
+    const auto last = line.find_last_not_of(" \t\r\n");
+    const std::string trimmed = line.substr(first, last - first + 1);
+
+    JsonObject line_object;
+    JsonLineParser line_parser(trimmed);
+    std::string line_error;
+    if (!line_parser.ParseObject(line_object, line_error)) {
+      error = "could not parse shader cache JSONL " + path.string() +
+              " at line " + std::to_string(line_number) + ": " + line_error;
+      return false;
+    }
+    append_record(line_object);
   }
   return true;
 }

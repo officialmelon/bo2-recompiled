@@ -30,7 +30,21 @@ native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_capture
 - PS `0xA4A965C189287B99`: generated `shader_work\cache\hlsl\PS_0xA4A965C189287B99.translated.dxc.hlsl`, compiled `shader_work\cache\d3d12\PS_0xA4A965C189287B99.translated.dxc.dxil`, `cache_hit=false`.
 - Unsupported real-resource VS `0x5D918D91043B3ED0`: exit code `1`, expected error `no limited translated-HLSL rule for VS 0x5D918D91043B3ED0`.
 
-Status: this is a real non-diagnostic translated-shader cache path for a tiny verified Xenos subset. It is not a complete shader translator and is not yet consumed by the D3D12 replay/live backend shader resolver.
+Status: this is a real non-diagnostic translated-shader cache path for a tiny verified Xenos subset. It is not a complete shader translator, and the limited translated DXIL pair has not yet been proven on a resource-backed rendered D3D12 draw.
+
+JSONL cache resolver validation:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\sidecar_capture_002\events.jsonl --backend d3d12 --shader-override-root C:\Users\braxt\bo2-recompiled\native_captures\empty_shader_overrides --shader-cache-root C:\Users\braxt\bo2-recompiled\shader_work\cache-jsonl-replay-test --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-cache-jsonl-d3d12-real.bmp --no-summary
+```
+
+- Result: exit code `0`.
+- Shader source: JSONL cache root only; override root was empty.
+- Replay submitted `5/5` supported draws for `VS=0x5D918D91043B3ED0` / `PS=0xC4ED2979F29C9139`.
+- Replay bound `5` captured texture SRVs, `5` captured samplers, and applied captured render state from draw `748`.
+- Output SHA-256: `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+
+Status: D3D12 real replay can now resolve non-diagnostic cache records from `shader_cache_index.jsonl` and accepts both `.dxbc` and `.dxil` blobs. The limited translated DXIL pair still needs a resource-backed capture/draw and compatible shader interface before it can be proven as rendered scene output.
 
 ## 2026-06-28 index-payload pass
 

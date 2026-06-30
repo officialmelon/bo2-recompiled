@@ -579,9 +579,11 @@ struct ShaderCacheRecord {
   uint64_t runtime_hash = 0;
   std::string profile;
   std::string compiler;
+  std::string format;
   std::string cache_key;
   std::filesystem::path path;
   std::filesystem::path source;
+  bool diagnostic = false;
 };
 
 const char *ToString(CaptureEventType type);

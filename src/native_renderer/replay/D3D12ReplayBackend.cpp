@@ -1324,28 +1324,42 @@ bool FindCacheShaderPath(const std::filesystem::path &root,
                          std::filesystem::path &source,
                          std::string &profile, std::string &cache_key,
                          std::string &error) {
-  const std::filesystem::path index = root / "shader_cache_index.json";
+  const std::array<std::filesystem::path, 2> indexes = {
+      root / "shader_cache_index.json",
+      root / "shader_cache_index.jsonl",
+  };
+  bool found_index = false;
   std::error_code ec;
-  if (!std::filesystem::is_regular_file(index, ec) || ec) {
-    return false;
-  }
-
-  std::vector<ShaderCacheRecord> records;
-  if (!LoadShaderCacheIndex(index, records, error)) {
-    return false;
-  }
-
-  for (const ShaderCacheRecord &record : records) {
-    if (LowerAscii(record.backend) != "d3d12" ||
-        record.runtime_hash != hash ||
-        !StageMatches(record.stage, short_stage, long_stage)) {
+  for (const std::filesystem::path &index : indexes) {
+    if (!std::filesystem::is_regular_file(index, ec) || ec) {
       continue;
     }
-    path = record.path;
-    source = record.source;
-    profile = record.profile;
-    cache_key = record.cache_key;
-    return true;
+    found_index = true;
+
+    std::vector<ShaderCacheRecord> records;
+    if (!LoadShaderCacheIndex(index, records, error)) {
+      return false;
+    }
+
+    for (const ShaderCacheRecord &record : records) {
+      if (record.diagnostic || LowerAscii(record.backend) != "d3d12" ||
+          record.runtime_hash != hash ||
+          !StageMatches(record.stage, short_stage, long_stage)) {
+        continue;
+      }
+      const std::string format = LowerAscii(record.format);
+      if (!format.empty() && format != "dxbc" && format != "dxil") {
+        continue;
+      }
+      path = record.path;
+      source = record.source;
+      profile = record.profile;
+      cache_key = record.cache_key;
+      return true;
+    }
+  }
+  if (!found_index) {
+    error.clear();
   }
   return false;
 }

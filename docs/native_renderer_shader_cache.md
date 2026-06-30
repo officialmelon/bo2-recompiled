@@ -15,10 +15,13 @@ A first manual D3D12 override pair exists for the draw `1209` runtime shader has
 The D3D12 replay backend now resolves shaders in this order:
 
 1. `shader_work\cache\shader_cache_index.json` runtime-hash cache hit.
-2. Parsed `shader_work\native_overrides\overrides.json`.
-3. Deterministic runtime-hash filenames under `shader_work\native_overrides\d3d12`.
-4. Explicit diagnostic shader only when `--allow-diagnostic-shader` is supplied.
-5. Fail closed.
+2. `shader_work\cache\shader_cache_index.jsonl` runtime-hash cache hit.
+3. Parsed `shader_work\native_overrides\overrides.json`.
+4. Deterministic runtime-hash filenames under `shader_work\native_overrides\d3d12`.
+5. Explicit diagnostic shader only when `--allow-diagnostic-shader` is supplied.
+6. Fail closed.
+
+Real replay ignores cache entries marked `"diagnostic": true`; JSONL cache entries may point at either `.dxbc` or `.dxil` blobs.
 
 The manual D3D12 replay override cache still stores D3DCompile output (`.dxbc`). A separate generated diagnostic DXC path now stores `.dxil`; real translated-shader DXC/DXIL is still required for the final shader pipeline.
 
@@ -45,6 +48,7 @@ Verified behavior:
 - Empty cache root plus empty override root fails closed with the missing VS/PS runtime hashes.
 - `state_capture_004` real D3D12 replay compiles the layout4 override pair and reports `D3D12 real replay bound 4 captured texture SRV(s), 0 fallback texture SRV(s), unsupported_texture_attempts=0` and `D3D12 real replay bound 4 captured sampler descriptor(s), 0 fallback sampler descriptor(s)`.
 - Cache-only layout4 replay with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache` also succeeds on `state_capture_004`, binds the same `4` captured texture SRVs and `4` captured sampler descriptors, and writes `native-renderer-state-capture-004-d3d12-sampler-bound-cache-only.bmp`, SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+- JSONL cache-only replay was verified with a temporary cache root containing only `shader_cache_index.jsonl` and no override manifest. On `sidecar_capture_002`, `native_render_replay.exe --backend d3d12 --shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache-jsonl-replay-test` submitted `5/5` supported draws, bound `5` captured texture SRVs and `5` captured samplers, applied captured render state from draw `748`, and wrote `native-renderer-cache-jsonl-d3d12-real.bmp`, SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 
 Current supported commands:
 
