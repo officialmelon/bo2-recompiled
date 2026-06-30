@@ -384,6 +384,27 @@ Verified outputs:
 
 The current host auto-discovers DXC at `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxc.exe`. A repeated VS compile reports `cache_hit=true`. This proves DXC/DXIL cache plumbing for generated diagnostic shaders, not real Xenos operation lowering.
 
+Limited translated HLSL is now available for the simplest decoded runtime shader subset:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --write-translated-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --write-translated-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
+```
+
+Verified outputs:
+
+- `shader_work\cache\hlsl\VS_0xB6C9863F710683EC.translated.hlsl`
+- `shader_work\cache\hlsl\PS_0xA4A965C189287B99.translated.hlsl`
+- `shader_work\cache\d3d12\VS_0xB6C9863F710683EC.translated.dxil`
+- `shader_work\cache\d3d12\PS_0xA4A965C189287B99.translated.dxil`
+
+The supported subset is `xenos_simple_passthrough_v1`:
+
+- VS `0xB6C9863F710683EC`: lowers `max o0.0000, r0, r0` and `max oPos.0001, r1, r1` into constant interpolator/position writes.
+- PS `0xA4A965C189287B99`: lowers `max oC0, r0, r0` into `return max(input.r0, input.r0)`.
+
+Unsupported shaders fail closed. For example, VS `0x5D918D91043B3ED0` currently exits `1` with `no limited translated-HLSL rule`.
+
 The runtime semantic IR now serializes analyzer-exposed shader interface metadata in addition to text disassembly:
 
 - constant float/bool/loop/vertex-fetch bitmaps and dynamic addressing flags

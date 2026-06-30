@@ -190,6 +190,27 @@ Outputs:
 
 This satisfies a diagnostic DXC/DXIL cache milestone only. It still does not translate decoded Xenos operations into real BO2 shader HLSL.
 
+## Limited Translated HLSL
+
+`native_shader_inspect.exe --write-translated-hlsl` now writes a separate translated HLSL artifact for a narrow decoded Xenos operation subset. Verified commands:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --write-translated-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --write-translated-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
+```
+
+Outputs:
+
+- `shader_work\cache\hlsl\VS_0xB6C9863F710683EC.translated.hlsl`
+- `shader_work\cache\hlsl\PS_0xA4A965C189287B99.translated.hlsl`
+
+These files are not diagnostic fallbacks. They are generated only when the decoded operations match `xenos_simple_passthrough_v1`. The generated VS/PS compile with DXC to:
+
+- `shader_work\cache\d3d12\VS_0xB6C9863F710683EC.translated.dxil`
+- `shader_work\cache\d3d12\PS_0xA4A965C189287B99.translated.dxil`
+
+Unsupported shaders fail closed. The current real-resource VS `0x5D918D91043B3ED0` returns `no limited translated-HLSL rule`.
+
 Static extracted `.ucode` semantic decode is still blocked by file-layout ambiguity. Raw `.ucode` artifact commands still work, but tested static files include metadata/constants before the analyzer's expected payload range.
 
 ## Not implemented yet
