@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstring>
 #include <iterator>
 
 #include <rex/graphics/command_processor.h>
@@ -8,6 +9,7 @@
 #include <rex/platform.h>
 #include <rex/ppc/function.h>
 #include <rex/runtime.h>
+#include <rex/system/kernel_state.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/types.h>
 
@@ -40,6 +42,7 @@ constexpr uint32_t kAluConstants = 0x82597F50;
 constexpr uint32_t kMaterialShaderLoad = 0x82598140;
 constexpr uint32_t kCommandBufferGrow = 0x8257AB00;
 constexpr uint32_t kCommandBufferReserve = 0x8257AD38;
+constexpr uint32_t kMaxProjectTexturePayloadBytes = 8 * 1024 * 1024;
 
 PPCFunc *original_draw_autoindex_shader_bootstrap;
 PPCFunc *original_draw_packet_candidate;
@@ -52,6 +55,83 @@ PPCFunc *original_alu_constants;
 PPCFunc *original_material_shader_load;
 PPCFunc *original_command_buffer_grow;
 PPCFunc *original_command_buffer_reserve;
+
+uint32_t AlignUpU32(uint32_t value, uint32_t alignment) {
+  return alignment == 0 ? value
+                        : ((value + alignment - 1) / alignment) * alignment;
+}
+
+uint32_t XenosTiledOffset2D(uint32_t x, uint32_t y, uint32_t pitch,
+                            uint32_t bytes_per_block_log2) {
+  pitch = AlignUpU32(pitch, 32);
+  const uint32_t macro =
+      ((x >> 5) + (y >> 5) * (pitch >> 5)) << (bytes_per_block_log2 + 7);
+  const uint32_t micro =
+      ((x & 7) + ((y & 0xE) << 2)) << bytes_per_block_log2;
+  const uint32_t offset =
+      macro + ((micro & ~0xFu) << 1) + (micro & 0xFu) + ((y & 1) << 4);
+  return ((offset & ~0x1FFu) << 3) + ((y & 16) << 7) +
+         ((offset & 0x1C0u) << 2) +
+         (((((y & 8) >> 2) + (x >> 3)) & 3) << 6) + (offset & 0x3Fu);
+}
+
+bool TextureFormatFootprint(const bo2::native::TextureFetchInfo &fetch,
+                            uint32_t &footprint) {
+  footprint = 0;
+  if (fetch.width == 0 || fetch.height == 0) {
+    return false;
+  }
+
+  uint32_t bytes_per_texel = 0;
+  uint32_t bytes_per_block_log2 = 0;
+  switch (fetch.format) {
+  case 2:
+    bytes_per_texel = 1;
+    bytes_per_block_log2 = 0;
+    break;
+  case 6:
+    bytes_per_texel = 4;
+    bytes_per_block_log2 = 2;
+    break;
+  default:
+    return false;
+  }
+
+  const uint32_t pitch_texels =
+      fetch.pitch != 0 ? fetch.pitch << 5 : fetch.width;
+  const uint64_t required =
+      fetch.tiled
+          ? uint64_t(XenosTiledOffset2D(fetch.width - 1, fetch.height - 1,
+                                        pitch_texels, bytes_per_block_log2)) +
+                bytes_per_texel
+          : (uint64_t(pitch_texels) * (fetch.height - 1) + fetch.width) *
+                bytes_per_texel;
+  if (required == 0 || required > kMaxProjectTexturePayloadBytes ||
+      required > UINT32_MAX) {
+    return false;
+  }
+  footprint = static_cast<uint32_t>(required);
+  return true;
+}
+
+void RecaptureTexturePayloadFromGuest(bo2::native::TextureFetchInfo &target) {
+  uint32_t footprint = 0;
+  if (!target.payload_truncated ||
+      !TextureFormatFootprint(target, footprint) ||
+      target.base_address_bytes == 0 ||
+      target.payload_bytes.size() >= footprint) {
+    return;
+  }
+
+  target.payload_bytes.resize(footprint);
+  const uint8_t *source =
+      REX_KERNEL_MEMORY()->TranslatePhysical<const uint8_t *>(
+          target.base_address_bytes);
+  std::memcpy(target.payload_bytes.data(), source, footprint);
+  target.payload_byte_count = footprint;
+  target.payload_truncated = false;
+  target.payload_missing = false;
+}
 
 void OnNativeRendererPM4Packet(
     const rex::graphics::NativeRendererPM4PacketEvent *event, void *) {
@@ -212,6 +292,7 @@ void CopyTextureFetchInfo(const TextureFetchEvent &source,
       source.payload_truncated ||
       source.payload_byte_count > captured_payload_count;
   target.payload_missing = source.payload_missing;
+  RecaptureTexturePayloadFromGuest(target);
 }
 
 template <typename DrawEvent>
