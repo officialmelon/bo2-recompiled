@@ -1887,12 +1887,23 @@ std::optional<int> FetchConstantIndex(std::string_view opcode,
   return std::nullopt;
 }
 
-void EmitDisassemblyOperationsJson(std::ostream &out,
-                                   const std::string &disassembly) {
-  out << "  \"operations\": [\n";
+struct ParsedShaderOperation {
+  std::string address;
+  std::string opcode;
+  std::string operands;
+  std::string text;
+  bool coissued = false;
+  std::string category;
+  std::vector<std::string> operand_parts;
+  bool has_destination = false;
+  std::optional<int> fetch_constant;
+};
+
+std::vector<ParsedShaderOperation>
+ParseDisassemblyOperations(const std::string &disassembly) {
+  std::vector<ParsedShaderOperation> operations;
   std::istringstream lines(disassembly);
   std::string line;
-  bool first = true;
   while (std::getline(lines, line)) {
     std::string_view text = TrimView(line);
     if (text.empty()) {
@@ -1911,7 +1922,10 @@ void EmitDisassemblyOperationsJson(std::ostream &out,
       continue;
     }
 
-    bool coissued = false;
+    ParsedShaderOperation operation;
+    operation.address = ToString(address_text);
+    operation.text = ToString(text);
+
     std::string_view opcode = text;
     std::string_view operands;
     const std::size_t opcode_end = text.find_first_of(" \t");
@@ -1920,7 +1934,7 @@ void EmitDisassemblyOperationsJson(std::ostream &out,
       operands = TrimView(text.substr(opcode_end + 1));
     }
     if (opcode == "+") {
-      coissued = true;
+      operation.coissued = true;
       const std::size_t coissue_opcode_end = operands.find_first_of(" \t");
       if (coissue_opcode_end == std::string_view::npos) {
         opcode = operands;
@@ -1932,46 +1946,86 @@ void EmitDisassemblyOperationsJson(std::ostream &out,
       }
     }
 
-    const std::vector<std::string> operand_parts = SplitOperands(operands);
-    const bool has_destination =
-        !operand_parts.empty() && opcode != "exec" && opcode != "exece" &&
-        opcode != "cnop" && opcode != "alloc";
+    operation.opcode = ToString(opcode);
+    operation.operands = ToString(operands);
+    operation.operand_parts = SplitOperands(operands);
+    operation.has_destination = !operation.operand_parts.empty() &&
+                                opcode != "exec" && opcode != "exece" &&
+                                opcode != "cnop" && opcode != "alloc";
     const std::string destination_register =
-        has_destination ? OperandRegisterText(operand_parts.front()) : "";
+        operation.has_destination
+            ? OperandRegisterText(operation.operand_parts.front())
+            : "";
     const std::string destination_file =
-        has_destination ? OperandRegisterFile(destination_register) : "";
+        operation.has_destination ? OperandRegisterFile(destination_register)
+                                  : "";
     const bool has_export_dest =
         destination_file == "color_export" ||
         destination_file == "position_export" ||
         destination_file == "interpolator_export";
+    operation.category = OperationCategory(opcode, has_export_dest);
+    operation.fetch_constant =
+        FetchConstantIndex(opcode, operation.operand_parts);
+    operations.push_back(std::move(operation));
+  }
+  return operations;
+}
+
+bool HasOperation(const std::vector<ParsedShaderOperation> &operations,
+                  std::string_view opcode, std::string_view dest = {},
+                  std::optional<int> fetch_constant = std::nullopt) {
+  for (const ParsedShaderOperation &operation : operations) {
+    if (operation.opcode != opcode) {
+      continue;
+    }
+    if (!dest.empty()) {
+      if (!operation.has_destination || operation.operand_parts.empty() ||
+          TrimView(operation.operand_parts.front()) != dest) {
+        continue;
+      }
+    }
+    if (fetch_constant && operation.fetch_constant != fetch_constant) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+void EmitDisassemblyOperationsJson(std::ostream &out,
+                                   const std::string &disassembly) {
+  out << "  \"operations\": [\n";
+  const std::vector<ParsedShaderOperation> operations =
+      ParseDisassemblyOperations(disassembly);
+  bool first = true;
+  for (const ParsedShaderOperation &operation : operations) {
 
     if (!first) {
       out << ",\n";
     }
     first = false;
-    out << "    {\"address\": \"" << JsonEscape(address_text)
-        << "\", \"opcode\": \"" << JsonEscape(opcode)
-        << "\", \"operands\": \"" << JsonEscape(operands)
-        << "\", \"text\": \"" << JsonEscape(text) << "\""
-        << ", \"coissued\": " << (coissued ? "true" : "false")
-        << ", \"category\": \""
-        << JsonEscape(OperationCategory(opcode, has_export_dest)) << "\"";
-    if (has_destination) {
+    out << "    {\"address\": \"" << JsonEscape(operation.address)
+        << "\", \"opcode\": \"" << JsonEscape(operation.opcode)
+        << "\", \"operands\": \"" << JsonEscape(operation.operands)
+        << "\", \"text\": \"" << JsonEscape(operation.text) << "\""
+        << ", \"coissued\": " << (operation.coissued ? "true" : "false")
+        << ", \"category\": \"" << JsonEscape(operation.category) << "\"";
+    if (operation.has_destination) {
       out << ", \"dest\": ";
-      EmitOperandJson(out, operand_parts.front());
+      EmitOperandJson(out, operation.operand_parts.front());
     }
     out << ", \"sources\": [";
-    const std::size_t first_source = has_destination ? 1u : 0u;
-    for (std::size_t i = first_source; i < operand_parts.size(); ++i) {
+    const std::size_t first_source = operation.has_destination ? 1u : 0u;
+    for (std::size_t i = first_source; i < operation.operand_parts.size();
+         ++i) {
       if (i != first_source) {
         out << ", ";
       }
-      EmitOperandJson(out, operand_parts[i]);
+      EmitOperandJson(out, operation.operand_parts[i]);
     }
     out << "]";
-    if (const std::optional<int> fetch_index =
-            FetchConstantIndex(opcode, operand_parts)) {
-      out << ", \"fetch_constant\": " << *fetch_index;
+    if (operation.fetch_constant) {
+      out << ", \"fetch_constant\": " << *operation.fetch_constant;
     }
     out << "}";
   }
@@ -2332,6 +2386,8 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
   rex::string::StringBuffer disasm_buffer;
   shader.AnalyzeUcode(disasm_buffer);
   const std::string &disassembly = shader.ucode_disassembly();
+  const std::vector<ParsedShaderOperation> operations =
+      ParseDisassemblyOperations(disassembly);
 
   out << "// BO2 native renderer translated HLSL from decoded Xenos "
          "operations.\n";
@@ -2408,7 +2464,7 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
   }
 
   if (runtime_shader.stage == 1 &&
-      disassembly.find("max oC0, r0, r0") != std::string::npos) {
+      HasOperation(operations, "max", "oC0")) {
     out << "struct PSInput\n";
     out << "{\n";
     out << "  float4 r0 : TEXCOORD0;\n";
@@ -2422,15 +2478,11 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
   }
 
   if (runtime_shader.stage == 1 &&
-      disassembly.find("tfetch2D r0.__x_, r0.xy, tf4") !=
-          std::string::npos &&
-      disassembly.find("tfetch2D r3._x__, r0.xy, tf3") !=
-          std::string::npos &&
-      disassembly.find("tfetch2D r3.__x_, r2.xy, tf2") !=
-          std::string::npos &&
-      disassembly.find("tfetch2D r3.x___, r2.xy, tf1") !=
-          std::string::npos &&
-      disassembly.find("mul oC0, r0.xywz, r1") != std::string::npos) {
+      HasOperation(operations, "tfetch2D", "r0.__x_", 4) &&
+      HasOperation(operations, "tfetch2D", "r3._x__", 3) &&
+      HasOperation(operations, "tfetch2D", "r3.__x_", 2) &&
+      HasOperation(operations, "tfetch2D", "r3.x___", 1) &&
+      HasOperation(operations, "mul", "oC0")) {
     out << "cbuffer CapturedConstants : register(b1)\n";
     out << "{\n";
     out << "  float4 captured_constants[8];\n";
