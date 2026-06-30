@@ -58,6 +58,7 @@ native_shader_inspect.exe --microcode shader_work\shaders\microcode\<stage_hash>
 native_shader_inspect.exe --microcode shader_work\shaders\microcode\<stage_hash>.ucode --write-ir shader_work\cache\ir
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --semantic-disassemble
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --write-hlsl shader_work\cache\hlsl
+native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --compile-hlsl shader_work\cache
 ```
 
 Verified summary:
@@ -138,6 +139,25 @@ Outputs:
 - `shader_work\cache\hlsl\PS_0xA4A965C189287B99.diagnostic.hlsl`
 
 These files are explicitly marked diagnostic in comments and are not real Xenos translations. They provide the first generator/cache layout for runtime shader metadata, constants at `b1`, texture/sampler placeholders at `t0/s0`, and a stable entry point shape for later DXC/DXIL wiring.
+
+`native_shader_inspect.exe --compile-hlsl` now compiles that diagnostic HLSL through the same Windows `D3DCompile` dependency family used by the D3D12 replay backend. Verified commands:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --compile-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache
+```
+
+Outputs:
+
+- `shader_work\cache\hlsl\VS_0xB6C9863F710683EC.diagnostic.hlsl`
+- `shader_work\cache\d3d12\VS_0xB6C9863F710683EC.diagnostic.dxbc`
+- `shader_work\cache\logs\VS_0xB6C9863F710683EC.diagnostic.log`
+- `shader_work\cache\hlsl\PS_0xA4A965C189287B99.diagnostic.hlsl`
+- `shader_work\cache\d3d12\PS_0xA4A965C189287B99.diagnostic.dxbc`
+- `shader_work\cache\logs\PS_0xA4A965C189287B99.diagnostic.log`
+- `shader_work\cache\diagnostic_shader_cache_index.jsonl`
+
+This proves a generated runtime-shader artifact can enter a persistent D3D12 cache path, but it is still diagnostic DXBC, not real translated Xenos DXIL. DXC integration remains a separate pending task.
 
 Static extracted `.ucode` semantic decode is still blocked by file-layout ambiguity. Raw `.ucode` artifact commands still work, but tested static files include metadata/constants before the analyzer's expected payload range.
 

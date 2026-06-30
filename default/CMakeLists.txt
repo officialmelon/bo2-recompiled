@@ -97,7 +97,7 @@ target_include_directories(native_shader_inspect PRIVATE
 target_compile_features(native_shader_inspect PRIVATE cxx_std_23)
 if(WIN32)
     target_compile_definitions(native_shader_inspect PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(native_shader_inspect PRIVATE bcrypt)
+    target_link_libraries(native_shader_inspect PRIVATE bcrypt d3dcompiler)
 endif()
 target_link_libraries(native_shader_inspect PRIVATE rexcore rexfilesystem)
 

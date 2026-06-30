@@ -604,6 +604,8 @@ native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_capture
 native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --write-semantic C:\Users\braxt\bo2-recompiled\shader_work\out\semantic --write-semantic-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
 native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --write-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
 native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --write-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --compile-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache
 native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --shader-usage
 ```
 
@@ -619,6 +621,13 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
   - `shader_work\cache\hlsl\VS_0xB6C9863F710683EC.diagnostic.hlsl`
   - `shader_work\cache\hlsl\PS_0xA4A965C189287B99.diagnostic.hlsl`
   These files are explicitly diagnostic/interface scaffolding and are not counted as real Xenos translation.
+- Diagnostic D3D12 shader compilation succeeds through `D3DCompile`:
+  - `shader_work\cache\d3d12\VS_0xB6C9863F710683EC.diagnostic.dxbc`
+  - `shader_work\cache\d3d12\PS_0xA4A965C189287B99.diagnostic.dxbc`
+  - `shader_work\cache\logs\VS_0xB6C9863F710683EC.diagnostic.log`
+  - `shader_work\cache\logs\PS_0xA4A965C189287B99.diagnostic.log`
+  - `shader_work\cache\diagnostic_shader_cache_index.jsonl`
+  This is a generated diagnostic shader-cache proof only; it is not DXC/DXIL and not real Xenos shader translation.
 - Replay shader usage on `shader_probe_capture_007` still parses `5000` events, `1106` draws, `8` unique runtime shaders, `7` shader pairs, and `233/233` shader payload uploads with payload.
 - Static extracted `.ucode` semantic decode is not accepted as solved. The raw static commands still work, but static `.ucode` files include extracted metadata/constants before the analyzer's expected payload; an attempted offset scan was removed because wrong offsets can run too long. The next reverse-engineering target is the extracted `.ucode` file layout/container descriptor boundary, or direct semantic IR generation from captured runtime PM4 payloads.
 

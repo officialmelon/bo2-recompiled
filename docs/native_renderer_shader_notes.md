@@ -350,6 +350,23 @@ Verified outputs:
 
 These files are deliberately labeled diagnostic. They define stable entry points and placeholder bindings for captured constants at `b1`, texture `t0`, and sampler `s0`, but they do not lower decoded Xenos ALU/texture operations yet.
 
+The diagnostic HLSL can also be compiled into a D3D12 cache artifact:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --compile-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache
+```
+
+Verified outputs:
+
+- `shader_work\cache\d3d12\VS_0xB6C9863F710683EC.diagnostic.dxbc`
+- `shader_work\cache\d3d12\PS_0xA4A965C189287B99.diagnostic.dxbc`
+- `shader_work\cache\logs\VS_0xB6C9863F710683EC.diagnostic.log`
+- `shader_work\cache\logs\PS_0xA4A965C189287B99.diagnostic.log`
+- `shader_work\cache\diagnostic_shader_cache_index.jsonl`
+
+This path uses `D3DCompile` because that is already used by the current replay backend. It is a compiler/cache proof for generated runtime shader artifacts, not DXC/DXIL and not real Xenos operation lowering.
+
 Static extracted `.ucode` files remain unresolved for semantic decode. They still dump raw words and raw IR correctly, but the tested static files begin with extracted metadata/constants rather than the exact runtime shader payload layout expected by `Shader::AnalyzeUcode`. A first auto-offset scan was removed because a wrong static offset can make the analyzer run too long. The next static-file task is to reverse the extracted `.ucode` layout or use the container descriptor fields to pass only the true microcode program range to the analyzer.
 
 ## Native renderer path forward

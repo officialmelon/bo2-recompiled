@@ -24,6 +24,7 @@
 #endif
 #include <windows.h>
 #include <bcrypt.h>
+#include <d3dcompiler.h>
 #endif
 
 #include <rex/graphics/pipeline/shader/shader.h>
@@ -50,6 +51,7 @@ struct CliOptions {
   std::filesystem::path semantic_output_path;
   std::filesystem::path semantic_ir_output_path;
   std::filesystem::path hlsl_output_path;
+  std::filesystem::path hlsl_compile_cache_path;
   bool show_summary = false;
   bool find_hash = false;
   bool list_runtime_shaders = false;
@@ -186,6 +188,8 @@ void PrintHelp() {
             << "                     Write semantic backend-neutral shader IR JSON\n"
             << "  --write-hlsl <path>\n"
             << "                     Write diagnostic HLSL from runtime semantic metadata\n"
+            << "  --compile-hlsl <path>\n"
+            << "                     Compile diagnostic HLSL into a D3D12 shader cache\n"
             << "  --top-shaders <n>  Runtime shader/pair print limit (default 20)\n"
             << "  --hash <value>     Hash or substring to find\n"
             << "  --find             Search the index for --hash\n"
@@ -1945,6 +1949,219 @@ bool WriteRuntimeDiagnosticHlslArtifact(const RuntimeShaderCapture &capture,
   return true;
 }
 
+std::string BuildDiagnosticRuntimeHlsl(const RuntimeShaderCapture &capture,
+                                       const RuntimeShaderUsage &shader) {
+  std::ostringstream source;
+  EmitDiagnosticRuntimeHlsl(source, capture, shader);
+  return source.str();
+}
+
+bool WriteBinaryFile(const std::filesystem::path &path, const void *data,
+                     std::size_t size, std::string &error) {
+  std::error_code ec;
+  const std::filesystem::path parent = path.parent_path();
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      error = "could not create directory " + parent.string() + ": " +
+              ec.message();
+      return false;
+    }
+  }
+
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  if (!file) {
+    error = "could not open file for write: " + path.string();
+    return false;
+  }
+  file.write(static_cast<const char *>(data),
+             static_cast<std::streamsize>(size));
+  if (!file) {
+    error = "could not write file: " + path.string();
+    return false;
+  }
+  return true;
+}
+
+bool WriteTextFile(const std::filesystem::path &path, std::string_view text,
+                   std::string &error) {
+  return WriteBinaryFile(path, text.data(), text.size(), error);
+}
+
+bool AppendTextFile(const std::filesystem::path &path, std::string_view text,
+                    std::string &error) {
+  std::error_code ec;
+  const std::filesystem::path parent = path.parent_path();
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      error = "could not create directory " + parent.string() + ": " +
+              ec.message();
+      return false;
+    }
+  }
+
+  std::ofstream file(path, std::ios::binary | std::ios::app);
+  if (!file) {
+    error = "could not open file for append: " + path.string();
+    return false;
+  }
+  file << text;
+  if (!file) {
+    error = "could not append file: " + path.string();
+    return false;
+  }
+  return true;
+}
+
+struct D3D12HlslCompileResult {
+  std::filesystem::path hlsl_path;
+  std::filesystem::path shader_path;
+  std::filesystem::path log_path;
+  std::filesystem::path index_path;
+};
+
+bool CompileRuntimeDiagnosticHlslToD3D12(
+    const RuntimeShaderCapture &capture, uint64_t runtime_hash,
+    const std::filesystem::path &cache_root, D3D12HlslCompileResult &result,
+    std::string &error) {
+  const RuntimeShaderUsage *runtime_shader =
+      FindRuntimeShaderByHash(capture, runtime_hash);
+  if (!runtime_shader) {
+    error = "runtime shader hash not found in capture: " + Hex64(runtime_hash);
+    return false;
+  }
+
+  const std::string stem = RuntimeSemanticArtifactStem(*runtime_shader);
+  const std::string cache_key = stem + ".diagnostic";
+  const char *target = runtime_shader->stage == 0 ? "vs_5_0" : "ps_5_0";
+  const char *entry = "main";
+  const std::string source = BuildDiagnosticRuntimeHlsl(capture, *runtime_shader);
+
+  result.hlsl_path = cache_root / "hlsl" / (cache_key + ".hlsl");
+  result.shader_path = cache_root / "d3d12" / (cache_key + ".dxbc");
+  result.log_path = cache_root / "logs" / (cache_key + ".log");
+  result.index_path = cache_root / "diagnostic_shader_cache_index.jsonl";
+
+  if (!WriteTextFile(result.hlsl_path, source, error)) {
+    return false;
+  }
+
+#if defined(_WIN32)
+  UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
+#if defined(_DEBUG)
+  flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+
+  ID3DBlob *blob = nullptr;
+  ID3DBlob *errors = nullptr;
+  const HRESULT hr =
+      D3DCompile(source.data(), source.size(), result.hlsl_path.string().c_str(),
+                 nullptr, nullptr, entry, target, flags, 0, &blob, &errors);
+  std::string compiler_output;
+  if (errors && errors->GetBufferPointer() && errors->GetBufferSize() > 0) {
+    compiler_output.assign(static_cast<const char *>(errors->GetBufferPointer()),
+                           errors->GetBufferSize());
+  }
+  if (FAILED(hr)) {
+    std::ostringstream log;
+    log << "compiler=D3DCompile\n"
+        << "status=failed\n"
+        << "stage=" << StageName(runtime_shader->stage) << "\n"
+        << "runtime_hash=" << Hex64(runtime_shader->hash) << "\n"
+        << "entry=" << entry << "\n"
+        << "target=" << target << "\n"
+        << "hresult=0x" << std::hex << std::uppercase
+        << static_cast<unsigned long>(hr) << std::dec << "\n"
+        << compiler_output;
+    const bool wrote_log = WriteTextFile(result.log_path, log.str(), error);
+    if (blob) {
+      blob->Release();
+    }
+    if (errors) {
+      errors->Release();
+    }
+    if (!wrote_log) {
+      return false;
+    }
+    error = "D3DCompile failed for " + stem + "; see " +
+            result.log_path.string();
+    return false;
+  }
+  if (!blob) {
+    if (errors) {
+      errors->Release();
+    }
+    error = "D3DCompile succeeded without a shader blob for " + stem;
+    return false;
+  }
+  if (!WriteBinaryFile(result.shader_path, blob->GetBufferPointer(),
+                       blob->GetBufferSize(), error)) {
+    blob->Release();
+    if (errors) {
+      errors->Release();
+    }
+    return false;
+  }
+
+  std::ostringstream log;
+  log << "compiler=D3DCompile\n"
+      << "status=ok\n"
+      << "stage=" << StageName(runtime_shader->stage) << "\n"
+      << "runtime_hash=" << Hex64(runtime_shader->hash) << "\n"
+      << "entry=" << entry << "\n"
+      << "target=" << target << "\n"
+      << "source=" << result.hlsl_path.string() << "\n"
+      << "cache=" << result.shader_path.string() << "\n";
+  if (!compiler_output.empty()) {
+    log << compiler_output;
+  }
+  if (!WriteTextFile(result.log_path, log.str(), error)) {
+    blob->Release();
+    if (errors) {
+      errors->Release();
+    }
+    return false;
+  }
+
+  std::ostringstream index;
+  index << "{"
+        << "\"backend\":\"d3d12\","
+        << "\"format\":\"dxbc\","
+        << "\"compiler\":\"D3DCompile\","
+        << "\"diagnostic\":true,"
+        << "\"stage\":\"" << StageName(runtime_shader->stage) << "\","
+        << "\"runtime_hash\":\"" << Hex64(runtime_shader->hash) << "\","
+        << "\"profile\":\"" << target << "\","
+        << "\"cache_key\":\"" << JsonEscape(cache_key) << "\","
+        << "\"source\":\"" << JsonEscape(result.hlsl_path.generic_string())
+        << "\","
+        << "\"path\":\"" << JsonEscape(result.shader_path.generic_string())
+        << "\","
+        << "\"log\":\"" << JsonEscape(result.log_path.generic_string())
+        << "\"}\n";
+  if (!AppendTextFile(result.index_path, index.str(), error)) {
+    blob->Release();
+    if (errors) {
+      errors->Release();
+    }
+    return false;
+  }
+
+  blob->Release();
+  if (errors) {
+    errors->Release();
+  }
+  return true;
+#else
+  (void)entry;
+  (void)target;
+  error = "--compile-hlsl is only available on Windows because this build uses "
+          "D3DCompile";
+  return false;
+#endif
+}
+
 std::optional<PayloadPrefixMatch> FindPayloadPrefixMatch(
     const std::vector<uint32_t> &secondary_dwords,
     const std::vector<uint32_t> &payload_dwords) {
@@ -2624,6 +2841,12 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.hlsl_output_path = value;
+    } else if (arg == "--compile-hlsl") {
+      const char *value = require_value("--compile-hlsl");
+      if (!value) {
+        return 2;
+      }
+      cli.hlsl_compile_cache_path = value;
     } else if (arg == "--top-shaders") {
       const char *value = require_value("--top-shaders");
       if (!value || !ParseSize(value, cli.top_shaders)) {
@@ -2655,7 +2878,8 @@ int main(int argc, char **argv) {
       !cli.shader_path.empty() || !cli.microcode_path.empty() ||
       !cli.disasm_output_path.empty() || !cli.ir_output_path.empty() ||
       !cli.semantic_output_path.empty() ||
-      !cli.semantic_ir_output_path.empty() || !cli.hlsl_output_path.empty();
+      !cli.semantic_ir_output_path.empty() || !cli.hlsl_output_path.empty() ||
+      !cli.hlsl_compile_cache_path.empty();
   if (!cli.show_summary && !cli.find_hash && !cli.list_runtime_shaders &&
       !cli.match_runtime_shaders && !cli.semantic_disassemble &&
       !file_inspection) {
@@ -2708,6 +2932,12 @@ int main(int argc, char **argv) {
   if (!cli.hlsl_output_path.empty() &&
       (cli.capture_path.empty() || cli.hash.empty())) {
     std::cerr << "--write-hlsl requires --capture <events.jsonl> and --hash "
+                 "<runtime_shader_hash>\n";
+    return 2;
+  }
+  if (!cli.hlsl_compile_cache_path.empty() &&
+      (cli.capture_path.empty() || cli.hash.empty())) {
+    std::cerr << "--compile-hlsl requires --capture <events.jsonl> and --hash "
                  "<runtime_shader_hash>\n";
     return 2;
   }
@@ -2813,7 +3043,8 @@ int main(int argc, char **argv) {
                               cli.microcode_path.empty()) ||
                              (!cli.semantic_ir_output_path.empty() &&
                               cli.microcode_path.empty()) ||
-                             !cli.hlsl_output_path.empty();
+                             !cli.hlsl_output_path.empty() ||
+                             !cli.hlsl_compile_cache_path.empty();
   if (!needs_index && !needs_capture) {
     return 0;
   }
@@ -2921,6 +3152,31 @@ int main(int argc, char **argv) {
       return 1;
     }
     std::cout << "wrote_hlsl=" << written_path.string() << "\n";
+    printed_anything = true;
+  }
+
+  if (!cli.hlsl_compile_cache_path.empty()) {
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    const auto hash = ParseHexU64(cli.hash);
+    if (!hash) {
+      std::cerr << "--hash expects a hexadecimal runtime shader hash\n";
+      return 2;
+    }
+    D3D12HlslCompileResult result;
+    std::string error;
+    if (!CompileRuntimeDiagnosticHlslToD3D12(
+            runtime_capture, *hash, cli.hlsl_compile_cache_path, result,
+            error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    std::cout << "compiled_hlsl=" << result.hlsl_path.string() << "\n"
+              << "compiled_d3d12_shader=" << result.shader_path.string()
+              << "\n"
+              << "compile_log=" << result.log_path.string() << "\n"
+              << "compile_index=" << result.index_path.string() << "\n";
     printed_anything = true;
   }
 
