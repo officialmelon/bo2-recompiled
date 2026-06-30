@@ -280,6 +280,14 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 
 Result: one non-indexed `PM4_DRAW_INDX_2` draw for `VS=0xAB1E86137A0240E8 PS=0xA4A965C189287B99`, fallback white descriptors for the no-texture shader pair, default PSO state for non-indexed bring-up, and output SHA-256 `A20B0105C2961DEB0BD9AEFBD91CD34E69D483FACC52AB2AD037099DBE7B7EB8`.
 
+Pair-specific PS interface update:
+
+- PS `0xC4ED2979F29C9139` and PS `0x246E20EF10E0DDC7` are used with both indexed VS interfaces and the non-indexed `AB1E86137A0240E8` interface.
+- Indexed pairs keep the older color+UV PS variants: `PS_0xC4ED2979F29C9139.translated.v5.dxc` and `PS_0x246E20EF10E0DDC7.translated.v6.dxc`.
+- `AB1E86137A0240E8` pairs use the UV-only v7 PS variants because that VS exports `TEXCOORD0` but not `COLOR0`.
+- Verified direct replays on `vertex_recapture_001`: draw `698` (`AB1E86/C4ED`) and draw `910` (`AB1E86/246E`) now both exit `0`, bind captured texture/sampler state, and submit real draws.
+- Verified frame replay: `--frame 0 --backend d3d12 --skip-unsupported` submits `260/260` geometry-supported draws across `7` shader pairs. The remaining `2155` skipped draws have no captured vertex/fetch state.
+
 Static extracted `.ucode` semantic decode is still blocked by file-layout ambiguity. Raw `.ucode` artifact commands still work, but tested static files include metadata/constants before the analyzer's expected payload range.
 
 ## Not implemented yet

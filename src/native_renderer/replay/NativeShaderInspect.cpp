@@ -2632,7 +2632,6 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     out << "struct PSInput\n";
     out << "{\n";
     out << "  float4 position : SV_Position;\n";
-    out << "  float4 color : COLOR0;\n";
     out << "  float2 uv : TEXCOORD0;\n";
     out << "};\n\n";
     out << "float4 main(PSInput input) : SV_Target0\n";
@@ -2676,7 +2675,6 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     out << "struct PSInput\n";
     out << "{\n";
     out << "  float4 position : SV_Position;\n";
-    out << "  float4 color : COLOR0;\n";
     out << "  float2 uv : TEXCOORD0;\n";
     out << "};\n\n";
     out << "float4 main(PSInput input) : SV_Target0\n";
@@ -2710,7 +2708,6 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     out << "struct PSInput\n";
     out << "{\n";
     out << "  float4 position : SV_Position;\n";
-    out << "  float4 color : COLOR0;\n";
     out << "  float2 uv : TEXCOORD0;\n";
     out << "};\n\n";
     out << "float4 main(PSInput input) : SV_Target0\n";
@@ -2730,9 +2727,10 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     out << "  const float2 mixed = saturate(float2(tf4.r, tf2.r) +\n";
     out << "                                abs(captured_constants[0].yz) * 0.125f);\n";
     out << "  const float4 r0_xywz = float4(mixed.x, mixed.y, tf4.a, tf3.b);\n";
-    out << "  const float4 r1 = saturate(input.color +\n";
+    out << "  const float4 vertex_mod = float4(1.0f, 1.0f, 1.0f, 1.0f);\n";
+    out << "  const float4 r1 = saturate(vertex_mod +\n";
     out << "      float4(abs(captured_constants[0].w) * 0.0625f, 0.0f, 0.0f, 0.0f));\n";
-    out << "  return saturate(lerp(r0_xywz * r1, tf1 * input.color, 0.35f + 0.25f * edge));\n";
+    out << "  return saturate(lerp(r0_xywz * r1, tf1 * vertex_mod, 0.35f + 0.25f * edge));\n";
     out << "}\n";
     return true;
   }

@@ -2121,6 +2121,55 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
     return false;
   }
 
+  const bool ab1e_vertex_shader =
+      draw_state.vertex_shader.hash == 0xAB1E86137A0240E8ull;
+  auto apply_pixel_variant =
+      [&](const char *cache_key, const char *source_name) -> bool {
+    pair.pixel_cache_key = cache_key;
+    pair.pixel_path = options.shader_cache_root / "hlsl" / source_name;
+    pair.pixel_cache_path = options.shader_cache_root / "d3d12" /
+                            (std::string(cache_key) + ".d3dcompile.dxbc");
+    pair.pixel_log_path = options.shader_cache_root / "logs" /
+                          (std::string(cache_key) + ".d3dcompile.log");
+    pair.pixel_entry = "main";
+    pair.pixel_profile = "ps_5_0";
+    pair.pixel_source.clear();
+    if (!ReadTextFile(pair.pixel_path, pair.pixel_source, pixel_error)) {
+      error = "could not load pair-specific pixel shader variant for draw " +
+              std::to_string(draw_state.draw_index) + " VS=" +
+              FormatHex64(draw_state.vertex_shader.hash) + " PS=" +
+              FormatHex64(draw_state.pixel_shader.hash) + ": " + pixel_error;
+      return false;
+    }
+    return true;
+  };
+
+  if (draw_state.pixel_shader.hash == 0xC4ED2979F29C9139ull) {
+    if (ab1e_vertex_shader) {
+      if (!apply_pixel_variant(
+              "PS_0xC4ED2979F29C9139.translated.v7.dxc",
+              "PS_0xC4ED2979F29C9139.translated.v7.dxc.hlsl")) {
+        return false;
+      }
+    } else if (!apply_pixel_variant(
+                   "PS_0xC4ED2979F29C9139.translated.v5.dxc",
+                   "PS_0xC4ED2979F29C9139.translated.v5.dxc.hlsl")) {
+      return false;
+    }
+  } else if (draw_state.pixel_shader.hash == 0x246E20EF10E0DDC7ull) {
+    if (ab1e_vertex_shader) {
+      if (!apply_pixel_variant(
+              "PS_0x246E20EF10E0DDC7.translated.v7.dxc",
+              "PS_0x246E20EF10E0DDC7.translated.v7.dxc.hlsl")) {
+        return false;
+      }
+    } else if (!apply_pixel_variant(
+                   "PS_0x246E20EF10E0DDC7.translated.v6.dxc",
+                   "PS_0x246E20EF10E0DDC7.translated.v6.dxc.hlsl")) {
+      return false;
+    }
+  }
+
   return true;
 }
 
