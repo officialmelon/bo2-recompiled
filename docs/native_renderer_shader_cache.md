@@ -114,6 +114,11 @@ Verified output:
 
 - VS `0xB6C9863F710683EC`: `cf_pair_index_bound=3`, `register_static_address_bound=2`, D3D-style Xenos disassembly containing `exec`, `alloc interpolators`, `alloc position`, and `max` exports.
 - PS `0xA4A965C189287B99`: `cf_pair_index_bound=1`, `register_static_address_bound=1`, D3D-style Xenos disassembly containing `alloc interpolators`, `exece`, and `max o0, r0, r0`.
+- Runtime semantic text and IR artifacts can now be written directly from capture/hash:
+  - `shader_work\out\semantic\VS_0xB6C9863F710683EC.xenos.semantic.txt`
+  - `shader_work\cache\ir\VS_0xB6C9863F710683EC.semantic.bo2shaderir.json`
+  - `shader_work\out\semantic\PS_0xA4A965C189287B99.xenos.semantic.txt`
+  - `shader_work\cache\ir\PS_0xA4A965C189287B99.semantic.bo2shaderir.json`
 
 This is not yet cached translated shader output. It is the first real semantic decode layer for captured runtime payloads and is the input for the next semantic IR/HLSL pass.
 
@@ -123,7 +128,7 @@ Static extracted `.ucode` semantic decode is still blocked by file-layout ambigu
 
 - Proven runtime 64-bit shader hash to static container/microcode matching.
 - Complete static-file Xenos shader disassembler.
-- Semantic backend-neutral shader IR for runtime shaders. A raw unresolved `bo2shaderir.raw_xenos.v1` JSON skeleton exists for static `.ucode`, and runtime semantic text decode now exists, but no complete translated `bo2shaderir.semantic_xenos.v1` cache path is finished.
+- Complete executable backend-neutral shader IR for runtime shaders. A raw unresolved `bo2shaderir.raw_xenos.v1` JSON skeleton exists for static `.ucode`, and runtime `bo2shaderir.semantic_xenos.v1` inspection artifacts now exist, but they are not yet a complete HLSL-ready operation graph.
 - HLSL/SPIR-V generation.
 - DXC integration.
 - Persistent compiled shader cache.

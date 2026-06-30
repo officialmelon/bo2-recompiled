@@ -320,6 +320,22 @@ Results:
 
 This proves captured PM4 shader payloads can be semantically decoded by ReXGlue's Xenos analyzer and are now beyond raw word preservation for runtime shaders.
 
+Runtime semantic artifact commands:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --write-semantic C:\Users\braxt\bo2-recompiled\shader_work\out\semantic --write-semantic-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --write-semantic C:\Users\braxt\bo2-recompiled\shader_work\out\semantic --write-semantic-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
+```
+
+Verified outputs:
+
+- `shader_work\out\semantic\VS_0xB6C9863F710683EC.xenos.semantic.txt`
+- `shader_work\cache\ir\VS_0xB6C9863F710683EC.semantic.bo2shaderir.json`
+- `shader_work\out\semantic\PS_0xA4A965C189287B99.xenos.semantic.txt`
+- `shader_work\cache\ir\PS_0xA4A965C189287B99.semantic.bo2shaderir.json`
+
+The runtime semantic IR schema is `bo2shaderir.semantic_xenos.v1`. It currently records source capture, runtime hash, draw/load counts, payload hashes, control-flow bound, register bound, export metadata, decoded disassembly lines, and raw backing words. It is a semantic inspection/cache artifact, not yet a complete executable shader IR for HLSL generation.
+
 Static extracted `.ucode` files remain unresolved for semantic decode. They still dump raw words and raw IR correctly, but the tested static files begin with extracted metadata/constants rather than the exact runtime shader payload layout expected by `Shader::AnalyzeUcode`. A first auto-offset scan was removed because a wrong static offset can make the analyzer run too long. The next static-file task is to reverse the extracted `.ucode` layout or use the container descriptor fields to pass only the true microcode program range to the analyzer.
 
 ## Native renderer path forward
