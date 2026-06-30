@@ -37,6 +37,11 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 constexpr std::size_t kMaxRealReplayTextureSlots = 4;
+constexpr uint32_t kInputLayoutPosition = 1u << 0;
+constexpr uint32_t kInputLayoutColor0 = 1u << 1;
+constexpr uint32_t kInputLayoutTexcoord0 = 1u << 2;
+constexpr uint32_t kInputLayoutNormal0 = 1u << 3;
+constexpr uint32_t kInputLayoutTexcoord1 = 1u << 4;
 
 bool CompileShader(const char *source, const char *entry, const char *target,
                    const char *source_name, ComPtr<ID3DBlob> &blob,
@@ -520,6 +525,8 @@ struct RealReplayVertex {
   float position[4] = {0.0f, 0.0f, 0.0f, 1.0f};
   float color[4] = {0.8f, 0.8f, 0.8f, 1.0f};
   float uv[2] = {0.0f, 0.0f};
+  float normal[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float uv1[2] = {0.0f, 0.0f};
 };
 
 struct PreparedRealDraw {
@@ -528,6 +535,7 @@ struct PreparedRealDraw {
   std::vector<uint16_t> indices16;
   std::vector<uint32_t> indices32;
   uint32_t vertex_count = 0;
+  uint32_t input_layout_mask = 0;
   bool indexed = false;
   bool uses_32bit_indices = false;
   D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
@@ -585,7 +593,8 @@ struct NativeShaderOverridePair {
 };
 
 bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
-                            std::vector<RealReplayVertex> &vertices) {
+                            std::vector<RealReplayVertex> &vertices,
+                            uint32_t &input_layout_mask) {
   if (fetch.payload_missing || fetch.payload_truncated ||
       fetch.payload_bytes.empty() || fetch.stride_bytes == 0 ||
       fetch.attributes.empty()) {
@@ -599,9 +608,10 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
   }
 
   vertices.assign(vertex_count, {});
-  bool has_position = false;
+  input_layout_mask = 0;
   for (uint32_t vertex_index = 0; vertex_index < vertex_count; ++vertex_index) {
     RealReplayVertex &vertex = vertices[vertex_index];
+    bool vertex_has_position = false;
     for (const VertexAttributeRecord &attribute : fetch.attributes) {
       std::vector<float> components;
       if (!DecodeFloatAttribute(fetch, attribute, vertex_index, components)) {
@@ -611,8 +621,9 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
       if ((attribute.data_format == 38 || attribute.data_format == 57 ||
            attribute.data_format == 36 || attribute.data_format == 26 ||
            (attribute.data_format == 37 && fetch.attributes.size() == 1)) &&
-          !components.empty() && !has_position) {
-        has_position = true;
+          !components.empty() && !vertex_has_position) {
+        vertex_has_position = true;
+        input_layout_mask |= kInputLayoutPosition;
         if (attribute.data_format == 26) {
           vertex.position[0] =
               components.size() > 0 ? components[0] / 65535.0f * 1280.0f
@@ -634,25 +645,46 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
           vertex.color[2] =
               static_cast<float>((vertex_index * 37u) & 0xFFu) / 255.0f;
           vertex.color[3] = 1.0f;
+          input_layout_mask |= kInputLayoutColor0;
         }
       } else if (attribute.data_format == 38 && components.size() >= 4) {
         vertex.color[0] = components[0];
         vertex.color[1] = components[1];
         vertex.color[2] = components[2];
         vertex.color[3] = components[3];
+        input_layout_mask |= kInputLayoutColor0;
       } else if (attribute.data_format == 6 && components.size() >= 4) {
         vertex.color[0] = components[0];
         vertex.color[1] = components[1];
         vertex.color[2] = components[2];
         vertex.color[3] = components[3];
+        input_layout_mask |= kInputLayoutColor0;
       } else if (attribute.data_format == 37 && components.size() >= 2) {
-        vertex.uv[0] = components[0];
-        vertex.uv[1] = components[1];
+        if ((input_layout_mask & kInputLayoutTexcoord0) == 0) {
+          vertex.uv[0] = components[0];
+          vertex.uv[1] = components[1];
+          input_layout_mask |= kInputLayoutTexcoord0;
+        } else {
+          vertex.uv1[0] = components[0];
+          vertex.uv1[1] = components[1];
+          input_layout_mask |= kInputLayoutTexcoord1;
+        }
+      } else if (attribute.data_format == 26 && components.size() >= 3) {
+        vertex.normal[0] = components[0];
+        vertex.normal[1] = components[1];
+        vertex.normal[2] = components[2];
+        vertex.normal[3] = components.size() > 3 ? components[3] : 0.0f;
+        input_layout_mask |= kInputLayoutNormal0;
       }
     }
   }
 
-  return has_position;
+  if ((input_layout_mask & kInputLayoutPosition) == 0) {
+    return false;
+  }
+  input_layout_mask |=
+      kInputLayoutPosition | kInputLayoutColor0 | kInputLayoutTexcoord0;
+  return true;
 }
 
 void ExpandPointListToQuads(std::vector<RealReplayVertex> &vertices) {
@@ -728,7 +760,7 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
   for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
     PreparedRealDraw candidate;
     candidate.draw_index = index;
-    if (!BuildCanonicalVertices(fetch, candidate.vertices)) {
+    if (!BuildCanonicalVertices(fetch, candidate.vertices, candidate.input_layout_mask)) {
       continue;
     }
 
@@ -809,7 +841,8 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
         *std::max_element(decoded_indices.begin(), decoded_indices.end());
     for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
       std::vector<RealReplayVertex> vertices;
-      if (BuildCanonicalVertices(fetch, vertices) &&
+      uint32_t input_layout_mask = 0;
+      if (BuildCanonicalVertices(fetch, vertices, input_layout_mask) &&
           max_index < vertices.size()) {
         return {};
       }
@@ -822,7 +855,8 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
   }
   for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
     std::vector<RealReplayVertex> vertices;
-    if (!BuildCanonicalVertices(fetch, vertices)) {
+    uint32_t input_layout_mask = 0;
+    if (!BuildCanonicalVertices(fetch, vertices, input_layout_mask)) {
       continue;
     }
     const uint32_t needed =
@@ -927,6 +961,7 @@ struct PipelineKey {
   uint32_t cull_mode = 0;
   uint32_t fill_mode = 0;
   uint32_t front_face = 0;
+  uint32_t input_layout_mask = 0;
 
   bool operator<(const PipelineKey &other) const {
     return std::tie(vertex_shader_hash, pixel_shader_hash, topology,
@@ -936,7 +971,7 @@ struct PipelineKey {
                     pa_su_sc_mode_cntl, depth_format, color_format0,
                     blendcontrol0, msaa_samples, depth_test_enable,
                     depth_write_enable, stencil_enable, depth_func, cull_mode,
-                    fill_mode, front_face) <
+                    fill_mode, front_face, input_layout_mask) <
            std::tie(other.vertex_shader_hash, other.pixel_shader_hash,
                     other.topology, other.render_target_format,
                     other.render_state_present, other.rb_colorcontrol,
@@ -947,7 +982,7 @@ struct PipelineKey {
                     other.blendcontrol0, other.msaa_samples,
                     other.depth_test_enable, other.depth_write_enable,
                     other.stencil_enable, other.depth_func, other.cull_mode,
-                    other.fill_mode, other.front_face);
+                    other.fill_mode, other.front_face, other.input_layout_mask);
   }
 };
 
@@ -967,6 +1002,7 @@ PipelineKey MakePipelineKey(const ReplayDrawState &state,
   key.pixel_shader_hash = state.pixel_shader.hash;
   key.topology = static_cast<uint32_t>(prepared.topology);
   key.render_target_format = static_cast<uint32_t>(render_target_format);
+  key.input_layout_mask = prepared.input_layout_mask;
   const RenderStateRecord *render_state =
       state.draw.render_state.present ? &state.draw.render_state : nullptr;
   if (!render_state) {
@@ -1141,7 +1177,8 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
     reason = "texture payload is missing";
     return false;
   }
-  if (fetch.format != 6 && fetch.format != 2) {
+  if (fetch.format != 6 && fetch.format != 2 && fetch.format != 26 &&
+      fetch.format != 38) {
     reason = "unsupported texture format " + std::to_string(fetch.format);
     return false;
   }
@@ -1155,8 +1192,18 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
   const std::size_t output_bytes = pixel_count * 4;
   const uint32_t pitch_texels =
       fetch.pitch != 0 ? fetch.pitch << 5 : fetch.width;
-  const uint32_t bytes_per_texel = fetch.format == 2 ? 1 : 4;
-  const uint32_t bytes_per_block_log2 = fetch.format == 2 ? 0 : 2;
+  uint32_t bytes_per_texel = 4;
+  uint32_t bytes_per_block_log2 = 2;
+  if (fetch.format == 2) {
+    bytes_per_texel = 1;
+    bytes_per_block_log2 = 0;
+  } else if (fetch.format == 26) {
+    bytes_per_texel = 8;
+    bytes_per_block_log2 = 3;
+  } else if (fetch.format == 38) {
+    bytes_per_texel = 16;
+    bytes_per_block_log2 = 4;
+  }
   if (!fetch.tiled) {
     const std::size_t linear_footprint =
         (static_cast<std::size_t>(pitch_texels) * (fetch.height - 1) +
@@ -1200,6 +1247,46 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
         rgba[pixel * 4 + 1] = value;
         rgba[pixel * 4 + 2] = value;
         rgba[pixel * 4 + 3] = 255;
+        continue;
+      } else if (fetch.format == 26) {
+        const uint16_t r = GpuSwap16(
+            LoadLittleEndian16(fetch.payload_bytes, source_offset + 0),
+            fetch.endian);
+        const uint16_t g = GpuSwap16(
+            LoadLittleEndian16(fetch.payload_bytes, source_offset + 2),
+            fetch.endian);
+        const uint16_t b = GpuSwap16(
+            LoadLittleEndian16(fetch.payload_bytes, source_offset + 4),
+            fetch.endian);
+        const uint16_t a = GpuSwap16(
+            LoadLittleEndian16(fetch.payload_bytes, source_offset + 6),
+            fetch.endian);
+        rgba[pixel * 4 + 0] = static_cast<uint8_t>((r >> 8) & 0xFF);
+        rgba[pixel * 4 + 1] = static_cast<uint8_t>((g >> 8) & 0xFF);
+        rgba[pixel * 4 + 2] = static_cast<uint8_t>((b >> 8) & 0xFF);
+        rgba[pixel * 4 + 3] = static_cast<uint8_t>((a >> 8) & 0xFF);
+        continue;
+      } else if (fetch.format == 38) {
+        const uint32_t raw_r = GpuSwap32(
+            LoadLittleEndian32(fetch.payload_bytes, source_offset + 0),
+            fetch.endian);
+        const uint32_t raw_g = GpuSwap32(
+            LoadLittleEndian32(fetch.payload_bytes, source_offset + 4),
+            fetch.endian);
+        const uint32_t raw_b = GpuSwap32(
+            LoadLittleEndian32(fetch.payload_bytes, source_offset + 8),
+            fetch.endian);
+        const uint32_t raw_a = GpuSwap32(
+            LoadLittleEndian32(fetch.payload_bytes, source_offset + 12),
+            fetch.endian);
+        const float r = std::clamp(FloatFromBits(raw_r), 0.0f, 1.0f);
+        const float g = std::clamp(FloatFromBits(raw_g), 0.0f, 1.0f);
+        const float b = std::clamp(FloatFromBits(raw_b), 0.0f, 1.0f);
+        const float a = std::clamp(FloatFromBits(raw_a), 0.0f, 1.0f);
+        rgba[pixel * 4 + 0] = static_cast<uint8_t>(r * 255.0f);
+        rgba[pixel * 4 + 1] = static_cast<uint8_t>(g * 255.0f);
+        rgba[pixel * 4 + 2] = static_cast<uint8_t>(b * 255.0f);
+        rgba[pixel * 4 + 3] = static_cast<uint8_t>(a * 255.0f);
         continue;
       }
       const uint32_t word =
@@ -1435,24 +1522,19 @@ void CreateSampler(ID3D12Device *device, const TextureFetchRecord *fetch,
   device->CreateSampler(&sampler, descriptor);
 }
 
-bool CreateRealGeometryPipeline(ID3D12Device *device,
-                                ComPtr<ID3D12RootSignature> &root_signature,
-                                ComPtr<ID3D12PipelineState> &pipeline_state,
-                                DXGI_FORMAT format,
-                                const RenderStateRecord *render_state,
-                                const char *vertex_shader_source,
-                                const char *vertex_shader_name,
-                                const char *vertex_shader_entry,
-                                const char *vertex_shader_profile,
-                                const std::filesystem::path &vertex_cache_path,
-                                const std::filesystem::path &vertex_log_path,
-                                const char *pixel_shader_source,
-                                const char *pixel_shader_name,
-                                const char *pixel_shader_entry,
-                                const char *pixel_shader_profile,
-                                const std::filesystem::path &pixel_cache_path,
-                                const std::filesystem::path &pixel_log_path,
-                                std::string &error) {
+bool CreateRealGeometryPipeline(
+    ID3D12Device *device, ComPtr<ID3D12RootSignature> &root_signature,
+    ComPtr<ID3D12PipelineState> &pipeline_state, DXGI_FORMAT format,
+    const RenderStateRecord *render_state, const char *vertex_shader_source,
+    const char *vertex_shader_name, const char *vertex_shader_entry,
+    const char *vertex_shader_profile,
+    const std::filesystem::path &vertex_cache_path,
+    const std::filesystem::path &vertex_log_path,
+    const char *pixel_shader_source, const char *pixel_shader_name,
+    const char *pixel_shader_entry, const char *pixel_shader_profile,
+    const std::filesystem::path &pixel_cache_path,
+    const std::filesystem::path &pixel_log_path, uint32_t input_layout_mask,
+    std::string &error) {
   D3D12_DESCRIPTOR_RANGE texture_srv_range{};
   texture_srv_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
   texture_srv_range.NumDescriptors =
@@ -1534,17 +1616,35 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
     return false;
   }
 
-  D3D12_INPUT_ELEMENT_DESC input_elements[] = {
-      {"POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,
-       offsetof(RealReplayVertex, position),
-       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,
-       offsetof(RealReplayVertex, color),
-       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-      {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0,
-       offsetof(RealReplayVertex, uv),
-       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-  };
+  std::vector<D3D12_INPUT_ELEMENT_DESC> input_elements;
+  if (input_layout_mask & (1 << 0)) {
+    input_elements.push_back({"POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,
+                              offsetof(RealReplayVertex, position),
+                              D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+  }
+  if (input_layout_mask & (1 << 1)) {
+    input_elements.push_back({"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,
+                              offsetof(RealReplayVertex, color),
+                              D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+  }
+  if (input_layout_mask & (1 << 2)) {
+    input_elements.push_back({"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0,
+                              offsetof(RealReplayVertex, uv),
+                              D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+  }
+  if (input_layout_mask & (1 << 3)) {
+    input_elements.push_back({"NORMAL", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,
+                              offsetof(RealReplayVertex, normal),
+                              D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+  }
+  if (input_layout_mask & (1 << 4)) {
+    input_elements.push_back({"TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0,
+                              offsetof(RealReplayVertex, uv1),
+                              D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0});
+  }
+  if (input_elements.empty()) {
+    // Fallback to empty
+  }
 
   D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc{};
   pso_desc.pRootSignature = root_signature.Get();
@@ -1557,11 +1657,12 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
   pso_desc.RasterizerState = RasterizerDescFromRenderState(render_state);
   pso_desc.DepthStencilState = DepthStencilDescFromRenderState(render_state);
   pso_desc.InputLayout = {
-      input_elements,
-      static_cast<UINT>(sizeof(input_elements) / sizeof(input_elements[0]))};
+      input_elements.empty() ? nullptr : input_elements.data(),
+      static_cast<UINT>(input_elements.size())};
   pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   pso_desc.NumRenderTargets = 1;
   pso_desc.RTVFormats[0] = format;
+  pso_desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
   pso_desc.SampleDesc.Count = 1;
   pso_desc.SampleDesc.Quality = 0;
 
@@ -1772,6 +1873,45 @@ bool FindCacheShaderPath(const std::filesystem::path &root,
       }
       profile = record.profile;
       cache_key = record.cache_key;
+      return true;
+    }
+  }
+  const std::filesystem::path d3d12_root = root / "d3d12";
+  if (std::filesystem::is_directory(d3d12_root, ec) && !ec) {
+    const std::string stage_prefix =
+        std::string(short_stage[0] == 'v' ? "VS_" : "PS_") +
+        FormatHex64(hash) + ".";
+    std::filesystem::path best_path;
+    for (const std::filesystem::directory_entry &entry :
+         std::filesystem::directory_iterator(d3d12_root, ec)) {
+      if (ec || !entry.is_regular_file()) {
+        continue;
+      }
+      const std::string filename = entry.path().filename().string();
+      if (filename.rfind(stage_prefix, 0) != 0) {
+        continue;
+      }
+      if (filename.ends_with(".d3dcompile.dxbc") ||
+          filename.ends_with(".dxbc")) {
+        if (best_path.empty() || filename > best_path.filename().string()) {
+          best_path = entry.path();
+        }
+      }
+    }
+    if (!best_path.empty()) {
+      path = best_path;
+      std::string stem = best_path.filename().string();
+      if (stem.ends_with(".d3dcompile.dxbc")) {
+        stem.resize(stem.size() - std::strlen(".d3dcompile.dxbc"));
+      } else if (stem.ends_with(".dxbc")) {
+        stem.resize(stem.size() - std::strlen(".dxbc"));
+      }
+      cache_key = stem;
+      source = root / "hlsl" / (stem + ".hlsl");
+      if (!std::filesystem::is_regular_file(source, ec) || ec) {
+        source.clear();
+      }
+      profile = std::string(short_stage) + "_5_0";
       return true;
     }
   }
@@ -2077,6 +2217,46 @@ bool WriteOverrideCacheIndex(const ReplayDrawState &draw_state,
     return false;
   }
 
+  std::vector<ShaderCacheRecord> records;
+  if (std::filesystem::is_regular_file(index_path, ec) && !ec) {
+    std::string load_error;
+    if (!LoadShaderCacheIndex(index_path, records, load_error)) {
+      error = load_error;
+      return false;
+    }
+  }
+
+  auto upsert = [&](const char *stage, uint64_t hash,
+                    const std::string &profile,
+                    const std::string &cache_key,
+                    const std::filesystem::path &path,
+                    const std::filesystem::path &source) {
+    records.erase(
+        std::remove_if(records.begin(), records.end(),
+                       [&](const ShaderCacheRecord &record) {
+                         return LowerAscii(record.backend) == "d3d12" &&
+                                StageMatches(record.stage, stage, stage) &&
+                                record.runtime_hash == hash;
+                       }),
+        records.end());
+    ShaderCacheRecord record;
+    record.backend = "d3d12";
+    record.stage = stage;
+    record.runtime_hash = hash;
+    record.profile = profile;
+    record.compiler = "D3DCompile";
+    record.format = "dxbc";
+    record.cache_key = cache_key;
+    record.path = path;
+    record.source = source;
+    records.push_back(std::move(record));
+  };
+
+  upsert("vertex", draw_state.vertex_shader.hash, pair.vertex_profile,
+         pair.vertex_cache_key, pair.vertex_cache_path, pair.vertex_path);
+  upsert("pixel", draw_state.pixel_shader.hash, pair.pixel_profile,
+         pair.pixel_cache_key, pair.pixel_cache_path, pair.pixel_path);
+
   std::ofstream file(index_path, std::ios::binary | std::ios::trunc);
   if (!file) {
     error = "could not write shader cache index " + index_path.string();
@@ -2085,33 +2265,25 @@ bool WriteOverrideCacheIndex(const ReplayDrawState &draw_state,
 
   file << "{\n"
        << "  \"version\": 1,\n"
-       << "  \"records\": [\n"
-       << "    {\n"
-       << "      \"backend\": \"d3d12\",\n"
-       << "      \"stage\": \"vertex\",\n"
-       << "      \"runtime_hash\": \"" << FormatHex64(draw_state.vertex_shader.hash)
-       << "\",\n"
-       << "      \"profile\": \"" << pair.vertex_profile << "\",\n"
-       << "      \"compiler\": \"D3DCompile\",\n"
-       << "      \"cache_key\": \"" << pair.vertex_cache_key << "\",\n"
-       << "      \"path\": \"" << pair.vertex_cache_path.generic_string()
-       << "\",\n"
-       << "      \"source\": \"" << pair.vertex_path.generic_string()
-       << "\"\n"
-       << "    },\n"
-       << "    {\n"
-       << "      \"backend\": \"d3d12\",\n"
-       << "      \"stage\": \"pixel\",\n"
-       << "      \"runtime_hash\": \"" << FormatHex64(draw_state.pixel_shader.hash)
-       << "\",\n"
-       << "      \"profile\": \"" << pair.pixel_profile << "\",\n"
-       << "      \"compiler\": \"D3DCompile\",\n"
-       << "      \"cache_key\": \"" << pair.pixel_cache_key << "\",\n"
-       << "      \"path\": \"" << pair.pixel_cache_path.generic_string()
-       << "\",\n"
-       << "      \"source\": \"" << pair.pixel_path.generic_string() << "\"\n"
-       << "    }\n"
-       << "  ]\n"
+       << "  \"records\": [\n";
+  for (std::size_t i = 0; i < records.size(); ++i) {
+    const ShaderCacheRecord &record = records[i];
+    file << "    {\n"
+         << "      \"backend\": \"" << record.backend << "\",\n"
+         << "      \"stage\": \"" << record.stage << "\",\n"
+         << "      \"runtime_hash\": \"" << FormatHex64(record.runtime_hash)
+         << "\",\n"
+         << "      \"profile\": \"" << record.profile << "\",\n"
+         << "      \"compiler\": \"" << record.compiler << "\",\n"
+         << "      \"format\": \"" << record.format << "\",\n"
+         << "      \"cache_key\": \"" << record.cache_key << "\",\n"
+         << "      \"path\": \"" << record.path.generic_string()
+         << "\",\n"
+         << "      \"source\": \"" << record.source.generic_string()
+         << "\"\n"
+         << "    }" << (i + 1 == records.size() ? "\n" : ",\n");
+  }
+  file << "  ]\n"
        << "}\n";
   if (!file) {
     error = "could not finish shader cache index " + index_path.string();
@@ -2753,6 +2925,45 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       rtv_heap->GetCPUDescriptorHandleForHeapStart();
   device->CreateRenderTargetView(target.Get(), nullptr, rtv);
 
+  D3D12_RESOURCE_DESC depth_desc{};
+  depth_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  depth_desc.Width = width;
+  depth_desc.Height = height;
+  depth_desc.DepthOrArraySize = 1;
+  depth_desc.MipLevels = 1;
+  depth_desc.Format = DXGI_FORMAT_D32_FLOAT;
+  depth_desc.SampleDesc.Count = 1;
+  depth_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+  depth_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+  D3D12_CLEAR_VALUE depth_clear{};
+  depth_clear.Format = DXGI_FORMAT_D32_FLOAT;
+  depth_clear.DepthStencil.Depth = 1.0f;
+  depth_clear.DepthStencil.Stencil = 0;
+
+  ComPtr<ID3D12Resource> depth_target;
+  if (!CheckHr(device->CreateCommittedResource(
+                   &default_heap, D3D12_HEAP_FLAG_NONE, &depth_desc,
+                   D3D12_RESOURCE_STATE_DEPTH_WRITE, &depth_clear,
+                   IID_PPV_ARGS(&depth_target)),
+               "ID3D12Device::CreateCommittedResource(real depth target)",
+               error)) {
+    return false;
+  }
+
+  D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc{};
+  dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+  dsv_heap_desc.NumDescriptors = 1;
+  ComPtr<ID3D12DescriptorHeap> dsv_heap;
+  if (!CheckHr(
+          device->CreateDescriptorHeap(&dsv_heap_desc, IID_PPV_ARGS(&dsv_heap)),
+          "ID3D12Device::CreateDescriptorHeap(DSV)", error)) {
+    return false;
+  }
+  const D3D12_CPU_DESCRIPTOR_HANDLE dsv =
+      dsv_heap->GetCPUDescriptorHandleForHeapStart();
+  device->CreateDepthStencilView(depth_target.Get(), nullptr, dsv);
+
   std::map<PipelineKey, D3D12ReplayPipeline> pipelines;
   std::size_t pso_cache_hits = 0;
   std::size_t pso_cache_misses = 0;
@@ -2814,7 +3025,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             override_pair.vertex_log_path, pixel_shader_source,
             pixel_shader_name_storage.c_str(), pixel_shader_entry,
             pixel_shader_profile, override_pair.pixel_cache_path,
-            override_pair.pixel_log_path, error)) {
+            override_pair.pixel_log_path, prepared_draw.input_layout_mask, error)) {
       error = "could not create D3D12 real replay PSO for draw " +
               std::to_string(state.draw_index) + " VS=" +
               FormatHex64(state.vertex_shader.hash) + " PS=" +
@@ -3123,7 +3334,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   list->SetDescriptorHeaps(2, descriptor_heaps);
   list->RSSetViewports(1, &viewport);
   list->RSSetScissorRects(1, &scissor);
-  list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+  list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+  list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0,
+                              nullptr);
   const float constants[4] = {static_cast<float>(width),
                               static_cast<float>(height), 0.0f, 0.0f};
 

@@ -4,12 +4,46 @@
     {
       "backend": "d3d12",
       "stage": "vertex",
+      "runtime_hash": "0xAB1E86137A0240E8",
+      "profile": "vs_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "VS_0xAB1E86137A0240E8.translated.v5.dxc",
+      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/VS_0xAB1E86137A0240E8.translated.v5.dxc.d3dcompile.dxbc",
+      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/VS_0xAB1E86137A0240E8.translated.v5.dxc.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "vertex",
+      "runtime_hash": "0x1E6883FCCDE1F688",
+      "profile": "vs_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "VS_0x1E6883FCCDE1F688.translated.v7.dxc",
+      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/VS_0x1E6883FCCDE1F688.translated.v7.dxc.d3dcompile.dxbc",
+      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/VS_0x1E6883FCCDE1F688.translated.v7.dxc.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "pixel",
+      "runtime_hash": "0xA4A965C189287B99",
+      "profile": "ps_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "PS_0xA4A965C189287B99.translated.v7.dxc",
+      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/PS_0xA4A965C189287B99.translated.v7.dxc.d3dcompile.dxbc",
+      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/PS_0xA4A965C189287B99.translated.v7.dxc.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "vertex",
       "runtime_hash": "0x5D918D91043B3ED0",
       "profile": "vs_5_0",
       "compiler": "D3DCompile",
-      "cache_key": "manual_vs_5D918D91043B3ED0_vs_5_0_layout4_src7E9F55F7C18FD853",
-      "path": "shader_work/cache/d3d12/manual_vs_5D918D91043B3ED0_vs_5_0_layout4_src7E9F55F7C18FD853.dxbc",
-      "source": "shader_work/native_overrides/d3d12/vs_5D918D91043B3ED0.hlsl"
+      "format": "dxbc",
+      "cache_key": "VS_0x5D918D91043B3ED0.translated.v5.dxc",
+      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/VS_0x5D918D91043B3ED0.translated.v5.dxc.d3dcompile.dxbc",
+      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/VS_0x5D918D91043B3ED0.translated.v5.dxc.hlsl"
     },
     {
       "backend": "d3d12",
@@ -17,9 +51,54 @@
       "runtime_hash": "0xC4ED2979F29C9139",
       "profile": "ps_5_0",
       "compiler": "D3DCompile",
-      "cache_key": "manual_ps_C4ED2979F29C9139_ps_5_0_layout4_src629DEA58066BB4CE",
-      "path": "shader_work/cache/d3d12/manual_ps_C4ED2979F29C9139_ps_5_0_layout4_src629DEA58066BB4CE.dxbc",
-      "source": "shader_work/native_overrides/d3d12/ps_C4ED2979F29C9139.hlsl"
+      "format": "dxbc",
+      "cache_key": "PS_0xC4ED2979F29C9139.translated.v5.dxc",
+      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/PS_0xC4ED2979F29C9139.translated.v5.dxc.d3dcompile.dxbc",
+      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/PS_0xC4ED2979F29C9139.translated.v5.dxc.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "vertex",
+      "runtime_hash": "0x81311AC4B1FBD082",
+      "profile": "vs_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "VS_0x81311AC4B1FBD082.translated.v6.dxc",
+      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/VS_0x81311AC4B1FBD082.translated.v6.dxc.d3dcompile.dxbc",
+      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/VS_0x81311AC4B1FBD082.translated.v6.dxc.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "pixel",
+      "runtime_hash": "0x246E20EF10E0DDC7",
+      "profile": "ps_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "PS_0x246E20EF10E0DDC7.translated.v6.dxc",
+      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/PS_0x246E20EF10E0DDC7.translated.v6.dxc.d3dcompile.dxbc",
+      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/PS_0x246E20EF10E0DDC7.translated.v6.dxc.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "vertex",
+      "runtime_hash": "0x5B9B7484417FB9B6",
+      "profile": "vs_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "VS_0x5B9B7484417FB9B6.translated.v7.dxc",
+      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/VS_0x5B9B7484417FB9B6.translated.v7.dxc.d3dcompile.dxbc",
+      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/VS_0x5B9B7484417FB9B6.translated.v7.dxc.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "pixel",
+      "runtime_hash": "0x3A6876055FEC1674",
+      "profile": "ps_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "PS_0x3A6876055FEC1674.translated.v7.dxc",
+      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/PS_0x3A6876055FEC1674.translated.v7.dxc.d3dcompile.dxbc",
+      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/PS_0x3A6876055FEC1674.translated.v7.dxc.hlsl"
     }
   ]
 }
