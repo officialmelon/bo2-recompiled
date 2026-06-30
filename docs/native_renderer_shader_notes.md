@@ -175,6 +175,11 @@ Results:
   - PS `pimp_shader_trivial_63c48fc7_ps_main_ps_3_0_cd38a0f731a8c984a57c101f28952e56.updb`
   - VS `pimp_shader_trivial_63c48fc7_vs_main_vs_3_0_6c5717313f11297d9b331e326b80df12.updb`
 - Direct runtime/static matching remains unproven: `Runtime shader direct matches: 0/8` and `Shader record probe matches: names=0/24 suffixes=0/24 short_hashes=0/24 secondary_payloads=0/24`.
+- `native_shader_inspect.exe` now also compares the captured secondary shader-record dwords against runtime PM4 shader payload prefixes, constrained by the probe stage guess. On `shader_probe_capture_007`, this produces `12/24` probe prefix matches:
+  - PS `pimp_shader_cinematic_519f564_ps_main_ps_3_0_534c8cc25dea1826410cc2974d7e9a80.updb` -> runtime PS `0xC4ED2979F29C9139`, secondary offset `16` dwords, `16` matched payload dwords.
+  - VS `pimp_shader_radiant_190f4788_vs_main_vs_3_0_e10bcefc8da60302d0bbf12b675d091c.updb` -> runtime VS `0x5D918D91043B3ED0`, secondary offset `16` dwords, `16` matched payload dwords.
+  - VS `pimp_shader_trivial_63c48fc7_vs_main_vs_3_0_6c5717313f11297d9b331e326b80df12.updb` -> runtime VS `0x81311AC4B1FBD082`, secondary offset `16` dwords, `16` matched payload dwords.
+- The trivial PS probe does not match a runtime PM4 prefix in the first `32` captured secondary dwords. Its secondary block appears to start with constants or metadata, so the next rule needs either a larger safe secondary snapshot, the `0x82597DF8` shader-bind arguments, or a non-prefix/stripped payload search with false-positive guards.
 
 Ghidra MCP follow-up on the XEX probe call sites:
 

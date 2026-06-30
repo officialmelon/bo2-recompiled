@@ -54,6 +54,7 @@ struct RuntimeShaderUsage {
   std::string payload_trimmed_sha256_le;
   std::string payload_trimmed_sha256_be;
   uint64_t payload_hash_mismatch_count = 0;
+  std::vector<uint32_t> first_payload_dwords;
 };
 
 struct RuntimeShaderPairUsage {
@@ -83,6 +84,7 @@ struct ShaderRecordProbeUsage {
   std::string secondary_sha256_be;
   std::string secondary_trimmed_sha256_le;
   std::string secondary_trimmed_sha256_be;
+  std::vector<uint32_t> secondary_dwords;
 };
 
 struct RuntimeShaderCapture {
@@ -98,6 +100,17 @@ struct RuntimeShaderCapture {
   std::vector<RuntimeShaderUsage> shaders;
   std::vector<RuntimeShaderPairUsage> pairs;
   std::vector<ShaderRecordProbeUsage> probes;
+};
+
+struct PayloadPrefixMatch {
+  std::size_t secondary_offset = 0;
+  std::size_t matched_dwords = 0;
+  std::size_t nonzero_dwords = 0;
+};
+
+struct ProbeRuntimePayloadMatch {
+  const RuntimeShaderUsage *shader = nullptr;
+  PayloadPrefixMatch prefix;
 };
 
 std::string ToLower(std::string value) {
@@ -539,6 +552,10 @@ void RecordPayloadHashes(RuntimeShaderUsage &usage,
     return;
   }
 
+  if (usage.first_payload_dwords.empty()) {
+    usage.first_payload_dwords = dwords;
+  }
+
   const std::string raw_le = Sha256Hex(DwordsToBytes(dwords, true));
   const std::string raw_be = Sha256Hex(DwordsToBytes(dwords, false));
   const std::vector<uint32_t> trimmed = TrimTrailingZeroDwords(dwords);
@@ -565,6 +582,7 @@ void RecordProbeSecondaryHashes(ShaderRecordProbeUsage &usage,
   if (dwords.empty()) {
     return;
   }
+  usage.secondary_dwords = dwords;
   usage.secondary_sha256_le = Sha256Hex(DwordsToBytes(dwords, true));
   usage.secondary_sha256_be = Sha256Hex(DwordsToBytes(dwords, false));
   const std::vector<uint32_t> trimmed = TrimTrailingZeroDwords(dwords);
@@ -640,6 +658,92 @@ const char *StageName(uint32_t stage) {
   default:
     return "??";
   }
+}
+
+std::optional<PayloadPrefixMatch> FindPayloadPrefixMatch(
+    const std::vector<uint32_t> &secondary_dwords,
+    const std::vector<uint32_t> &payload_dwords) {
+  if (secondary_dwords.empty() || payload_dwords.empty()) {
+    return std::nullopt;
+  }
+
+  const std::size_t required_dwords =
+      std::min<std::size_t>(16, payload_dwords.size());
+  if (required_dwords < 4 || secondary_dwords.size() < required_dwords) {
+    return std::nullopt;
+  }
+
+  std::optional<PayloadPrefixMatch> best;
+  for (std::size_t offset = 0;
+       offset + required_dwords <= secondary_dwords.size(); ++offset) {
+    const std::size_t available = secondary_dwords.size() - offset;
+    const std::size_t limit = std::min(available, payload_dwords.size());
+    std::size_t matched = 0;
+    std::size_t nonzero = 0;
+    while (matched < limit &&
+           secondary_dwords[offset + matched] == payload_dwords[matched]) {
+      if (payload_dwords[matched] != 0) {
+        ++nonzero;
+      }
+      ++matched;
+    }
+
+    if (matched < required_dwords || nonzero < 2) {
+      continue;
+    }
+
+    PayloadPrefixMatch candidate{
+        offset,
+        matched,
+        nonzero,
+    };
+    if (!best || candidate.matched_dwords > best->matched_dwords ||
+        (candidate.matched_dwords == best->matched_dwords &&
+         candidate.nonzero_dwords > best->nonzero_dwords) ||
+        (candidate.matched_dwords == best->matched_dwords &&
+         candidate.nonzero_dwords == best->nonzero_dwords &&
+         candidate.secondary_offset < best->secondary_offset)) {
+      best = candidate;
+    }
+  }
+
+  return best;
+}
+
+std::optional<ProbeRuntimePayloadMatch> FindProbeRuntimePayloadMatch(
+    const ShaderRecordProbeUsage &probe,
+    const std::vector<RuntimeShaderUsage> &shaders) {
+  std::optional<ProbeRuntimePayloadMatch> best;
+  for (const RuntimeShaderUsage &shader : shaders) {
+    if (probe.stage_guess != "??" &&
+        probe.stage_guess != StageName(shader.stage)) {
+      continue;
+    }
+
+    const std::optional<PayloadPrefixMatch> prefix =
+        FindPayloadPrefixMatch(probe.secondary_dwords,
+                               shader.first_payload_dwords);
+    if (!prefix) {
+      continue;
+    }
+
+    ProbeRuntimePayloadMatch candidate{&shader, *prefix};
+    if (!best ||
+        candidate.prefix.matched_dwords > best->prefix.matched_dwords ||
+        (candidate.prefix.matched_dwords == best->prefix.matched_dwords &&
+         candidate.prefix.nonzero_dwords > best->prefix.nonzero_dwords) ||
+        (candidate.prefix.matched_dwords == best->prefix.matched_dwords &&
+         candidate.prefix.nonzero_dwords == best->prefix.nonzero_dwords &&
+         candidate.shader->draw_count > best->shader->draw_count) ||
+        (candidate.prefix.matched_dwords == best->prefix.matched_dwords &&
+         candidate.prefix.nonzero_dwords == best->prefix.nonzero_dwords &&
+         candidate.shader->draw_count == best->shader->draw_count &&
+         candidate.shader->load_count > best->shader->load_count)) {
+      best = candidate;
+    }
+  }
+
+  return best;
 }
 
 bool LoadRuntimeShaderCapture(const std::filesystem::path &path,
@@ -1051,6 +1155,42 @@ void MatchRuntimeShaders(std::string_view index_text,
               << probe_short_hash_matches << "/" << probe_count
               << " secondary_payloads=" << probe_secondary_matches << "/"
               << probe_count << "\n";
+
+    uint64_t probe_runtime_payload_matches = 0;
+    std::cout << "\nShader record probe runtime payload-prefix match:\n";
+    for (std::size_t i = 0; i < probe_count; ++i) {
+      const ShaderRecordProbeUsage &probe = capture.probes[i];
+      const std::optional<ProbeRuntimePayloadMatch> match =
+          FindProbeRuntimePayloadMatch(probe, capture.shaders);
+      std::cout << "  probe[" << i << "] " << probe.stage_guess
+                << " name=" << probe.shader_name;
+      if (!match) {
+        std::cout << " runtime_payload_prefix_match=no\n";
+        continue;
+      }
+
+      ++probe_runtime_payload_matches;
+      const RuntimeShaderUsage &shader = *match->shader;
+      std::cout << " runtime_payload_prefix_match=yes"
+                << " runtime_hash=0x" << std::hex << std::uppercase
+                << shader.hash << std::dec
+                << " secondary_offset_dwords="
+                << match->prefix.secondary_offset
+                << " matched_dwords=" << match->prefix.matched_dwords
+                << " nonzero_dwords=" << match->prefix.nonzero_dwords
+                << " runtime_payload_dwords="
+                << shader.first_payload_dwords.size()
+                << " draws=" << shader.draw_count
+                << " loads=" << shader.load_count << "\n";
+      if (!probe.shader_name_short_hash.empty()) {
+        std::cout << "    family=" << probe.shader_name_family
+                  << " short_hash=" << probe.shader_name_short_hash
+                  << " entry=" << probe.shader_name_entry
+                  << " profile=" << probe.shader_name_profile << "\n";
+      }
+    }
+    std::cout << "Shader record probe runtime payload-prefix matches: "
+              << probe_runtime_payload_matches << "/" << probe_count << "\n";
   }
 }
 
