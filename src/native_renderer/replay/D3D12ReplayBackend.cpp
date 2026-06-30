@@ -903,7 +903,96 @@ std::size_t CountDrawsForShaderPair(const ReplayCapture &capture,
   return count;
 }
 
+struct PipelineKey {
+  uint64_t vertex_shader_hash = 0;
+  uint64_t pixel_shader_hash = 0;
+  uint32_t topology = 0;
+  uint32_t render_target_format = 0;
+  uint32_t render_state_present = 0;
+  uint32_t rb_colorcontrol = 0;
+  uint32_t rb_color_mask = 0;
+  uint32_t rb_depthcontrol = 0;
+  uint32_t rb_stencilrefmask = 0;
+  uint32_t rb_stencilrefmask_bf = 0;
+  uint32_t pa_cl_clip_cntl = 0;
+  uint32_t pa_su_sc_mode_cntl = 0;
+  uint32_t depth_format = 0;
+  uint32_t color_format0 = 0;
+  uint32_t blendcontrol0 = 0;
+  uint32_t msaa_samples = 0;
+  uint32_t depth_test_enable = 0;
+  uint32_t depth_write_enable = 0;
+  uint32_t stencil_enable = 0;
+  uint32_t depth_func = 0;
+  uint32_t cull_mode = 0;
+  uint32_t fill_mode = 0;
+  uint32_t front_face = 0;
+
+  bool operator<(const PipelineKey &other) const {
+    return std::tie(vertex_shader_hash, pixel_shader_hash, topology,
+                    render_target_format, render_state_present,
+                    rb_colorcontrol, rb_color_mask, rb_depthcontrol,
+                    rb_stencilrefmask, rb_stencilrefmask_bf, pa_cl_clip_cntl,
+                    pa_su_sc_mode_cntl, depth_format, color_format0,
+                    blendcontrol0, msaa_samples, depth_test_enable,
+                    depth_write_enable, stencil_enable, depth_func, cull_mode,
+                    fill_mode, front_face) <
+           std::tie(other.vertex_shader_hash, other.pixel_shader_hash,
+                    other.topology, other.render_target_format,
+                    other.render_state_present, other.rb_colorcontrol,
+                    other.rb_color_mask, other.rb_depthcontrol,
+                    other.rb_stencilrefmask, other.rb_stencilrefmask_bf,
+                    other.pa_cl_clip_cntl, other.pa_su_sc_mode_cntl,
+                    other.depth_format, other.color_format0,
+                    other.blendcontrol0, other.msaa_samples,
+                    other.depth_test_enable, other.depth_write_enable,
+                    other.stencil_enable, other.depth_func, other.cull_mode,
+                    other.fill_mode, other.front_face);
+  }
+};
+
 using ShaderPairKey = std::tuple<uint64_t, uint64_t>;
+
+uint32_t BoolKey(bool value) { return value ? 1u : 0u; }
+
+uint32_t FirstOrZero(const std::vector<uint32_t> &values) {
+  return values.empty() ? 0u : values.front();
+}
+
+PipelineKey MakePipelineKey(const ReplayDrawState &state,
+                            const PreparedRealDraw &prepared,
+                            DXGI_FORMAT render_target_format) {
+  PipelineKey key;
+  key.vertex_shader_hash = state.vertex_shader.hash;
+  key.pixel_shader_hash = state.pixel_shader.hash;
+  key.topology = static_cast<uint32_t>(prepared.topology);
+  key.render_target_format = static_cast<uint32_t>(render_target_format);
+  const RenderStateRecord *render_state =
+      state.draw.render_state.present ? &state.draw.render_state : nullptr;
+  if (!render_state) {
+    return key;
+  }
+  key.render_state_present = 1;
+  key.rb_colorcontrol = render_state->rb_colorcontrol;
+  key.rb_color_mask = render_state->rb_color_mask;
+  key.rb_depthcontrol = render_state->rb_depthcontrol;
+  key.rb_stencilrefmask = render_state->rb_stencilrefmask;
+  key.rb_stencilrefmask_bf = render_state->rb_stencilrefmask_bf;
+  key.pa_cl_clip_cntl = render_state->pa_cl_clip_cntl;
+  key.pa_su_sc_mode_cntl = render_state->pa_su_sc_mode_cntl;
+  key.depth_format = render_state->depth_format;
+  key.color_format0 = FirstOrZero(render_state->color_format);
+  key.blendcontrol0 = FirstOrZero(render_state->rb_blendcontrol);
+  key.msaa_samples = render_state->msaa_samples;
+  key.depth_test_enable = BoolKey(render_state->depth_test_enable);
+  key.depth_write_enable = BoolKey(render_state->depth_write_enable);
+  key.stencil_enable = BoolKey(render_state->stencil_enable);
+  key.depth_func = render_state->depth_func;
+  key.cull_mode = render_state->cull_mode;
+  key.fill_mode = render_state->fill_mode;
+  key.front_face = render_state->front_face;
+  return key;
+}
 
 struct FrameRealReplayPlan {
   std::size_t frame_index = 0;
@@ -2664,14 +2753,15 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       rtv_heap->GetCPUDescriptorHandleForHeapStart();
   device->CreateRenderTargetView(target.Get(), nullptr, rtv);
 
-  std::map<ShaderPairKey, D3D12ReplayPipeline> pipelines;
+  std::map<PipelineKey, D3D12ReplayPipeline> pipelines;
   std::size_t pso_cache_hits = 0;
   std::size_t pso_cache_misses = 0;
   std::size_t diagnostic_pipeline_count = 0;
   std::size_t cache_index_write_count = 0;
   auto get_pipeline_for_draw =
-      [&](const ReplayDrawState &state) -> D3D12ReplayPipeline * {
-    const ShaderPairKey key{state.vertex_shader.hash, state.pixel_shader.hash};
+      [&](const ReplayDrawState &state,
+          const PreparedRealDraw &prepared_draw) -> D3D12ReplayPipeline * {
+    const PipelineKey key = MakePipelineKey(state, prepared_draw, format);
     auto found = pipelines.find(key);
     if (found != pipelines.end()) {
       ++pso_cache_hits;
@@ -2747,7 +2837,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   pipeline_supported_draws.reserve(prepared_draws.size());
   for (const PreparedRealDraw &prepared_draw : prepared_draws) {
     const ReplayDrawState &state = capture.draws[prepared_draw.draw_index];
-    if (get_pipeline_for_draw(state)) {
+    if (get_pipeline_for_draw(state, prepared_draw)) {
       pipeline_supported_draws.push_back(prepared_draw);
       continue;
     }
@@ -3041,7 +3131,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   for (const UploadedRealDraw &uploaded : uploaded_draws) {
     const ReplayDrawState &uploaded_state =
         capture.draws[uploaded.prepared.draw_index];
-    D3D12ReplayPipeline *pipeline = get_pipeline_for_draw(uploaded_state);
+    D3D12ReplayPipeline *pipeline =
+        get_pipeline_for_draw(uploaded_state, uploaded.prepared);
     if (!pipeline) {
       return false;
     }
