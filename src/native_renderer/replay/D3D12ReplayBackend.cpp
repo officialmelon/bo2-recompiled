@@ -34,6 +34,8 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
+constexpr std::size_t kMaxRealReplayTextureSlots = 4;
+
 bool CompileShader(const char *source, const char *entry, const char *target,
                    const char *source_name, ComPtr<ID3DBlob> &blob,
                    std::string &error);
@@ -481,18 +483,19 @@ struct UploadedRealDraw {
   PreparedCapturedConstants constants;
   ComPtr<ID3D12Resource> vertex_buffer;
   ComPtr<ID3D12Resource> index_buffer;
-  ComPtr<ID3D12Resource> texture;
-  ComPtr<ID3D12Resource> texture_upload;
+  std::array<ComPtr<ID3D12Resource>, kMaxRealReplayTextureSlots> textures;
+  std::array<ComPtr<ID3D12Resource>, kMaxRealReplayTextureSlots>
+      texture_uploads;
   uint64_t vertex_bytes = 0;
   uint64_t index_bytes = 0;
-  uint32_t texture_srv_index = 0;
-  uint32_t sampler_descriptor_index = 0;
-  uint32_t texture_width = 1;
-  uint32_t texture_height = 1;
-  uint32_t texture_format = 0;
-  bool texture_from_capture = false;
-  bool sampler_from_capture = false;
-  std::string texture_note;
+  uint32_t texture_srv_base_index = 0;
+  uint32_t sampler_descriptor_base_index = 0;
+  std::array<uint32_t, kMaxRealReplayTextureSlots> texture_widths{};
+  std::array<uint32_t, kMaxRealReplayTextureSlots> texture_heights{};
+  std::array<uint32_t, kMaxRealReplayTextureSlots> texture_formats{};
+  std::array<bool, kMaxRealReplayTextureSlots> texture_from_capture{};
+  std::array<bool, kMaxRealReplayTextureSlots> sampler_from_capture{};
+  std::array<std::string, kMaxRealReplayTextureSlots> texture_notes;
 };
 
 struct NativeShaderOverridePair {
@@ -1050,14 +1053,15 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
                                 std::string &error) {
   D3D12_DESCRIPTOR_RANGE texture_srv_range{};
   texture_srv_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-  texture_srv_range.NumDescriptors = 1;
+  texture_srv_range.NumDescriptors =
+      static_cast<UINT>(kMaxRealReplayTextureSlots);
   texture_srv_range.BaseShaderRegister = 0;
   texture_srv_range.RegisterSpace = 0;
   texture_srv_range.OffsetInDescriptorsFromTableStart = 0;
 
   D3D12_DESCRIPTOR_RANGE sampler_range{};
   sampler_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
-  sampler_range.NumDescriptors = 1;
+  sampler_range.NumDescriptors = static_cast<UINT>(kMaxRealReplayTextureSlots);
   sampler_range.BaseShaderRegister = 0;
   sampler_range.RegisterSpace = 0;
   sampler_range.OffsetInDescriptorsFromTableStart = 0;
@@ -2402,8 +2406,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
 
   D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc{};
   srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+  const std::size_t texture_descriptor_count =
+      std::max<std::size_t>(1, uploaded_draws.size() *
+                                   kMaxRealReplayTextureSlots);
   srv_heap_desc.NumDescriptors =
-      static_cast<UINT>(std::max<std::size_t>(1, uploaded_draws.size()));
+      static_cast<UINT>(texture_descriptor_count);
   srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   ComPtr<ID3D12DescriptorHeap> srv_heap;
   if (!CheckHr(
@@ -2419,7 +2426,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   D3D12_DESCRIPTOR_HEAP_DESC sampler_heap_desc{};
   sampler_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
   sampler_heap_desc.NumDescriptors =
-      static_cast<UINT>(std::max<std::size_t>(1, uploaded_draws.size()));
+      static_cast<UINT>(texture_descriptor_count);
   sampler_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   ComPtr<ID3D12DescriptorHeap> sampler_heap;
   if (!CheckHr(device->CreateDescriptorHeap(&sampler_heap_desc,
@@ -2442,69 +2449,80 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   const uint8_t white_texel[4] = {0xFF, 0xFF, 0xFF, 0xFF};
   for (std::size_t i = 0; i < uploaded_draws.size(); ++i) {
     UploadedRealDraw &uploaded = uploaded_draws[i];
-    uploaded.texture_srv_index = static_cast<uint32_t>(i);
-    uploaded.sampler_descriptor_index = static_cast<uint32_t>(i);
-    D3D12_CPU_DESCRIPTOR_HANDLE descriptor = srv_cpu_start;
-    descriptor.ptr += static_cast<SIZE_T>(i) * srv_descriptor_size;
-    D3D12_CPU_DESCRIPTOR_HANDLE sampler_descriptor = sampler_cpu_start;
-    sampler_descriptor.ptr +=
-        static_cast<SIZE_T>(i) * sampler_descriptor_size;
+    uploaded.texture_srv_base_index =
+        static_cast<uint32_t>(i * kMaxRealReplayTextureSlots);
+    uploaded.sampler_descriptor_base_index =
+        static_cast<uint32_t>(i * kMaxRealReplayTextureSlots);
 
     const ReplayDrawState &uploaded_state =
         capture.draws[uploaded.prepared.draw_index];
-    std::vector<uint8_t> texture_rgba;
-    std::string texture_reason;
-    const TextureFetchRecord *selected_fetch = nullptr;
-    for (const TextureFetchRecord &fetch : uploaded_state.draw.texture_fetches) {
-      if (DecodeTextureRgba8(fetch, texture_rgba, texture_reason)) {
-        selected_fetch = &fetch;
-        break;
-      }
-      ++unsupported_texture_count;
-      if (texture_reason.empty()) {
-        texture_reason = "texture decode failed";
-      }
-    }
+    for (std::size_t slot = 0; slot < kMaxRealReplayTextureSlots; ++slot) {
+      const std::size_t descriptor_index =
+          i * kMaxRealReplayTextureSlots + slot;
+      D3D12_CPU_DESCRIPTOR_HANDLE descriptor = srv_cpu_start;
+      descriptor.ptr += static_cast<SIZE_T>(descriptor_index) *
+                        srv_descriptor_size;
+      D3D12_CPU_DESCRIPTOR_HANDLE sampler_descriptor = sampler_cpu_start;
+      sampler_descriptor.ptr += static_cast<SIZE_T>(descriptor_index) *
+                                sampler_descriptor_size;
 
-    if (selected_fetch) {
-      uploaded.texture_width = selected_fetch->width;
-      uploaded.texture_height = selected_fetch->height;
-      uploaded.texture_format = selected_fetch->format;
-      uploaded.texture_from_capture = true;
-      uploaded.sampler_from_capture = true;
-      uploaded.texture_note = "captured";
-      if (!CreateTexture2DRgba8(device.Get(), list.Get(), texture_rgba.data(),
-                                uploaded.texture_width,
-                                uploaded.texture_height, uploaded.texture,
-                                uploaded.texture_upload, error)) {
-        return false;
+      std::vector<uint8_t> texture_rgba;
+      std::string texture_reason;
+      const TextureFetchRecord *selected_fetch = nullptr;
+      if (slot < uploaded_state.draw.texture_fetches.size()) {
+        const TextureFetchRecord &fetch = uploaded_state.draw.texture_fetches[slot];
+        if (DecodeTextureRgba8(fetch, texture_rgba, texture_reason)) {
+          selected_fetch = &fetch;
+        } else {
+          ++unsupported_texture_count;
+          if (texture_reason.empty()) {
+            texture_reason = "texture decode failed";
+          }
+        }
       }
-      ++captured_texture_count;
-      ++captured_sampler_count;
-      if (selected_fetch->clamp_modes_present) {
-        ++exact_sampler_clamp_count;
+
+      if (selected_fetch) {
+        uploaded.texture_widths[slot] = selected_fetch->width;
+        uploaded.texture_heights[slot] = selected_fetch->height;
+        uploaded.texture_formats[slot] = selected_fetch->format;
+        uploaded.texture_from_capture[slot] = true;
+        uploaded.sampler_from_capture[slot] = true;
+        uploaded.texture_notes[slot] = "captured";
+        if (!CreateTexture2DRgba8(
+                device.Get(), list.Get(), texture_rgba.data(),
+                uploaded.texture_widths[slot],
+                uploaded.texture_heights[slot], uploaded.textures[slot],
+                uploaded.texture_uploads[slot], error)) {
+          return false;
+        }
+        ++captured_texture_count;
+        ++captured_sampler_count;
+        if (selected_fetch->clamp_modes_present) {
+          ++exact_sampler_clamp_count;
+        } else {
+          ++fallback_sampler_clamp_count;
+        }
       } else {
+        uploaded.texture_widths[slot] = 1;
+        uploaded.texture_heights[slot] = 1;
+        uploaded.texture_formats[slot] = 6;
+        uploaded.texture_from_capture[slot] = false;
+        uploaded.sampler_from_capture[slot] = false;
+        uploaded.texture_notes[slot] =
+            texture_reason.empty() ? "no texture fetch" : texture_reason;
+        if (!CreateTexture2DRgba8(device.Get(), list.Get(), white_texel, 1, 1,
+                                  uploaded.textures[slot],
+                                  uploaded.texture_uploads[slot], error)) {
+          return false;
+        }
+        ++fallback_texture_count;
+        ++fallback_sampler_count;
         ++fallback_sampler_clamp_count;
       }
-    } else {
-      uploaded.texture_width = 1;
-      uploaded.texture_height = 1;
-      uploaded.texture_format = 6;
-      uploaded.texture_from_capture = false;
-      uploaded.sampler_from_capture = false;
-      uploaded.texture_note =
-          texture_reason.empty() ? "no texture fetch" : texture_reason;
-      if (!CreateTexture2DRgba8(device.Get(), list.Get(), white_texel, 1, 1,
-                                uploaded.texture, uploaded.texture_upload,
-                                error)) {
-        return false;
-      }
-      ++fallback_texture_count;
-      ++fallback_sampler_count;
-      ++fallback_sampler_clamp_count;
+      CreateTextureSrv(device.Get(), uploaded.textures[slot].Get(),
+                       descriptor);
+      CreateSampler(device.Get(), selected_fetch, sampler_descriptor);
     }
-    CreateTextureSrv(device.Get(), uploaded.texture.Get(), descriptor);
-    CreateSampler(device.Get(), selected_fetch, sampler_descriptor);
   }
   std::cout << "D3D12 real replay submitted " << uploaded_draws.size()
             << " supported draw(s) for shader pair VS="
@@ -2570,13 +2588,13 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         uploaded.constants.dwords.data(), 0);
     D3D12_GPU_DESCRIPTOR_HANDLE texture_srv =
         srv_heap->GetGPUDescriptorHandleForHeapStart();
-    texture_srv.ptr += static_cast<UINT64>(uploaded.texture_srv_index) *
+    texture_srv.ptr += static_cast<UINT64>(uploaded.texture_srv_base_index) *
                        srv_descriptor_size;
     list->SetGraphicsRootDescriptorTable(2, texture_srv);
     D3D12_GPU_DESCRIPTOR_HANDLE sampler_handle =
         sampler_heap->GetGPUDescriptorHandleForHeapStart();
     sampler_handle.ptr +=
-        static_cast<UINT64>(uploaded.sampler_descriptor_index) *
+        static_cast<UINT64>(uploaded.sampler_descriptor_base_index) *
         sampler_descriptor_size;
     list->SetGraphicsRootDescriptorTable(3, sampler_handle);
 
