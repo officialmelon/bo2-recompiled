@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -31,6 +32,7 @@ struct CliOptions {
   std::filesystem::path capture_path;
   std::filesystem::path shader_path;
   std::filesystem::path microcode_path;
+  std::filesystem::path disasm_output_path;
   bool show_summary = false;
   bool find_hash = false;
   bool list_runtime_shaders = false;
@@ -153,6 +155,8 @@ void PrintHelp() {
             << "                     Xenos microcode file to inspect\n"
             << "  --dump-words      Dump big-endian microcode dwords\n"
             << "  --disassemble     Emit an unknown-preserving raw Xenos dword listing\n"
+            << "  --write-disasm <path>\n"
+            << "                     Write full raw listing to file or output directory\n"
             << "  --top-shaders <n>  Runtime shader/pair print limit (default 20)\n"
             << "  --hash <value>     Hash or substring to find\n"
             << "  --find             Search the index for --hash\n"
@@ -350,6 +354,44 @@ std::string ClassifyRawXenosWord(uint32_t word) {
   }
 }
 
+void EmitMicrocodeWords(std::ostream &out, const std::filesystem::path &path,
+                        const std::vector<uint8_t> &bytes, std::size_t limit,
+                        bool disassemble) {
+  const std::size_t dword_count = bytes.size() / 4;
+  const std::size_t count = std::min(limit, dword_count);
+  out << "Xenos microcode: " << path.string() << "\n";
+  out << "  file_bytes=" << bytes.size() << " dwords=" << dword_count
+      << "\n";
+  if (bytes.size() % 4 != 0) {
+    out << "  trailing_bytes=" << (bytes.size() % 4) << "\n";
+  }
+  if (const std::string technique =
+          FirstAsciiRunContaining(bytes, "pimp_technique_");
+      !technique.empty()) {
+    out << "  technique=" << technique << "\n";
+  }
+  if (const std::string shader = FirstAsciiRunContaining(bytes, "pimp_shader_");
+      !shader.empty()) {
+    out << "  shader_name=" << shader << "\n";
+  }
+
+  out << (disassemble ? "\nRaw Xenos dword listing:\n"
+                      : "\nMicrocode dwords (big-endian):\n");
+  for (std::size_t i = 0; i < count; ++i) {
+    const uint32_t word = ReadBE32(bytes, i * 4);
+    out << "  [" << std::setw(4) << std::setfill('0') << i
+        << std::setfill(' ') << "] " << Hex32(word);
+    if (disassemble) {
+      out << "  " << ClassifyRawXenosWord(word) << " raw=" << Hex32(word);
+    }
+    out << "\n";
+  }
+  if (count < dword_count) {
+    out << "  ... truncated after " << count << " of " << dword_count
+        << " dwords; use --limit to print more\n";
+  }
+}
+
 bool PrintMicrocodeWords(const std::filesystem::path &path,
                          std::size_t limit, bool disassemble,
                          std::string &error) {
@@ -358,39 +400,69 @@ bool PrintMicrocodeWords(const std::filesystem::path &path,
     error = "could not read microcode: " + path.string();
     return false;
   }
-  const std::size_t dword_count = bytes.size() / 4;
-  const std::size_t count = std::min(limit, dword_count);
-  std::cout << "Xenos microcode: " << path.string() << "\n";
-  std::cout << "  file_bytes=" << bytes.size()
-            << " dwords=" << dword_count << "\n";
-  if (bytes.size() % 4 != 0) {
-    std::cout << "  trailing_bytes=" << (bytes.size() % 4) << "\n";
+  EmitMicrocodeWords(std::cout, path, bytes, limit, disassemble);
+  return true;
+}
+
+std::string InferMicrocodeStageFromPath(const std::filesystem::path &path) {
+  const std::string stem = ToLower(path.stem().string());
+  if (stem.rfind("pixel_", 0) == 0) {
+    return "pixel";
   }
-  if (const std::string technique =
-          FirstAsciiRunContaining(bytes, "pimp_technique_");
-      !technique.empty()) {
-    std::cout << "  technique=" << technique << "\n";
+  if (stem.rfind("vertex_", 0) == 0) {
+    return "vertex";
   }
-  if (const std::string shader = FirstAsciiRunContaining(bytes, "pimp_shader_");
-      !shader.empty()) {
-    std::cout << "  shader_name=" << shader << "\n";
+  return "unknown";
+}
+
+std::filesystem::path MakeDisasmArtifactPath(
+    const std::filesystem::path &requested,
+    const std::filesystem::path &microcode_path) {
+  if (requested.has_extension()) {
+    return requested;
+  }
+  const std::string stem = microcode_path.stem().string();
+  const std::string lower_stem = ToLower(stem);
+  std::string filename = stem;
+  if (lower_stem.rfind("pixel_", 0) != 0 &&
+      lower_stem.rfind("vertex_", 0) != 0) {
+    filename = InferMicrocodeStageFromPath(microcode_path) + "_" + stem;
+  }
+  return requested / (filename + ".xenos.asm");
+}
+
+bool WriteMicrocodeDisassemblyArtifact(const std::filesystem::path &path,
+                                       const std::filesystem::path &requested,
+                                       std::filesystem::path &written_path,
+                                       std::string &error) {
+  std::vector<uint8_t> bytes;
+  if (!LoadBinary(path, bytes)) {
+    error = "could not read microcode: " + path.string();
+    return false;
   }
 
-  std::cout << (disassemble ? "\nRaw Xenos dword listing:\n"
-                            : "\nMicrocode dwords (big-endian):\n");
-  for (std::size_t i = 0; i < count; ++i) {
-    const uint32_t word = ReadBE32(bytes, i * 4);
-    std::cout << "  [" << std::setw(4) << std::setfill('0') << i
-              << std::setfill(' ') << "] " << Hex32(word);
-    if (disassemble) {
-      std::cout << "  " << ClassifyRawXenosWord(word)
-                << " raw=" << Hex32(word);
+  written_path = MakeDisasmArtifactPath(requested, path);
+  std::error_code ec;
+  const std::filesystem::path parent = written_path.parent_path();
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      error = "could not create disassembly output directory " +
+              parent.string() + ": " + ec.message();
+      return false;
     }
-    std::cout << "\n";
   }
-  if (count < dword_count) {
-    std::cout << "  ... truncated after " << count << " of " << dword_count
-              << " dwords; use --limit to print more\n";
+
+  std::ofstream file(written_path, std::ios::binary);
+  if (!file) {
+    error = "could not open disassembly output: " + written_path.string();
+    return false;
+  }
+  EmitMicrocodeWords(file, path, bytes, std::numeric_limits<std::size_t>::max(),
+                     true);
+  if (!file) {
+    error = "could not write disassembly output: " + written_path.string();
+    return false;
   }
   return true;
 }
@@ -1527,6 +1599,12 @@ int main(int argc, char **argv) {
       cli.dump_words = true;
     } else if (arg == "--disassemble") {
       cli.disassemble = true;
+    } else if (arg == "--write-disasm") {
+      const char *value = require_value("--write-disasm");
+      if (!value) {
+        return 2;
+      }
+      cli.disasm_output_path = value;
     } else if (arg == "--top-shaders") {
       const char *value = require_value("--top-shaders");
       if (!value || !ParseSize(value, cli.top_shaders)) {
@@ -1553,9 +1631,10 @@ int main(int argc, char **argv) {
     }
   }
 
-  const bool file_inspection = cli.dump_header || cli.dump_words ||
-                               cli.disassemble || !cli.shader_path.empty() ||
-                               !cli.microcode_path.empty();
+  const bool file_inspection =
+      cli.dump_header || cli.dump_words || cli.disassemble ||
+      !cli.shader_path.empty() || !cli.microcode_path.empty() ||
+      !cli.disasm_output_path.empty();
   if (!cli.show_summary && !cli.find_hash && !cli.list_runtime_shaders &&
       !cli.match_runtime_shaders && !file_inspection) {
     cli.show_summary = true;
@@ -1578,6 +1657,10 @@ int main(int argc, char **argv) {
     std::cerr << "--dump-words/--disassemble require --microcode <path>\n";
     return 2;
   }
+  if (!cli.disasm_output_path.empty() && cli.microcode_path.empty()) {
+    std::cerr << "--write-disasm requires --microcode <path>\n";
+    return 2;
+  }
 
   bool printed_anything = false;
   if (cli.dump_header) {
@@ -1586,6 +1669,20 @@ int main(int argc, char **argv) {
       std::cerr << error << "\n";
       return 1;
     }
+    printed_anything = true;
+  }
+  if (!cli.disasm_output_path.empty()) {
+    std::filesystem::path written_path;
+    std::string error;
+    if (!WriteMicrocodeDisassemblyArtifact(
+            cli.microcode_path, cli.disasm_output_path, written_path, error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    std::cout << "wrote_disasm=" << written_path.string() << "\n";
     printed_anything = true;
   }
   if (cli.dump_words || cli.disassemble) {

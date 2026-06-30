@@ -578,6 +578,7 @@ native_shader_inspect.exe --shader C:\Users\braxt\bo2-recompiled\shader_work\sha
 native_shader_inspect.exe --shader C:\Users\braxt\bo2-recompiled\shader_work\shaders\containers\vertex_002ee957c754be9d2a671f0dc0b63fca861b2398f5483703ec93f861466bf80d.bin --dump-header
 native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.ucode --dump-words --limit 16
 native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\vertex_4cbe8078e63245600ee471c244caa9b01c3943e54859b5ce9cabeb96d961553b.ucode --disassemble --limit 12
+native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.ucode --write-disasm C:\Users\braxt\bo2-recompiled\shader_work\out\disasm
 native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --match-runtime-shaders --top-shaders 24
 ```
 
@@ -586,8 +587,15 @@ native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shad
 - Vertex container header: flags `0x102A1101`, stage guess `vertex`, file bytes `2716`, virtual size `1224`, physical size `1492`, name offset `0x00000080`, metadata offset `0x00000444`, microcode descriptor offset `0x0000046C`, descriptor size candidate `1428`, shader name `pimp_shader_treecanopy_2e501d62_vs_main_vs_3_0_d9a8545395d8ec777b8591bb6e2feac1.updb`.
 - Pixel microcode inspection: file bytes `1752`, `438` dwords, recovered `pimp_technique_sw4_3d_char_skin_tension_9644a939` and `pimp_shader_sw4_3d_char_skin_tension_42bbfcd4.hlsl`, then dumped big-endian dwords.
 - Vertex microcode inspection: file bytes `1428`, `357` dwords, recovered `pimp_technique_treecanopy_fd5f4522` and `pimp_shader_treecanopy_b03ff570.hlsl`, then emitted an unknown-preserving raw Xenos dword listing.
+- Raw disassembly artifact writing: `--write-disasm C:\Users\braxt\bo2-recompiled\shader_work\out\disasm` creates `pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.xenos.asm` and prints the written path. The file is a full raw listing, not a decoded shader IR.
 - Regression shader matching on `shader_probe_capture_007` is unchanged: direct runtime/static matches remain `0/8`, direct shader-record matches remain `0/24`, and conservative runtime payload-prefix matches remain `12/24`.
 - Status: this is shader container parsing and raw microcode listing infrastructure. It is not yet a true Xenos shader disassembler, backend-neutral shader IR, HLSL/DXIL generation, or SPIR-V generation.
+
+Ghidra-backed shader binder evidence from this pass:
+
+- XEX `0x82597DF8` reads the pass-relative shader record at `r5 + ((r10 + 0x70) << 3)`, reads microcode byte size from `record + 0x36c`, reads microcode offset from `record + 0x368`, adds pass base `*(r5 + 0x20)`, emits the shader-load PM4 packet, and copies the payload bytes.
+- XEX `0x82598140` calls `0x82597F50` at `0x82598310` for PS-side shader argument data and has the only current xrefs to `0x82597DF8` at `0x825985d8` and `0x825986a8`.
+- PC/PDB `Material_LoadPassVertexShader` and `Material_LoadPassPixelShader` register shader names and call `Material_SetPassShaderArguments_DX`; the PC function uses D3D reflection to produce argument/semantic metadata. The XEX path still needs equivalent metadata recovery from material records or Xenos shader decode.
 
 ## Current hard blocker
 

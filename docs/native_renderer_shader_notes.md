@@ -46,6 +46,7 @@ native_shader_inspect.exe --shader C:\Users\braxt\bo2-recompiled\shader_work\sha
 native_shader_inspect.exe --shader C:\Users\braxt\bo2-recompiled\shader_work\shaders\containers\vertex_002ee957c754be9d2a671f0dc0b63fca861b2398f5483703ec93f861466bf80d.bin --dump-header
 native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.ucode --dump-words --limit 16
 native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\vertex_4cbe8078e63245600ee471c244caa9b01c3943e54859b5ce9cabeb96d961553b.ucode --disassemble --limit 12
+native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.ucode --write-disasm C:\Users\braxt\bo2-recompiled\shader_work\out\disasm
 ```
 
 Verified pixel container header:
@@ -75,6 +76,17 @@ Verified vertex container header:
 - Microcode descriptor: `[0]=0x00000040`, `[1]=0x00000594`; descriptor size candidate `1428`, matching the tested vertex `.ucode` byte length.
 
 The microcode commands print big-endian dwords, recover embedded `pimp_technique_*` / `pimp_shader_*` strings, and can emit a raw unknown-preserving Xenos dword listing. This is intentionally not yet a real opcode disassembler or shader IR translator; it preserves unknown words explicitly so the next decoder work has stable, diffable evidence.
+
+`--write-disasm` writes the full raw listing to a deterministic artifact. When the output argument is a directory, the tool names the file from the microcode filename, for example:
+
+- `shader_work/out/disasm/pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.xenos.asm`
+- `shader_work/out/disasm/vertex_4cbe8078e63245600ee471c244caa9b01c3943e54859b5ce9cabeb96d961553b.xenos.asm`
+
+Ghidra evidence for the matching runtime path:
+
+- XEX `0x82597DF8` loads a pass-relative shader record from `r5 + ((r10 + 0x70) << 3)`, reads microcode size at record offset `0x36c`, reads microcode offset at record offset `0x368`, adds pass base `*(r5 + 0x20)`, then emits/copies the microcode payload into the command buffer.
+- XEX `0x82598140` calls the constant/argument uploader `0x82597F50` for PS-side record data at caller `0x82598310`, then reaches the `0x82597DF8` bind calls at `0x825985d8` and `0x825986a8`.
+- PC/PDB `Material_LoadPassVertexShader` and `Material_LoadPassPixelShader` call `Material_Register*Shader`, then `Material_SetPassShaderArguments_DX`; `Material_SetPassShaderArguments_DX` uses D3D reflection to derive shader arguments and stream semantics. The XEX path therefore still needs recovered material argument metadata or an equivalent Xenos reflection/decode path before automatic HLSL generation can replace manual overrides.
 
 ## Game references
 
