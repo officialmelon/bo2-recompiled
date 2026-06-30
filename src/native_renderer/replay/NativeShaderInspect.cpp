@@ -33,6 +33,7 @@ struct CliOptions {
   std::filesystem::path shader_path;
   std::filesystem::path microcode_path;
   std::filesystem::path disasm_output_path;
+  std::filesystem::path ir_output_path;
   bool show_summary = false;
   bool find_hash = false;
   bool list_runtime_shaders = false;
@@ -157,6 +158,8 @@ void PrintHelp() {
             << "  --disassemble     Emit an unknown-preserving raw Xenos dword listing\n"
             << "  --write-disasm <path>\n"
             << "                     Write full raw listing to file or output directory\n"
+            << "  --write-ir <path>\n"
+            << "                     Write raw backend-neutral shader IR JSON\n"
             << "  --top-shaders <n>  Runtime shader/pair print limit (default 20)\n"
             << "  --hash <value>     Hash or substring to find\n"
             << "  --find             Search the index for --hash\n"
@@ -224,6 +227,44 @@ std::string Hex32(uint32_t value) {
   std::ostringstream out;
   out << "0x" << std::hex << std::uppercase << std::setfill('0')
       << std::setw(8) << value;
+  return out.str();
+}
+
+std::string JsonEscape(std::string_view value) {
+  std::ostringstream out;
+  for (unsigned char ch : value) {
+    switch (ch) {
+    case '\\':
+      out << "\\\\";
+      break;
+    case '"':
+      out << "\\\"";
+      break;
+    case '\b':
+      out << "\\b";
+      break;
+    case '\f':
+      out << "\\f";
+      break;
+    case '\n':
+      out << "\\n";
+      break;
+    case '\r':
+      out << "\\r";
+      break;
+    case '\t':
+      out << "\\t";
+      break;
+    default:
+      if (ch < 0x20) {
+        out << "\\u" << std::hex << std::uppercase << std::setfill('0')
+            << std::setw(4) << static_cast<int>(ch) << std::dec;
+      } else {
+        out << static_cast<char>(ch);
+      }
+      break;
+    }
+  }
   return out.str();
 }
 
@@ -462,6 +503,101 @@ bool WriteMicrocodeDisassemblyArtifact(const std::filesystem::path &path,
                      true);
   if (!file) {
     error = "could not write disassembly output: " + written_path.string();
+    return false;
+  }
+  return true;
+}
+
+void EmitRawShaderIrJson(std::ostream &out, const std::filesystem::path &path,
+                         const std::vector<uint8_t> &bytes) {
+  const std::size_t dword_count = bytes.size() / 4;
+  const std::string technique =
+      FirstAsciiRunContaining(bytes, "pimp_technique_");
+  const std::string shader_name =
+      FirstAsciiRunContaining(bytes, "pimp_shader_");
+  const std::string stage = InferMicrocodeStageFromPath(path);
+  out << "{\n";
+  out << "  \"schema\": \"bo2shaderir.raw_xenos.v1\",\n";
+  out << "  \"decoder_version\": 1,\n";
+  out << "  \"translator_version\": 0,\n";
+  out << "  \"stage\": \"" << JsonEscape(stage) << "\",\n";
+  out << "  \"source_path\": \"" << JsonEscape(path.string()) << "\",\n";
+  out << "  \"source_file\": \"" << JsonEscape(path.filename().string())
+      << "\",\n";
+  out << "  \"microcode_stem\": \"" << JsonEscape(path.stem().string())
+      << "\",\n";
+  out << "  \"byte_count\": " << bytes.size() << ",\n";
+  out << "  \"dword_count\": " << dword_count << ",\n";
+  out << "  \"unresolved_instruction_count\": " << dword_count << ",\n";
+  out << "  \"technique\": \"" << JsonEscape(technique) << "\",\n";
+  out << "  \"shader_name\": \"" << JsonEscape(shader_name) << "\",\n";
+  out << "  \"inputs\": [],\n";
+  out << "  \"outputs\": [],\n";
+  out << "  \"constants\": [],\n";
+  out << "  \"samplers\": [],\n";
+  out << "  \"textures\": [],\n";
+  out << "  \"instructions\": [\n";
+  for (std::size_t i = 0; i < dword_count; ++i) {
+    const uint32_t word = ReadBE32(bytes, i * 4);
+    out << "    {\"index\": " << i << ", \"byte_offset\": " << (i * 4)
+        << ", \"op\": \"unknown\", \"classification\": \""
+        << JsonEscape(ClassifyRawXenosWord(word)) << "\", \"word_be\": \""
+        << Hex32(word) << "\", \"raw\": \"" << Hex32(word) << "\"}";
+    if (i + 1 < dword_count) {
+      out << ",";
+    }
+    out << "\n";
+  }
+  out << "  ]\n";
+  out << "}\n";
+}
+
+std::filesystem::path MakeIrArtifactPath(
+    const std::filesystem::path &requested,
+    const std::filesystem::path &microcode_path) {
+  if (requested.has_extension()) {
+    return requested;
+  }
+  const std::string stem = microcode_path.stem().string();
+  const std::string lower_stem = ToLower(stem);
+  std::string filename = stem;
+  if (lower_stem.rfind("pixel_", 0) != 0 &&
+      lower_stem.rfind("vertex_", 0) != 0) {
+    filename = InferMicrocodeStageFromPath(microcode_path) + "_" + stem;
+  }
+  return requested / (filename + ".bo2shaderir.json");
+}
+
+bool WriteMicrocodeIrArtifact(const std::filesystem::path &path,
+                              const std::filesystem::path &requested,
+                              std::filesystem::path &written_path,
+                              std::string &error) {
+  std::vector<uint8_t> bytes;
+  if (!LoadBinary(path, bytes)) {
+    error = "could not read microcode: " + path.string();
+    return false;
+  }
+
+  written_path = MakeIrArtifactPath(requested, path);
+  std::error_code ec;
+  const std::filesystem::path parent = written_path.parent_path();
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      error = "could not create IR output directory " + parent.string() +
+              ": " + ec.message();
+      return false;
+    }
+  }
+
+  std::ofstream file(written_path, std::ios::binary);
+  if (!file) {
+    error = "could not open IR output: " + written_path.string();
+    return false;
+  }
+  EmitRawShaderIrJson(file, path, bytes);
+  if (!file) {
+    error = "could not write IR output: " + written_path.string();
     return false;
   }
   return true;
@@ -1605,6 +1741,12 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.disasm_output_path = value;
+    } else if (arg == "--write-ir") {
+      const char *value = require_value("--write-ir");
+      if (!value) {
+        return 2;
+      }
+      cli.ir_output_path = value;
     } else if (arg == "--top-shaders") {
       const char *value = require_value("--top-shaders");
       if (!value || !ParseSize(value, cli.top_shaders)) {
@@ -1634,7 +1776,7 @@ int main(int argc, char **argv) {
   const bool file_inspection =
       cli.dump_header || cli.dump_words || cli.disassemble ||
       !cli.shader_path.empty() || !cli.microcode_path.empty() ||
-      !cli.disasm_output_path.empty();
+      !cli.disasm_output_path.empty() || !cli.ir_output_path.empty();
   if (!cli.show_summary && !cli.find_hash && !cli.list_runtime_shaders &&
       !cli.match_runtime_shaders && !file_inspection) {
     cli.show_summary = true;
@@ -1661,6 +1803,10 @@ int main(int argc, char **argv) {
     std::cerr << "--write-disasm requires --microcode <path>\n";
     return 2;
   }
+  if (!cli.ir_output_path.empty() && cli.microcode_path.empty()) {
+    std::cerr << "--write-ir requires --microcode <path>\n";
+    return 2;
+  }
 
   bool printed_anything = false;
   if (cli.dump_header) {
@@ -1683,6 +1829,20 @@ int main(int argc, char **argv) {
       std::cout << "\n";
     }
     std::cout << "wrote_disasm=" << written_path.string() << "\n";
+    printed_anything = true;
+  }
+  if (!cli.ir_output_path.empty()) {
+    std::filesystem::path written_path;
+    std::string error;
+    if (!WriteMicrocodeIrArtifact(cli.microcode_path, cli.ir_output_path,
+                                  written_path, error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    std::cout << "wrote_ir=" << written_path.string() << "\n";
     printed_anything = true;
   }
   if (cli.dump_words || cli.disassemble) {

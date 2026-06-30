@@ -47,6 +47,7 @@ native_shader_inspect.exe --shader C:\Users\braxt\bo2-recompiled\shader_work\sha
 native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.ucode --dump-words --limit 16
 native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\vertex_4cbe8078e63245600ee471c244caa9b01c3943e54859b5ce9cabeb96d961553b.ucode --disassemble --limit 12
 native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.ucode --write-disasm C:\Users\braxt\bo2-recompiled\shader_work\out\disasm
+native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.ucode --write-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
 ```
 
 Verified pixel container header:
@@ -81,6 +82,12 @@ The microcode commands print big-endian dwords, recover embedded `pimp_technique
 
 - `shader_work/out/disasm/pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.xenos.asm`
 - `shader_work/out/disasm/vertex_4cbe8078e63245600ee471c244caa9b01c3943e54859b5ce9cabeb96d961553b.xenos.asm`
+
+`--write-ir` writes a raw unresolved backend-neutral JSON skeleton, for example:
+
+- `shader_work/cache/ir/pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.bo2shaderir.json`
+
+Current IR schema `bo2shaderir.raw_xenos.v1` contains stage, source path, source filename, byte/dword counts, embedded shader/technique names, empty input/output/constant/sampler/texture arrays, and one `unknown` instruction node per raw big-endian dword. It is useful cacheable structure for decoder work, but it is not yet semantic IR capable of generating HLSL or SPIR-V.
 
 Ghidra evidence for the matching runtime path:
 

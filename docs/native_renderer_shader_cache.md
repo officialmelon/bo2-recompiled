@@ -54,6 +54,8 @@ native_shader_inspect.exe --index shader_work\shaders\index.json --hash <hash-or
 native_shader_inspect.exe --index shader_work\shaders\index.json --capture native_captures\vertex_fetch_capture_001\events.jsonl --list-runtime-shaders --top-shaders 20
 native_shader_inspect.exe --index shader_work\shaders\index.json --capture native_captures\vertex_fetch_capture_001\events.jsonl --match-runtime-shaders --top-shaders 20
 native_shader_inspect.exe --index shader_work\shaders\index.json --capture native_captures\shader_payload_capture_001\events.jsonl --list-runtime-shaders --match-runtime-shaders --top-shaders 20
+native_shader_inspect.exe --microcode shader_work\shaders\microcode\<stage_hash>.ucode --write-disasm shader_work\out\disasm
+native_shader_inspect.exe --microcode shader_work\shaders\microcode\<stage_hash>.ucode --write-ir shader_work\cache\ir
 ```
 
 Verified summary:
@@ -102,7 +104,7 @@ Top/target payload hash examples from `shader_payload_capture_001`:
 
 - Proven runtime 64-bit shader hash to static container/microcode matching.
 - Xenos shader disassembler.
-- Backend-neutral shader IR.
+- Semantic backend-neutral shader IR. A raw unresolved `bo2shaderir.raw_xenos.v1` JSON skeleton exists, but every instruction is currently an `unknown` node.
 - HLSL/SPIR-V generation.
 - DXC integration.
 - Persistent compiled shader cache.

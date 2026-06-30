@@ -579,6 +579,8 @@ native_shader_inspect.exe --shader C:\Users\braxt\bo2-recompiled\shader_work\sha
 native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.ucode --dump-words --limit 16
 native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\vertex_4cbe8078e63245600ee471c244caa9b01c3943e54859b5ce9cabeb96d961553b.ucode --disassemble --limit 12
 native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.ucode --write-disasm C:\Users\braxt\bo2-recompiled\shader_work\out\disasm
+native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.ucode --write-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
+native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\vertex_4cbe8078e63245600ee471c244caa9b01c3943e54859b5ce9cabeb96d961553b.ucode --write-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
 native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --match-runtime-shaders --top-shaders 24
 ```
 
@@ -588,8 +590,9 @@ native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shad
 - Pixel microcode inspection: file bytes `1752`, `438` dwords, recovered `pimp_technique_sw4_3d_char_skin_tension_9644a939` and `pimp_shader_sw4_3d_char_skin_tension_42bbfcd4.hlsl`, then dumped big-endian dwords.
 - Vertex microcode inspection: file bytes `1428`, `357` dwords, recovered `pimp_technique_treecanopy_fd5f4522` and `pimp_shader_treecanopy_b03ff570.hlsl`, then emitted an unknown-preserving raw Xenos dword listing.
 - Raw disassembly artifact writing: `--write-disasm C:\Users\braxt\bo2-recompiled\shader_work\out\disasm` creates `pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.xenos.asm` and prints the written path. The file is a full raw listing, not a decoded shader IR.
+- Raw IR artifact writing: `--write-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir` creates `pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.bo2shaderir.json`, schema `bo2shaderir.raw_xenos.v1`, with `438` unresolved instruction nodes and empty semantic resource arrays. The same path was checked on vertex microcode `vertex_4cbe8078e63245600ee471c244caa9b01c3943e54859b5ce9cabeb96d961553b.ucode`, producing `357` unresolved nodes.
 - Regression shader matching on `shader_probe_capture_007` is unchanged: direct runtime/static matches remain `0/8`, direct shader-record matches remain `0/24`, and conservative runtime payload-prefix matches remain `12/24`.
-- Status: this is shader container parsing and raw microcode listing infrastructure. It is not yet a true Xenos shader disassembler, backend-neutral shader IR, HLSL/DXIL generation, or SPIR-V generation.
+- Status: this is shader container parsing, raw microcode listing, and raw unresolved IR artifact infrastructure. It is not yet a true Xenos shader disassembler, semantic backend-neutral shader IR, HLSL/DXIL generation, or SPIR-V generation.
 
 Ghidra-backed shader binder evidence from this pass:
 
