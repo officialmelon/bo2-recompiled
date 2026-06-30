@@ -1298,12 +1298,212 @@ uint32_t XenosTiledOffset2D(uint32_t x, uint32_t y, uint32_t pitch,
          (((((y & 8) >> 2) + (x >> 3)) & 3) << 6) + (offset & 0x3Fu);
 }
 
+void DecodeRgb565(uint16_t value, uint8_t color[3]) {
+  const uint32_t r = (value >> 11) & 0x1F;
+  const uint32_t g = (value >> 5) & 0x3F;
+  const uint32_t b = value & 0x1F;
+  color[0] = static_cast<uint8_t>((r << 3) | (r >> 2));
+  color[1] = static_cast<uint8_t>((g << 2) | (g >> 4));
+  color[2] = static_cast<uint8_t>((b << 3) | (b >> 2));
+}
+
+void StoreRgba(std::vector<uint8_t> &rgba, uint32_t width, uint32_t height,
+               uint32_t x, uint32_t y, uint8_t r, uint8_t g, uint8_t b,
+               uint8_t a) {
+  if (x >= width || y >= height) {
+    return;
+  }
+  const std::size_t pixel = static_cast<std::size_t>(y) * width + x;
+  rgba[pixel * 4 + 0] = r;
+  rgba[pixel * 4 + 1] = g;
+  rgba[pixel * 4 + 2] = b;
+  rgba[pixel * 4 + 3] = a;
+}
+
+void DecodeDxtColorBlock(const std::vector<uint8_t> &bytes,
+                         std::size_t offset, bool allow_1bit_alpha,
+                         uint8_t colors[16][4]) {
+  const uint16_t c0 = LoadLittleEndian16(bytes, offset + 0);
+  const uint16_t c1 = LoadLittleEndian16(bytes, offset + 2);
+  uint8_t palette[4][4]{};
+  DecodeRgb565(c0, palette[0]);
+  DecodeRgb565(c1, palette[1]);
+  palette[0][3] = 255;
+  palette[1][3] = 255;
+  if (c0 > c1 || !allow_1bit_alpha) {
+    for (uint32_t i = 0; i < 3; ++i) {
+      palette[2][i] =
+          static_cast<uint8_t>((2 * palette[0][i] + palette[1][i]) / 3);
+      palette[3][i] =
+          static_cast<uint8_t>((palette[0][i] + 2 * palette[1][i]) / 3);
+    }
+    palette[2][3] = 255;
+    palette[3][3] = 255;
+  } else {
+    for (uint32_t i = 0; i < 3; ++i) {
+      palette[2][i] =
+          static_cast<uint8_t>((palette[0][i] + palette[1][i]) / 2);
+      palette[3][i] = 0;
+    }
+    palette[2][3] = 255;
+    palette[3][3] = 0;
+  }
+
+  const uint32_t indices = LoadLittleEndian32(bytes, offset + 4);
+  for (uint32_t i = 0; i < 16; ++i) {
+    const uint32_t selector = (indices >> (i * 2)) & 0x3;
+    for (uint32_t c = 0; c < 4; ++c) {
+      colors[i][c] = palette[selector][c];
+    }
+  }
+}
+
+bool DecodeBlockCompressedTextureRgba8(const TextureFetchRecord &fetch,
+                                       std::vector<uint8_t> &rgba,
+                                       std::string &reason) {
+  const bool dxt1 = fetch.format == 18;
+  const bool dxt23 = fetch.format == 19;
+  const bool dxt45 = fetch.format == 20;
+  const bool dxn = fetch.format == 49;
+  if (!dxt1 && !dxt23 && !dxt45 && !dxn) {
+    return false;
+  }
+
+  const uint32_t block_bytes = dxt1 ? 8u : 16u;
+  const uint32_t width_blocks = (fetch.width + 3) / 4;
+  const uint32_t height_blocks = (fetch.height + 3) / 4;
+  const uint32_t pitch_texels =
+      fetch.pitch != 0 ? fetch.pitch << 5 : fetch.width;
+  const uint32_t pitch_blocks = std::max<uint32_t>(1, (pitch_texels + 3) / 4);
+  rgba.assign(static_cast<std::size_t>(fetch.width) * fetch.height * 4, 0);
+  bool used_truncated_preview = false;
+
+  for (uint32_t by = 0; by < height_blocks; ++by) {
+    for (uint32_t bx = 0; bx < width_blocks; ++bx) {
+      // Captured DXT/DXN sidecars are compact block streams in the tested BO2
+      // captures. Applying the uncompressed texel tiled-address formula to
+      // 4x4 block coordinates overestimates the footprint, so decode them as
+      // pitch-linear blocks until the CP-side compressed tiling swizzle is
+      // captured explicitly.
+      const std::size_t source_offset =
+          (static_cast<std::size_t>(by) * pitch_blocks + bx) * block_bytes;
+      if (source_offset + block_bytes > fetch.payload_bytes.size()) {
+        if (!fetch.payload_truncated) {
+          reason = "block-compressed texture payload is smaller than the "
+                   "decoded footprint";
+          return false;
+        }
+        used_truncated_preview = true;
+        continue;
+      }
+
+      uint8_t colors[16][4]{};
+      if (dxt1) {
+        DecodeDxtColorBlock(fetch.payload_bytes, source_offset, true, colors);
+      } else if (dxt23) {
+        DecodeDxtColorBlock(fetch.payload_bytes, source_offset + 8, false,
+                            colors);
+        for (uint32_t i = 0; i < 16; ++i) {
+          const uint8_t alpha_nibble =
+              (fetch.payload_bytes[source_offset + (i >> 1)] >>
+               ((i & 1) * 4)) &
+              0xF;
+          colors[i][3] =
+              static_cast<uint8_t>((alpha_nibble << 4) | alpha_nibble);
+        }
+      } else if (dxt45) {
+        DecodeDxtColorBlock(fetch.payload_bytes, source_offset + 8, false,
+                            colors);
+        const uint8_t alpha0 = fetch.payload_bytes[source_offset + 0];
+        const uint8_t alpha1 = fetch.payload_bytes[source_offset + 1];
+        uint8_t alpha_palette[8]{alpha0, alpha1};
+        if (alpha0 > alpha1) {
+          for (uint32_t i = 1; i <= 6; ++i) {
+            alpha_palette[i + 1] = static_cast<uint8_t>(
+                ((7 - i) * alpha0 + i * alpha1) / 7);
+          }
+        } else {
+          for (uint32_t i = 1; i <= 4; ++i) {
+            alpha_palette[i + 1] = static_cast<uint8_t>(
+                ((5 - i) * alpha0 + i * alpha1) / 5);
+          }
+          alpha_palette[6] = 0;
+          alpha_palette[7] = 255;
+        }
+        uint64_t alpha_bits = 0;
+        for (uint32_t i = 0; i < 6; ++i) {
+          alpha_bits |= uint64_t(fetch.payload_bytes[source_offset + 2 + i])
+                        << (i * 8);
+        }
+        for (uint32_t i = 0; i < 16; ++i) {
+          colors[i][3] = alpha_palette[(alpha_bits >> (i * 3)) & 0x7];
+        }
+      } else {
+        // DXN stores two BC4 alpha-style channels. Use them as RG and provide
+        // a neutral B/A preview so strict real replay can bind the resource.
+        uint8_t channels[2][16]{};
+        for (uint32_t channel = 0; channel < 2; ++channel) {
+          const std::size_t channel_offset = source_offset + channel * 8;
+          const uint8_t a0 = fetch.payload_bytes[channel_offset + 0];
+          const uint8_t a1 = fetch.payload_bytes[channel_offset + 1];
+          uint8_t palette[8]{a0, a1};
+          if (a0 > a1) {
+            for (uint32_t i = 1; i <= 6; ++i) {
+              palette[i + 1] =
+                  static_cast<uint8_t>(((7 - i) * a0 + i * a1) / 7);
+            }
+          } else {
+            for (uint32_t i = 1; i <= 4; ++i) {
+              palette[i + 1] =
+                  static_cast<uint8_t>(((5 - i) * a0 + i * a1) / 5);
+            }
+            palette[6] = 0;
+            palette[7] = 255;
+          }
+          uint64_t bits = 0;
+          for (uint32_t i = 0; i < 6; ++i) {
+            bits |= uint64_t(fetch.payload_bytes[channel_offset + 2 + i])
+                    << (i * 8);
+          }
+          for (uint32_t i = 0; i < 16; ++i) {
+            channels[channel][i] = palette[(bits >> (i * 3)) & 0x7];
+          }
+        }
+        for (uint32_t i = 0; i < 16; ++i) {
+          colors[i][0] = channels[0][i];
+          colors[i][1] = channels[1][i];
+          colors[i][2] = 128;
+          colors[i][3] = 255;
+        }
+      }
+
+      for (uint32_t py = 0; py < 4; ++py) {
+        for (uint32_t px = 0; px < 4; ++px) {
+          const uint32_t i = py * 4 + px;
+          StoreRgba(rgba, fetch.width, fetch.height, bx * 4 + px, by * 4 + py,
+                    colors[i][0], colors[i][1], colors[i][2], colors[i][3]);
+        }
+      }
+    }
+  }
+
+  if (used_truncated_preview) {
+    reason = "block-compressed texture decoded from truncated preview";
+  } else {
+    reason.clear();
+  }
+  return true;
+}
+
 bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
                         std::vector<uint8_t> &rgba, std::string &reason) {
   rgba.clear();
   if (fetch.payload_missing || fetch.payload_bytes.empty()) {
     reason = "texture payload is missing";
     return false;
+  }
+  if (DecodeBlockCompressedTextureRgba8(fetch, rgba, reason)) {
+    return true;
   }
   if (fetch.format != 6 && fetch.format != 2 && fetch.format != 26 &&
       fetch.format != 38) {
