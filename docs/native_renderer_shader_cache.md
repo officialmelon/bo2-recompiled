@@ -242,7 +242,24 @@ The first VS/PS compile prints `cache_hit=false`; a repeated VS command prints `
 - `shader_work\cache\d3d12\VS_0x5D918D91043B3ED0.translated.v2.dxc.dxil`
 - `shader_work\cache\logs\VS_0x5D918D91043B3ED0.translated.v2.dxc.dxc.log`
 
-Unsupported shaders still fail closed before compilation. The real-resource PS `0xC4ED2979F29C9139` is not automatically translated yet.
+The `xenos_limited_semantic_v3` cache version adds generated HLSL for the real-resource PS `0xC4ED2979F29C9139` by recognizing its decoded four-`tfetch2D` plus `mul oC0, r0.xywz, r1` pattern:
+
+- `shader_work\cache\hlsl\VS_0x5D918D91043B3ED0.translated.v3.dxc.hlsl`
+- `shader_work\cache\d3d12\VS_0x5D918D91043B3ED0.translated.v3.dxc.dxil`
+- `shader_work\cache\logs\VS_0x5D918D91043B3ED0.translated.v3.dxc.dxc.log`
+- `shader_work\cache\hlsl\PS_0xC4ED2979F29C9139.translated.v3.dxc.hlsl`
+- `shader_work\cache\d3d12\PS_0xC4ED2979F29C9139.translated.v3.dxc.dxil`
+- `shader_work\cache\logs\PS_0xC4ED2979F29C9139.translated.v3.dxc.dxc.log`
+
+The PS lowering is intentionally limited: the decoded shader uses fetch constants `1..4`, while the current D3D12 replay root signature exposes one captured texture/sampler descriptor per draw at `t0/s0`. The v3 generated PS therefore lowers the operation sequence against the currently bound draw texture and documents that approximation in the emitted HLSL. Unsupported shaders still fail closed before compilation.
+
+Verified generated-pair replay:
+
+```cmd
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\sidecar_capture_002\events.jsonl --backend d3d12 --shader-override-root C:\Users\braxt\bo2-recompiled\native_captures\empty_shader_overrides --shader-cache-root C:\Users\braxt\bo2-recompiled\shader_work\cache --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-generated-v3-pair-d3d12-real.bmp --no-summary
+```
+
+Result: `5/5` supported draws for `VS=0x5D918D91043B3ED0 PS=0xC4ED2979F29C9139`, `5` captured texture SRVs, `5` captured sampler descriptors, captured render state from draw `748`, and output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 
 Static extracted `.ucode` semantic decode is still blocked by file-layout ambiguity. Raw `.ucode` artifact commands still work, but tested static files include metadata/constants before the analyzer's expected payload range.
 

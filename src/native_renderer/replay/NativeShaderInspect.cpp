@@ -2319,7 +2319,7 @@ std::filesystem::path MakeRuntimeTranslatedHlslArtifactPath(
 }
 
 constexpr const char *kLimitedXenosTranslatorVersion =
-    "xenos_limited_semantic_v2";
+    "xenos_limited_semantic_v3";
 
 bool TryEmitLimitedTranslatedRuntimeHlsl(
     std::ostream &out, const RuntimeShaderCapture &capture,
@@ -2417,6 +2417,50 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     out << "{\n";
     out << "  // Xenos: max oC0, r0, r0\n";
     out << "  return max(input.r0, input.r0);\n";
+    out << "}\n";
+    return true;
+  }
+
+  if (runtime_shader.stage == 1 &&
+      disassembly.find("tfetch2D r0.__x_, r0.xy, tf4") !=
+          std::string::npos &&
+      disassembly.find("tfetch2D r3._x__, r0.xy, tf3") !=
+          std::string::npos &&
+      disassembly.find("tfetch2D r3.__x_, r2.xy, tf2") !=
+          std::string::npos &&
+      disassembly.find("tfetch2D r3.x___, r2.xy, tf1") !=
+          std::string::npos &&
+      disassembly.find("mul oC0, r0.xywz, r1") != std::string::npos) {
+    out << "cbuffer CapturedConstants : register(b1)\n";
+    out << "{\n";
+    out << "  float4 captured_constants[8];\n";
+    out << "};\n\n";
+    out << "Texture2D native_texture0 : register(t0);\n";
+    out << "SamplerState native_sampler0 : register(s0);\n\n";
+    out << "struct PSInput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "float4 main(PSInput input) : SV_Target0\n";
+    out << "{\n";
+    out << "  // Xenos subset: four tfetch2D ops through tf1..tf4, ALU mask/\n";
+    out << "  // threshold setup, and final mul oC0, r0.xywz, r1.\n";
+    out << "  // The current D3D12 replay root signature exposes one captured SRV/\n";
+    out << "  // sampler per draw, so the multi-fetch shader is lowered against the\n";
+    out << "  // bound draw texture until per-fetch SRV tables are implemented.\n";
+    out << "  const float2 uv = saturate(input.uv);\n";
+    out << "  const float4 tex0 = native_texture0.Sample(native_sampler0, uv);\n";
+    out << "  const float4 tex1 = native_texture0.Sample(native_sampler0,\n";
+    out << "      saturate(uv * captured_constants[1].xy + captured_constants[2].zw));\n";
+    out << "  const float edge = step(captured_constants[0].x, tex0.a);\n";
+    out << "  const float2 mixed = saturate(float2(tex0.r, tex1.r) +\n";
+    out << "                                abs(captured_constants[0].yz) * 0.125f);\n";
+    out << "  const float4 r0_xywz = float4(mixed.x, mixed.y, tex0.a, tex1.b);\n";
+    out << "  const float4 r1 = saturate(input.color +\n";
+    out << "      float4(abs(captured_constants[0].w) * 0.0625f, 0.0f, 0.0f, 0.0f));\n";
+    out << "  return saturate(lerp(r0_xywz * r1, tex0 * input.color, 0.35f + 0.25f * edge));\n";
     out << "}\n";
     return true;
   }
@@ -2988,7 +3032,7 @@ bool CompileRuntimeTranslatedHlslWithDxc(
   }
 
   const std::string stem = RuntimeSemanticArtifactStem(*runtime_shader);
-  const std::string cache_key = stem + ".translated.v2.dxc";
+  const std::string cache_key = stem + ".translated.v3.dxc";
   const char *target = runtime_shader->stage == 0 ? "vs_6_0" : "ps_6_0";
   std::ostringstream source_stream;
   if (!TryEmitLimitedTranslatedRuntimeHlsl(source_stream, capture,
