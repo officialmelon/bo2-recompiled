@@ -35,6 +35,47 @@ The extractor identifies Xbox 360 shader containers by a big-endian header signa
 
 The extractor reads virtual and physical sizes from the container header, then reads the embedded microcode pointer at header offset `24`. Microcode SHA-256 hashes are stage-prefixed so identical bytes in different stages stay distinct.
 
+## Shader file inspection
+
+Evidence date: 2026-06-30
+
+`native_shader_inspect.exe` now has direct file-level inspection commands:
+
+```powershell
+native_shader_inspect.exe --shader C:\Users\braxt\bo2-recompiled\shader_work\shaders\containers\pixel_00011f10fef6a0b01806b897b1e93287c2622b233a5ed9f39d8a983d45226ae9.bin --dump-header
+native_shader_inspect.exe --shader C:\Users\braxt\bo2-recompiled\shader_work\shaders\containers\vertex_002ee957c754be9d2a671f0dc0b63fca861b2398f5483703ec93f861466bf80d.bin --dump-header
+native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\pixel_a4e37cc9c67eccf375d9329a62a8a92a6e545c4d8e792bfe02114ca3750219e1.ucode --dump-words --limit 16
+native_shader_inspect.exe --microcode C:\Users\braxt\bo2-recompiled\shader_work\shaders\microcode\vertex_4cbe8078e63245600ee471c244caa9b01c3943e54859b5ce9cabeb96d961553b.ucode --disassemble --limit 12
+```
+
+Verified pixel container header:
+
+- File bytes: `3452`
+- Flags: `0x102A1100`, stage guess `pixel`
+- Virtual size: `1508`
+- Physical size: `1944`
+- Header size: `36`
+- Name offset: `0x00000090`
+- Metadata offset: `0x00000574`
+- Microcode descriptor offset: `0x000005A4`
+- Shader name: `pimp_shader_sw4_3d_char_skin_tension_5eee5b1e_ps_main_ps_3_0_ee259e07f134def2b4abdec00183c00f.updb`
+- Microcode descriptor: `[0]=0x000000C0`, `[1]=0x000006D8`; descriptor size candidate `1752`, matching the tested pixel `.ucode` byte length.
+
+Verified vertex container header:
+
+- File bytes: `2716`
+- Flags: `0x102A1101`, stage guess `vertex`
+- Virtual size: `1224`
+- Physical size: `1492`
+- Header size: `36`
+- Name offset: `0x00000080`
+- Metadata offset: `0x00000444`
+- Microcode descriptor offset: `0x0000046C`
+- Shader name: `pimp_shader_treecanopy_2e501d62_vs_main_vs_3_0_d9a8545395d8ec777b8591bb6e2feac1.updb`
+- Microcode descriptor: `[0]=0x00000040`, `[1]=0x00000594`; descriptor size candidate `1428`, matching the tested vertex `.ucode` byte length.
+
+The microcode commands print big-endian dwords, recover embedded `pimp_technique_*` / `pimp_shader_*` strings, and can emit a raw unknown-preserving Xenos dword listing. This is intentionally not yet a real opcode disassembler or shader IR translator; it preserves unknown words explicitly so the next decoder work has stable, diffable evidence.
+
 ## Game references
 
 `index.csv` records every source zone and byte offset for each unique container. Example rows show entries such as:

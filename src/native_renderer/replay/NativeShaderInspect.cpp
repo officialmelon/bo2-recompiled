@@ -29,10 +29,15 @@ namespace {
 struct CliOptions {
   std::filesystem::path index_path = "shader_work/shaders/index.json";
   std::filesystem::path capture_path;
+  std::filesystem::path shader_path;
+  std::filesystem::path microcode_path;
   bool show_summary = false;
   bool find_hash = false;
   bool list_runtime_shaders = false;
   bool match_runtime_shaders = false;
+  bool dump_header = false;
+  bool dump_words = false;
+  bool disassemble = false;
   std::string hash;
   std::size_t limit = 8;
   std::size_t top_shaders = 20;
@@ -142,6 +147,12 @@ void PrintHelp() {
             << "                     Rank runtime shader hashes from --capture\n"
             << "  --match-runtime-shaders\n"
             << "                     Search the static index for runtime hashes\n"
+            << "  --shader <path>   Shader container file to inspect\n"
+            << "  --dump-header     Dump the shader container header fields\n"
+            << "  --microcode <path>\n"
+            << "                     Xenos microcode file to inspect\n"
+            << "  --dump-words      Dump big-endian microcode dwords\n"
+            << "  --disassemble     Emit an unknown-preserving raw Xenos dword listing\n"
             << "  --top-shaders <n>  Runtime shader/pair print limit (default 20)\n"
             << "  --hash <value>     Hash or substring to find\n"
             << "  --find             Search the index for --hash\n"
@@ -172,6 +183,215 @@ bool LoadText(const std::filesystem::path &path, std::string &text) {
   std::ostringstream ss;
   ss << file.rdbuf();
   text = ss.str();
+  return true;
+}
+
+bool LoadBinary(const std::filesystem::path &path,
+                std::vector<uint8_t> &bytes) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return false;
+  }
+  file.seekg(0, std::ios::end);
+  const std::streamoff size = file.tellg();
+  if (size < 0) {
+    return false;
+  }
+  file.seekg(0, std::ios::beg);
+  bytes.resize(static_cast<std::size_t>(size));
+  if (!bytes.empty()) {
+    file.read(reinterpret_cast<char *>(bytes.data()), bytes.size());
+    return file.gcount() == size;
+  }
+  return true;
+}
+
+uint32_t ReadBE32(const std::vector<uint8_t> &bytes, std::size_t offset) {
+  if (offset + 4 > bytes.size()) {
+    return 0;
+  }
+  return (static_cast<uint32_t>(bytes[offset]) << 24) |
+         (static_cast<uint32_t>(bytes[offset + 1]) << 16) |
+         (static_cast<uint32_t>(bytes[offset + 2]) << 8) |
+         static_cast<uint32_t>(bytes[offset + 3]);
+}
+
+std::string Hex32(uint32_t value) {
+  std::ostringstream out;
+  out << "0x" << std::hex << std::uppercase << std::setfill('0')
+      << std::setw(8) << value;
+  return out.str();
+}
+
+std::string GuessStageFromFlags(uint32_t flags) {
+  if ((flags & 0xFFFFFF00u) != 0x102A1100u) {
+    return "unknown";
+  }
+  return (flags & 1u) ? "vertex" : "pixel";
+}
+
+std::vector<std::string> ExtractAsciiRunsFromBytes(
+    const std::vector<uint8_t> &bytes) {
+  std::vector<std::string> runs;
+  std::string current;
+  auto flush = [&]() {
+    if (current.size() >= 8) {
+      runs.push_back(current);
+    }
+    current.clear();
+  };
+  for (uint8_t byte : bytes) {
+    const char ch = static_cast<char>(byte);
+    if (ch >= 0x20 && ch <= 0x7E) {
+      current.push_back(ch);
+    } else {
+      flush();
+    }
+  }
+  flush();
+  return runs;
+}
+
+std::string FirstAsciiRunContaining(const std::vector<uint8_t> &bytes,
+                                    std::string_view needle) {
+  for (const std::string &run : ExtractAsciiRunsFromBytes(bytes)) {
+    const std::size_t pos = run.find(needle);
+    if (pos != std::string::npos) {
+      return run.substr(pos);
+    }
+  }
+  return {};
+}
+
+bool PrintShaderContainerHeader(const std::filesystem::path &path,
+                                std::string &error) {
+  std::vector<uint8_t> bytes;
+  if (!LoadBinary(path, bytes)) {
+    error = "could not read shader container: " + path.string();
+    return false;
+  }
+  if (bytes.size() < 32) {
+    error = "shader container is too small: " + path.string();
+    return false;
+  }
+
+  const uint32_t flags = ReadBE32(bytes, 0);
+  const uint32_t virtual_size = ReadBE32(bytes, 4);
+  const uint32_t physical_size = ReadBE32(bytes, 8);
+  const uint32_t header_size = ReadBE32(bytes, 12);
+  const uint32_t name_offset = ReadBE32(bytes, 16);
+  const uint32_t metadata_offset = ReadBE32(bytes, 20);
+  const uint32_t microcode_descriptor_offset = ReadBE32(bytes, 24);
+  const std::string shader_name =
+      FirstAsciiRunContaining(bytes, "pimp_shader_");
+
+  std::cout << "Shader container: " << path.string() << "\n";
+  std::cout << "  file_bytes=" << bytes.size() << "\n";
+  std::cout << "  flags=" << Hex32(flags)
+            << " stage_guess=" << GuessStageFromFlags(flags) << "\n";
+  std::cout << "  virtual_size=" << virtual_size
+            << " physical_size=" << physical_size
+            << " header_size=" << header_size << "\n";
+  std::cout << "  name_offset=" << Hex32(name_offset)
+            << " metadata_offset=" << Hex32(metadata_offset)
+            << " microcode_descriptor_offset="
+            << Hex32(microcode_descriptor_offset) << "\n";
+  if (!shader_name.empty()) {
+    std::cout << "  shader_name=" << shader_name << "\n";
+  }
+  if (microcode_descriptor_offset + 8 <= bytes.size()) {
+    const uint32_t descriptor_word0 =
+        ReadBE32(bytes, microcode_descriptor_offset);
+    const uint32_t descriptor_word1 =
+        ReadBE32(bytes, microcode_descriptor_offset + 4);
+    std::cout << "  microcode_descriptor[0]=" << Hex32(descriptor_word0)
+              << " microcode_descriptor[1]=" << Hex32(descriptor_word1)
+              << "\n";
+    std::cout << "  descriptor_size_candidate=" << descriptor_word1 << "\n";
+  } else {
+    std::cout << "  microcode_descriptor=out_of_file\n";
+  }
+
+  std::cout << "  raw_header_dwords:";
+  const std::size_t header_dwords = std::min<std::size_t>(8, bytes.size() / 4);
+  for (std::size_t i = 0; i < header_dwords; ++i) {
+    std::cout << " " << Hex32(ReadBE32(bytes, i * 4));
+  }
+  std::cout << "\n";
+  return true;
+}
+
+std::string ClassifyRawXenosWord(uint32_t word) {
+  const uint32_t top = word >> 28;
+  if (word == 0xFFFFFFFFu) {
+    return "padding_or_sentinel";
+  }
+  if (word == 0) {
+    return "zero";
+  }
+  switch (top) {
+  case 0x0:
+  case 0x1:
+  case 0x2:
+  case 0x3:
+    return "unknown_cf_or_metadata";
+  case 0x4:
+  case 0x5:
+  case 0x6:
+  case 0x7:
+    return "unknown_fetch_or_export";
+  case 0x8:
+  case 0x9:
+  case 0xA:
+  case 0xB:
+    return "unknown_alu_or_control";
+  default:
+    return "unknown_xenos_word";
+  }
+}
+
+bool PrintMicrocodeWords(const std::filesystem::path &path,
+                         std::size_t limit, bool disassemble,
+                         std::string &error) {
+  std::vector<uint8_t> bytes;
+  if (!LoadBinary(path, bytes)) {
+    error = "could not read microcode: " + path.string();
+    return false;
+  }
+  const std::size_t dword_count = bytes.size() / 4;
+  const std::size_t count = std::min(limit, dword_count);
+  std::cout << "Xenos microcode: " << path.string() << "\n";
+  std::cout << "  file_bytes=" << bytes.size()
+            << " dwords=" << dword_count << "\n";
+  if (bytes.size() % 4 != 0) {
+    std::cout << "  trailing_bytes=" << (bytes.size() % 4) << "\n";
+  }
+  if (const std::string technique =
+          FirstAsciiRunContaining(bytes, "pimp_technique_");
+      !technique.empty()) {
+    std::cout << "  technique=" << technique << "\n";
+  }
+  if (const std::string shader = FirstAsciiRunContaining(bytes, "pimp_shader_");
+      !shader.empty()) {
+    std::cout << "  shader_name=" << shader << "\n";
+  }
+
+  std::cout << (disassemble ? "\nRaw Xenos dword listing:\n"
+                            : "\nMicrocode dwords (big-endian):\n");
+  for (std::size_t i = 0; i < count; ++i) {
+    const uint32_t word = ReadBE32(bytes, i * 4);
+    std::cout << "  [" << std::setw(4) << std::setfill('0') << i
+              << std::setfill(' ') << "] " << Hex32(word);
+    if (disassemble) {
+      std::cout << "  " << ClassifyRawXenosWord(word)
+                << " raw=" << Hex32(word);
+    }
+    std::cout << "\n";
+  }
+  if (count < dword_count) {
+    std::cout << "  ... truncated after " << count << " of " << dword_count
+              << " dwords; use --limit to print more\n";
+  }
   return true;
 }
 
@@ -1283,12 +1503,30 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.capture_path = value;
+    } else if (arg == "--shader") {
+      const char *value = require_value("--shader");
+      if (!value) {
+        return 2;
+      }
+      cli.shader_path = value;
+    } else if (arg == "--microcode") {
+      const char *value = require_value("--microcode");
+      if (!value) {
+        return 2;
+      }
+      cli.microcode_path = value;
     } else if (arg == "--summary") {
       cli.show_summary = true;
     } else if (arg == "--list-runtime-shaders") {
       cli.list_runtime_shaders = true;
     } else if (arg == "--match-runtime-shaders") {
       cli.match_runtime_shaders = true;
+    } else if (arg == "--dump-header") {
+      cli.dump_header = true;
+    } else if (arg == "--dump-words") {
+      cli.dump_words = true;
+    } else if (arg == "--disassemble") {
+      cli.disassemble = true;
     } else if (arg == "--top-shaders") {
       const char *value = require_value("--top-shaders");
       if (!value || !ParseSize(value, cli.top_shaders)) {
@@ -1315,8 +1553,11 @@ int main(int argc, char **argv) {
     }
   }
 
+  const bool file_inspection = cli.dump_header || cli.dump_words ||
+                               cli.disassemble || !cli.shader_path.empty() ||
+                               !cli.microcode_path.empty();
   if (!cli.show_summary && !cli.find_hash && !cli.list_runtime_shaders &&
-      !cli.match_runtime_shaders) {
+      !cli.match_runtime_shaders && !file_inspection) {
     cli.show_summary = true;
   }
   if (cli.find_hash && cli.hash.empty()) {
@@ -1329,18 +1570,57 @@ int main(int argc, char **argv) {
                  "--capture <events.jsonl>\n";
     return 2;
   }
+  if (cli.dump_header && cli.shader_path.empty()) {
+    std::cerr << "--dump-header requires --shader <path>\n";
+    return 2;
+  }
+  if ((cli.dump_words || cli.disassemble) && cli.microcode_path.empty()) {
+    std::cerr << "--dump-words/--disassemble require --microcode <path>\n";
+    return 2;
+  }
 
-  const auto resolved = ResolveIndexPath(cli.index_path);
-  if (!resolved) {
-    std::cerr << "shader index does not exist: " << cli.index_path.string()
-              << "\n";
-    return 1;
+  bool printed_anything = false;
+  if (cli.dump_header) {
+    std::string error;
+    if (!PrintShaderContainerHeader(cli.shader_path, error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    printed_anything = true;
+  }
+  if (cli.dump_words || cli.disassemble) {
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    std::string error;
+    if (!PrintMicrocodeWords(cli.microcode_path, cli.limit, cli.disassemble,
+                             error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    printed_anything = true;
+  }
+
+  const bool needs_index =
+      cli.show_summary || cli.find_hash || cli.match_runtime_shaders;
+  if (!needs_index && !cli.list_runtime_shaders) {
+    return 0;
   }
 
   std::string text;
-  if (!LoadText(*resolved, text)) {
-    std::cerr << "could not read shader index: " << resolved->string() << "\n";
-    return 1;
+  std::optional<std::filesystem::path> resolved;
+  if (needs_index) {
+    resolved = ResolveIndexPath(cli.index_path);
+    if (!resolved) {
+      std::cerr << "shader index does not exist: " << cli.index_path.string()
+                << "\n";
+      return 1;
+    }
+    if (!LoadText(*resolved, text)) {
+      std::cerr << "could not read shader index: " << resolved->string()
+                << "\n";
+      return 1;
+    }
   }
 
   RuntimeShaderCapture runtime_capture;
@@ -1357,19 +1637,20 @@ int main(int argc, char **argv) {
     PrintSummary(text, *resolved);
   }
   if (cli.find_hash) {
-    if (cli.show_summary) {
+    if (printed_anything || cli.show_summary) {
       std::cout << "\n";
     }
     FindHash(text, cli.hash, cli.limit);
   }
   if (cli.list_runtime_shaders) {
-    if (cli.show_summary || cli.find_hash) {
+    if (printed_anything || cli.show_summary || cli.find_hash) {
       std::cout << "\n";
     }
     PrintRuntimeShaders(runtime_capture, cli.top_shaders);
   }
   if (cli.match_runtime_shaders) {
-    if (cli.show_summary || cli.find_hash || cli.list_runtime_shaders) {
+    if (printed_anything || cli.show_summary || cli.find_hash ||
+        cli.list_runtime_shaders) {
       std::cout << "\n";
     }
     MatchRuntimeShaders(text, runtime_capture, cli.top_shaders);
