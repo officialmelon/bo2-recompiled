@@ -127,6 +127,13 @@ Full automatic native shader replacement is not implemented yet. The extracted m
 
 The current BO2-local translated-shader path is intentionally narrow. `native_shader_inspect.exe --compile-translated-hlsl-dxc` can lower and cache the `xenos_simple_passthrough_v1` subset seen in runtime VS `0xB6C9863F710683EC` and PS `0xA4A965C189287B99`, but it fails closed for the real-resource VS `0x5D918D91043B3ED0`. The next shader target is expanding semantic lowering for the real-resource shader pair currently covered by manual D3D12 overrides.
 
+Latest real-resource semantic check on `shader_probe_capture_007`:
+
+- VS `0x5D918D91043B3ED0`: one vertex binding (`vf95`), three attributes, `vfetch_full`, two `vfetch_mini` operations, `mad`, `sge`, seven `dp4` matrix/vector operations, `max oPos`, `max o0.xy__`, and `max o1`.
+- PS `0xC4ED2979F29C9139`: four texture bindings (`tf4`, `tf3`, `tf2`, `tf1`), `mul`, `sge`, `sne`, `floors`, `mulsc`, `cndeq`, four `tfetch2D` operations, `dp2add`, `dp3`, `adds`, `add`, and final `mul o0`.
+
+This pair should not be represented by a small pattern rule. The next implementation target is a real semantic lowering path for ALU/vector ops, texture fetch ops, swizzles/write masks, constants, and interpolator exports/imports.
+
 ## Runtime replay shader evidence
 
 `native_render_replay.exe` was run on `native-renderer-capture-limit.jsonl` on 2026-06-28. The capture contains `1011` shader-load events and `4388` draw events. Replay found `8` unique live shader hashes and `7` live shader pairs, with no draw missing a VS or PS hash.
