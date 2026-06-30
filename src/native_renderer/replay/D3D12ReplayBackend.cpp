@@ -177,6 +177,38 @@ D3D12_DEPTH_STENCILOP_DESC DefaultKeepStencilOp(D3D12_COMPARISON_FUNC func) {
   return op;
 }
 
+D3D12_STENCIL_OP D3D12StencilOpFromXenos(uint32_t op) {
+  static constexpr D3D12_STENCIL_OP kMap[8] = {
+      D3D12_STENCIL_OP_KEEP,
+      D3D12_STENCIL_OP_ZERO,
+      D3D12_STENCIL_OP_REPLACE,
+      D3D12_STENCIL_OP_INCR_SAT,
+      D3D12_STENCIL_OP_DECR_SAT,
+      D3D12_STENCIL_OP_INVERT,
+      D3D12_STENCIL_OP_INCR,
+      D3D12_STENCIL_OP_DECR,
+  };
+  return kMap[op & 0x7];
+}
+
+D3D12_DEPTH_STENCILOP_DESC StencilOpDescFromDepthControl(
+    uint32_t rb_depthcontrol, bool back_face) {
+  const uint32_t func_shift = back_face ? 20u : 8u;
+  const uint32_t fail_shift = back_face ? 23u : 11u;
+  const uint32_t pass_shift = back_face ? 26u : 14u;
+  const uint32_t depth_fail_shift = back_face ? 29u : 17u;
+  D3D12_DEPTH_STENCILOP_DESC op{};
+  op.StencilFailOp =
+      D3D12StencilOpFromXenos((rb_depthcontrol >> fail_shift) & 0x7);
+  op.StencilDepthFailOp =
+      D3D12StencilOpFromXenos((rb_depthcontrol >> depth_fail_shift) & 0x7);
+  op.StencilPassOp =
+      D3D12StencilOpFromXenos((rb_depthcontrol >> pass_shift) & 0x7);
+  op.StencilFunc =
+      D3D12CompareFuncFromXenos((rb_depthcontrol >> func_shift) & 0x7);
+  return op;
+}
+
 uint8_t StencilReadMaskFromRenderState(const RenderStateRecord &state) {
   const uint32_t mask = (state.rb_stencilrefmask >> 8) & 0xFF;
   return static_cast<uint8_t>(mask ? mask : D3D12_DEFAULT_STENCIL_READ_MASK);
@@ -318,10 +350,12 @@ D3D12_DEPTH_STENCIL_DESC DepthStencilDescFromRenderState(
   if (state->stencil_enable) {
     desc.StencilReadMask = StencilReadMaskFromRenderState(*state);
     desc.StencilWriteMask = StencilWriteMaskFromRenderState(*state);
-    const D3D12_COMPARISON_FUNC stencil_func =
-        D3D12CompareFuncFromXenos((state->rb_depthcontrol >> 8) & 0x7);
-    desc.FrontFace = DefaultKeepStencilOp(stencil_func);
-    desc.BackFace = DefaultKeepStencilOp(stencil_func);
+    desc.FrontFace = StencilOpDescFromDepthControl(state->rb_depthcontrol,
+                                                   false);
+    desc.BackFace = (state->rb_depthcontrol & (1u << 7))
+                        ? StencilOpDescFromDepthControl(
+                              state->rb_depthcontrol, true)
+                        : desc.FrontFace;
   }
   return desc;
 }
