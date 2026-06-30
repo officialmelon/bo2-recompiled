@@ -542,6 +542,29 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 - Expected vs actual: expected the prior `3686400` byte sidecar to be too short for a tiled `1280x720` format-6 texture; actual replay now reports the old missing footprint as `3768320` bytes and the fresh capture decodes successfully. The decoded early frame is solid blue, so this is frontbuffer texture decode evidence, not final scene rendering.
 - D3D12 regression on `sidecar_capture_002`: exit code `0`, unchanged SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 
+Safe shader-record probe validation:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 default"
+default.exe --native_renderer_mode native --native_renderer_shader_record_probe_mode on --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --native_renderer_capture_limit 5000 --native_renderer_capture_flush_interval 32 --native_renderer_verbose false
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --validate
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --shader-record-probes --max-draws 16 --no-summary
+native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --list-runtime-shaders --match-runtime-shaders --top-shaders 24
+```
+
+- Code change: project-local shader/material probe reads are guarded against Windows access violations, and `native_renderer_shader_record_probe_dwords` can cap snapshots for triage. Default is `32` dwords because `16` dwords truncates names before the profile/suffix fields.
+- Build status: `default.exe` relinked successfully. The build graph repeatedly rebuilt generated/default objects and printed `ninja: warning: premature end of file; recovering`; no compile/link errors were emitted, and `default.exe` timestamp updated to `2026-06-30 10:21:54`.
+- Capture run used a `175` second watchdog and was stopped after the bounded event limit.
+- Validation: `Validation OK: 5000 events, 24 frames, 1106 draws`.
+- Shader inspection: `233` shader events, `233/233` shader payloads, `8` unique runtime shaders, `7` shader pairs, and `24` shader-record probes.
+- Full probe names recovered:
+  - PS `pimp_shader_cinematic_519f564_ps_main_ps_3_0_534c8cc25dea1826410cc2974d7e9a80.updb`
+  - VS `pimp_shader_radiant_190f4788_vs_main_vs_3_0_e10bcefc8da60302d0bbf12b675d091c.updb`
+  - PS `pimp_shader_trivial_63c48fc7_ps_main_ps_3_0_cd38a0f731a8c984a57c101f28952e56.updb`
+  - VS `pimp_shader_trivial_63c48fc7_vs_main_vs_3_0_6c5717313f11297d9b331e326b80df12.updb`
+- Static-index matching remains unproven: `Runtime shader direct matches: 0/8`; `Shader record probe matches: names=0/24 suffixes=0/24 short_hashes=0/24 secondary_payloads=0/24`.
+- Ghidra MCP evidence: `LR=0x82598314` passes `r4=r29+0x28`, `r5=*(r29+0x18)` into `0x82597F50`; `LR=0x82598560` passes `r4=r30+0x368`, `r5=*(r30+0x20)` into `0x82597F50`. The surrounding XEX state binder later calls `0x82597DF8`, which is the next shader-name-to-PM4-hash correlation target.
+
 ## Current hard blocker
 
 The current fresh captures can feed shader payloads, real index buffers, bounded raw vertex-buffer payloads, constant payloads, sidecar-backed texture payloads, texture clamp modes, PM4 swap/frontbuffer sidecar payloads with fetch0 metadata, bounded draw-time color/depth target previews, and decoded render-state registers for target draws. With `readback_resolve=full`, PM4 swap/frontbuffer sidecars can contain nonzero resolved output bytes, and replay can decode the tested format-6 tiled frontbuffer through captured fetch0 metadata. D3D12 can render the supported captured geometry with manifest-backed manual HLSL overrides, flattened captured constants, captured 2D format-6 SRV binding from inline or sidecar payloads, captured texture-filter/clamp sampler descriptors, first-pass captured render-state PSO setup, a compiled `.dxbc` cache hit, or the explicit diagnostic shader fallback. Runtime shader payload hashes are reproducible, and runtime shader/material record names are now captured, but neither currently maps directly to the extracted shader-work index. The renderer still cannot feed a real D3D12/Vulkan scene backend because it lacks automatic Xenos shader translation, DXC/DXIL, broader texture format/mip coverage, GPU-side render-target/depth readback or resolve snapshots for useful scene targets, real DSV binding for depth-enabled draws, full constant-layout reconstruction, heterogeneous PSO/state sequencing, full-frame sequencing, live native D3D12 output, and any Vulkan backend.

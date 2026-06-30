@@ -5,6 +5,16 @@
 #include <cstddef>
 #include <string>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <excpt.h>
+#endif
+
 #include <rex/cvar.h>
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
@@ -22,6 +32,9 @@ REXCVAR_DEFINE_BOOL(native_renderer_verbose, true, "Renderer",
                     "Enable verbose native renderer logging");
 REXCVAR_DEFINE_STRING(native_renderer_shader_record_probe_mode, "off", "Renderer",
                       "Shader/material record probe capture: off, on");
+REXCVAR_DEFINE_UINT32(native_renderer_shader_record_probe_dwords, 32, "Renderer",
+                      "Maximum dwords to snapshot from shader/material record probe pointers")
+    .range(1, bo2::native::ShaderRecordProbeInfo::kMaxRecordDwords);
 
 namespace bo2::native {
 
@@ -61,8 +74,18 @@ bool ReadGuestU32Checked(uint32_t address, uint32_t& value) {
     value = 0;
     return false;
   }
+#if defined(_WIN32)
+  __try {
+    value = rex::memory::load_and_swap<uint32_t>(ptr);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    value = 0;
+    return false;
+  }
+#else
   value = rex::memory::load_and_swap<uint32_t>(ptr);
   return true;
+#endif
 }
 
 uint32_t ReadGuestU32(uint32_t address) {
@@ -103,6 +126,12 @@ bool ShaderRecordProbesEnabled() {
   return Normalize(REXCVAR_GET(native_renderer_shader_record_probe_mode)) == "on";
 }
 
+uint32_t ShaderRecordProbeDwordLimit() {
+  return std::clamp<uint32_t>(
+      REXCVAR_GET(native_renderer_shader_record_probe_dwords), 1,
+      static_cast<uint32_t>(ShaderRecordProbeInfo::kMaxRecordDwords));
+}
+
 void CaptureDwordSnapshot(
     uint32_t address, uint32_t dword_count_hint,
     std::array<uint32_t, ShaderRecordProbeInfo::kMaxRecordDwords>& dwords,
@@ -118,9 +147,11 @@ void CaptureDwordSnapshot(
   const uint32_t requested =
       dword_count_hint == 0 ? ShaderRecordProbeInfo::kMaxRecordDwords
                             : dword_count_hint;
+  const uint32_t configured_limit = ShaderRecordProbeDwordLimit();
   const uint32_t limit = std::min<uint32_t>(
-      requested, ShaderRecordProbeInfo::kMaxRecordDwords);
-  truncated = requested > ShaderRecordProbeInfo::kMaxRecordDwords;
+      {requested, configured_limit,
+       static_cast<uint32_t>(ShaderRecordProbeInfo::kMaxRecordDwords)});
+  truncated = requested > limit;
 
   for (uint32_t i = 0; i < limit; ++i) {
     uint32_t value = 0;

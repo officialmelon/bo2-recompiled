@@ -150,6 +150,38 @@ Probe layout observations:
 
 Conclusion: shader-record names are now observable at runtime and should become an additional registry key, but the extracted shader-work index still does not directly identify these names/suffixes. The next matching attempt should hash the secondary pointer payloads with the same raw, byte-swapped, trimmed, aligned, and container-stripped variants used for PM4 payloads, and then fall back to a manual override table keyed by `(stage, runtime_hash, shader_name)`.
 
+## Safe Probe Follow-Up
+
+Evidence date: 2026-06-30
+
+The shader/material probe reader now guards guest dword loads on Windows and exposes `native_renderer_shader_record_probe_dwords` so probe snapshots can be reduced during crash triage without changing code. Default remains `32` dwords because 16-dword snapshots truncate `pimp_shader_*` names before the profile/suffix fields.
+
+Verified capture:
+
+```powershell
+default.exe --native_renderer_mode native --native_renderer_shader_record_probe_mode on --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --native_renderer_capture_limit 5000 --native_renderer_capture_flush_interval 32 --native_renderer_verbose false
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --validate
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --shader-record-probes --max-draws 16 --no-summary
+native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shaders\index.json --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --list-runtime-shaders --match-runtime-shaders --top-shaders 24
+```
+
+Results:
+
+- Capture was watchdog-stopped after the bounded event limit and validates: `Validation OK: 5000 events, 24 frames, 1106 draws`.
+- `native_shader_inspect.exe` reports `233` shader events, `8` unique runtime shaders, `7` shader pairs, `24` `shader_record_probe` events, and `233/233` shader payloads with payload.
+- Recovered full probe names include:
+  - PS `pimp_shader_cinematic_519f564_ps_main_ps_3_0_534c8cc25dea1826410cc2974d7e9a80.updb`
+  - VS `pimp_shader_radiant_190f4788_vs_main_vs_3_0_e10bcefc8da60302d0bbf12b675d091c.updb`
+  - PS `pimp_shader_trivial_63c48fc7_ps_main_ps_3_0_cd38a0f731a8c984a57c101f28952e56.updb`
+  - VS `pimp_shader_trivial_63c48fc7_vs_main_vs_3_0_6c5717313f11297d9b331e326b80df12.updb`
+- Direct runtime/static matching remains unproven: `Runtime shader direct matches: 0/8` and `Shader record probe matches: names=0/24 suffixes=0/24 short_hashes=0/24 secondary_payloads=0/24`.
+
+Ghidra MCP follow-up on the XEX probe call sites:
+
+- At `LR=0x82598314`, the caller passes `r4 = r29 + 0x28` and `r5 = *(r29 + 0x18)` into `0x82597F50`; the primary record contains the PS name and the secondary pointer contains constant/program-like data.
+- At `LR=0x82598560`, the caller passes `r4 = r30 + 0x368` and `r5 = *(r30 + 0x20)` into `0x82597F50`; the primary record contains the VS name and the secondary pointer contains zero-padded shader/constant-like data.
+- The same state block calls `0x82597DF8` after these uploads, which remains the stronger XEX runtime shader-bind target for correlating names to PM4 shader hashes.
+
 ## Manual Override Checkpoint
 
 Draw `1209` in `shader_payload_capture_001` now has a documented D3D12 manual override pair:
