@@ -2,6 +2,7 @@
 #include <array>
 #include <bit>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -331,6 +332,10 @@ std::string_view TrimView(std::string_view value) {
 
 void EmitDisassemblyOperationsJson(std::ostream &out,
                                    const std::string &disassembly);
+
+std::string ToString(std::string_view view) {
+  return std::string(view.begin(), view.end());
+}
 
 std::string GuessStageFromFlags(uint32_t flags) {
   if ((flags & 0xFFFFFF00u) != 0x102A1100u) {
@@ -1724,6 +1729,164 @@ bool WriteSemanticMicrocodeIrArtifact(const std::filesystem::path &path,
   return true;
 }
 
+std::string OperandMask(std::string_view operand) {
+  const std::size_t dot = operand.find('.');
+  if (dot == std::string_view::npos || dot + 1 >= operand.size()) {
+    return {};
+  }
+  std::string mask;
+  for (std::size_t i = dot + 1; i < operand.size(); ++i) {
+    const char ch = operand[i];
+    if ((ch >= 'x' && ch <= 'z') || ch == 'w' || ch == '_' ||
+        (ch >= '0' && ch <= '9')) {
+      mask.push_back(ch);
+    } else {
+      break;
+    }
+  }
+  return mask;
+}
+
+std::string OperandRegisterText(std::string_view operand) {
+  const std::size_t dot = operand.find('.');
+  std::string_view base =
+      dot == std::string_view::npos ? operand : operand.substr(0, dot);
+  return ToString(TrimView(base));
+}
+
+std::string OperandRegisterFile(std::string_view reg) {
+  if (reg.rfind("r_abs[", 0) == 0) {
+    return "temporary_abs";
+  }
+  if (reg.size() > 1 && reg[0] == 'r' &&
+      std::isdigit(static_cast<unsigned char>(reg[1]))) {
+    return "temporary";
+  }
+  if (reg.size() > 1 && reg[0] == 'c' &&
+      std::isdigit(static_cast<unsigned char>(reg[1]))) {
+    return "float_constant";
+  }
+  if (reg.size() > 2 && reg.rfind("tf", 0) == 0 &&
+      std::isdigit(static_cast<unsigned char>(reg[2]))) {
+    return "texture_fetch";
+  }
+  if (reg.size() > 2 && reg.rfind("vf", 0) == 0 &&
+      std::isdigit(static_cast<unsigned char>(reg[2]))) {
+    return "vertex_fetch";
+  }
+  if (reg.rfind("oC", 0) == 0) {
+    return "color_export";
+  }
+  if (reg.rfind("oPos", 0) == 0) {
+    return "position_export";
+  }
+  if (reg.rfind("o", 0) == 0) {
+    return "interpolator_export";
+  }
+  return "unknown";
+}
+
+std::optional<int> OperandRegisterIndex(std::string_view reg) {
+  std::string digits;
+  if (reg.rfind("r_abs[", 0) == 0) {
+    const std::size_t begin = reg.find('[');
+    const std::size_t end = reg.find(']', begin == std::string_view::npos
+                                             ? 0
+                                             : begin + 1);
+    if (begin != std::string_view::npos && end != std::string_view::npos) {
+      digits = ToString(reg.substr(begin + 1, end - begin - 1));
+    }
+  } else {
+    for (char ch : reg) {
+      if (ch >= '0' && ch <= '9') {
+        digits.push_back(ch);
+      }
+    }
+  }
+  if (digits.empty()) {
+    return std::nullopt;
+  }
+  int value = 0;
+  const auto result =
+      std::from_chars(digits.data(), digits.data() + digits.size(), value);
+  if (result.ec != std::errc{} || result.ptr != digits.data() + digits.size()) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+std::vector<std::string> SplitOperands(std::string_view operands) {
+  std::vector<std::string> result;
+  std::string current;
+  int bracket_depth = 0;
+  for (char ch : operands) {
+    if (ch == '[') {
+      ++bracket_depth;
+    } else if (ch == ']' && bracket_depth > 0) {
+      --bracket_depth;
+    }
+    if (ch == ',' && bracket_depth == 0) {
+      if (!TrimView(current).empty()) {
+        result.push_back(ToString(TrimView(current)));
+      }
+      current.clear();
+      continue;
+    }
+    current.push_back(ch);
+  }
+  if (!TrimView(current).empty()) {
+    result.push_back(ToString(TrimView(current)));
+  }
+  return result;
+}
+
+void EmitOperandJson(std::ostream &out, std::string_view operand) {
+  const std::string text = ToString(TrimView(operand));
+  const std::string reg = OperandRegisterText(text);
+  const std::string mask = OperandMask(text);
+  const std::string file = OperandRegisterFile(reg);
+  out << "{\"text\":\"" << JsonEscape(text) << "\",\"register\":\""
+      << JsonEscape(reg) << "\",\"file\":\"" << JsonEscape(file) << "\"";
+  if (const std::optional<int> index = OperandRegisterIndex(reg)) {
+    out << ",\"index\":" << *index;
+  }
+  if (!mask.empty()) {
+    out << ",\"mask\":\"" << JsonEscape(mask) << "\"";
+  }
+  out << "}";
+}
+
+std::string OperationCategory(std::string_view opcode, bool has_export_dest) {
+  if (opcode == "exec" || opcode == "exece" || opcode == "cnop" ||
+      opcode == "alloc") {
+    return "control_flow";
+  }
+  if (opcode.rfind("tfetch", 0) == 0) {
+    return "texture_fetch";
+  }
+  if (opcode.rfind("vfetch", 0) == 0) {
+    return "vertex_fetch";
+  }
+  if (has_export_dest) {
+    return "export";
+  }
+  return "alu";
+}
+
+std::optional<int> FetchConstantIndex(std::string_view opcode,
+                                      const std::vector<std::string> &parts) {
+  if (opcode.rfind("tfetch", 0) != 0 && opcode.rfind("vfetch", 0) != 0) {
+    return std::nullopt;
+  }
+  for (const std::string &part : parts) {
+    std::string_view trimmed = TrimView(part);
+    if (trimmed.rfind("tf", 0) == 0 || trimmed.rfind("vf", 0) == 0) {
+      return OperandRegisterIndex(trimmed);
+    }
+  }
+  return std::nullopt;
+}
+
 void EmitDisassemblyOperationsJson(std::ostream &out,
                                    const std::string &disassembly) {
   out << "  \"operations\": [\n";
@@ -1748,6 +1911,7 @@ void EmitDisassemblyOperationsJson(std::ostream &out,
       continue;
     }
 
+    bool coissued = false;
     std::string_view opcode = text;
     std::string_view operands;
     const std::size_t opcode_end = text.find_first_of(" \t");
@@ -1755,6 +1919,31 @@ void EmitDisassemblyOperationsJson(std::ostream &out,
       opcode = text.substr(0, opcode_end);
       operands = TrimView(text.substr(opcode_end + 1));
     }
+    if (opcode == "+") {
+      coissued = true;
+      const std::size_t coissue_opcode_end = operands.find_first_of(" \t");
+      if (coissue_opcode_end == std::string_view::npos) {
+        opcode = operands;
+        operands = {};
+      } else {
+        const std::string_view coissue_text = operands;
+        opcode = coissue_text.substr(0, coissue_opcode_end);
+        operands = TrimView(coissue_text.substr(coissue_opcode_end + 1));
+      }
+    }
+
+    const std::vector<std::string> operand_parts = SplitOperands(operands);
+    const bool has_destination =
+        !operand_parts.empty() && opcode != "exec" && opcode != "exece" &&
+        opcode != "cnop" && opcode != "alloc";
+    const std::string destination_register =
+        has_destination ? OperandRegisterText(operand_parts.front()) : "";
+    const std::string destination_file =
+        has_destination ? OperandRegisterFile(destination_register) : "";
+    const bool has_export_dest =
+        destination_file == "color_export" ||
+        destination_file == "position_export" ||
+        destination_file == "interpolator_export";
 
     if (!first) {
       out << ",\n";
@@ -1763,7 +1952,28 @@ void EmitDisassemblyOperationsJson(std::ostream &out,
     out << "    {\"address\": \"" << JsonEscape(address_text)
         << "\", \"opcode\": \"" << JsonEscape(opcode)
         << "\", \"operands\": \"" << JsonEscape(operands)
-        << "\", \"text\": \"" << JsonEscape(text) << "\"}";
+        << "\", \"text\": \"" << JsonEscape(text) << "\""
+        << ", \"coissued\": " << (coissued ? "true" : "false")
+        << ", \"category\": \""
+        << JsonEscape(OperationCategory(opcode, has_export_dest)) << "\"";
+    if (has_destination) {
+      out << ", \"dest\": ";
+      EmitOperandJson(out, operand_parts.front());
+    }
+    out << ", \"sources\": [";
+    const std::size_t first_source = has_destination ? 1u : 0u;
+    for (std::size_t i = first_source; i < operand_parts.size(); ++i) {
+      if (i != first_source) {
+        out << ", ";
+      }
+      EmitOperandJson(out, operand_parts[i]);
+    }
+    out << "]";
+    if (const std::optional<int> fetch_index =
+            FetchConstantIndex(opcode, operand_parts)) {
+      out << ", \"fetch_constant\": " << *fetch_index;
+    }
+    out << "}";
   }
   out << "\n  ],\n";
 }

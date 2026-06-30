@@ -434,7 +434,9 @@ Observed metadata:
 
 - VS `0x5D918D91043B3ED0`: `float_count=10`, `vertex_fetch_bitmap[2]=0x80000000`, one vertex binding on fetch constant `95`, stride `8` dwords, with attributes for Xenos formats `38`, `6`, and `37`.
 - PS `0xC4ED2979F29C9139`: `float_count=5`, four `tfetch2D` texture bindings using fetch constants `4`, `3`, `2`, and `1`.
-- The generated `operations` arrays include real opcode records for `vfetch_full`, `vfetch_mini`, `mad`, `dp4`, `tfetch2D`, `mul`, and `dp2add`. Compound scalar disassembly lines are still preserved as text-first records when they are not yet split into full typed operands.
+- The generated `operations` arrays include real opcode records for `vfetch_full`, `vfetch_mini`, `mad`, `dp4`, `tfetch2D`, `mul`, and `dp2add`.
+- Operation records now include normalized `category`, `coissued`, `dest`, `sources`, register file/index/mask metadata, and `fetch_constant` for texture/vertex fetches. On real-resource PS `0xC4ED2979F29C9139`, semantic IR contains `31` typed operations, `4` texture-fetch operations, `5` co-issued scalar operations, and one typed `oC0` color export.
+- Representative typed PS records now cover `tfetch2D r0.__x_, r0.xy, tf4` with `fetch_constant=4`, `cndeq r2.xy__, r0.wwww, r0.xyyy, r2.xyyy`, co-issued `floors r0.___w, r0.w`, `dp2add r0.x___, r3.zxxx, c255.wyyy, c252.yyyy`, and final `mul oC0, r0.xywz, r1`.
 
 Static extracted `.ucode` files remain unresolved for semantic decode. They still dump raw words and raw IR correctly, but the tested static files begin with extracted metadata/constants rather than the exact runtime shader payload layout expected by `Shader::AnalyzeUcode`. A first auto-offset scan was removed because a wrong static offset can make the analyzer run too long. The next static-file task is to reverse the extracted `.ucode` layout or use the container descriptor fields to pass only the true microcode program range to the analyzer.
 

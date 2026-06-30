@@ -85,6 +85,40 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 
 DXIL note: the generated VS DXIL blob compiles successfully with DXC, but a mixed DXIL VS / existing DXBC PS replay attempt failed PSO creation with HRESULT `0x80070057`. The source-backed DXBC path is the current validated D3D12 binding path for the generated VS.
 
+## 2026-06-30 typed semantic operand pass
+
+Build:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j8 native_shader_inspect native_render_replay"
+```
+
+- Result: exit code `0`.
+
+Semantic IR commands:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xC4ED2979F29C9139 --write-semantic-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0x5D918D91043B3ED0 --write-semantic-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
+```
+
+- PS output: `shader_work\cache\ir\PS_0xC4ED2979F29C9139.semantic.bo2shaderir.json`.
+- VS output: `shader_work\cache\ir\VS_0x5D918D91043B3ED0.semantic.bo2shaderir.json`.
+- PS typed operation evidence: `31` operations, `31` operations with `sources`, `5` co-issued scalar ops, `4` texture-fetch ops, and one typed color export.
+- Representative typed PS records include `tfetch2D` with `fetch_constant=4`, `cndeq`, co-issued `floors`, `dp2add`, and final `mul oC0`.
+
+D3D12 regression:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\sidecar_capture_002\events.jsonl --backend d3d12 --shader-override-root C:\Users\braxt\bo2-recompiled\native_captures\empty_shader_overrides --shader-cache-root C:\Users\braxt\bo2-recompiled\shader_work\cache-mixed-translated-vs-source-test-002 --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-semantic-operands-regression-d3d12-real.bmp --no-summary
+```
+
+- Result: exit code `0`.
+- Replay submitted `5/5` supported draws, bound `5` captured texture SRVs, bound `5` captured samplers, and applied captured render state from draw `748`.
+- Output SHA-256: `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+
+Status: this makes the real-resource PS IR materially more useful for lowering, but automatic PS HLSL generation is still incomplete.
+
 ## 2026-06-28 index-payload pass
 
 Full Windows build:
