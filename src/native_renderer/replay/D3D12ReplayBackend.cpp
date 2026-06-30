@@ -600,7 +600,7 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
       if ((attribute.data_format == 38 || attribute.data_format == 57 ||
            attribute.data_format == 36 || attribute.data_format == 26 ||
            (attribute.data_format == 37 && fetch.attributes.size() == 1)) &&
-          !components.empty()) {
+          !components.empty() && !has_position) {
         has_position = true;
         if (attribute.data_format == 26) {
           vertex.position[0] =
@@ -624,6 +624,11 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
               static_cast<float>((vertex_index * 37u) & 0xFFu) / 255.0f;
           vertex.color[3] = 1.0f;
         }
+      } else if (attribute.data_format == 38 && components.size() >= 4) {
+        vertex.color[0] = components[0];
+        vertex.color[1] = components[1];
+        vertex.color[2] = components[2];
+        vertex.color[3] = components[3];
       } else if (attribute.data_format == 6 && components.size() >= 4) {
         vertex.color[0] = components[0];
         vertex.color[1] = components[1];

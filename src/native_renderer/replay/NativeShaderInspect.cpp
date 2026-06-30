@@ -2552,6 +2552,43 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
   }
 
   if (runtime_shader.stage == 0 &&
+      runtime_shader.hash == 0x1E6883FCCDE1F688ull &&
+      disassembly.find("vfetch_full r1.xyz1") != std::string::npos &&
+      disassembly.find("vfetch_mini r0") != std::string::npos &&
+      disassembly.find("max o0, r0, r0") != std::string::npos &&
+      disassembly.find("max oPos, r1, r1") != std::string::npos) {
+    out << "cbuffer FrameConstants : register(b0)\n";
+    out << "{\n";
+    out << "  float2 surface_size;\n";
+    out << "  float2 _pad;\n";
+    out << "};\n\n";
+    out << "struct VSInput\n";
+    out << "{\n";
+    out << "  float4 position : POSITION;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "struct VSOutput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 r0 : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "VSOutput main(VSInput input)\n";
+    out << "{\n";
+    out << "  VSOutput output;\n";
+    out << "  // Xenos subset: vfetch_full r1.xyz1, vfetch_mini r0,\n";
+    out << "  // max o0, r0, r0 and max oPos, r1, r1. The replay vertex\n";
+    out << "  // canonicalizer maps the second FMT_32_32_32_32_FLOAT fetch to COLOR0.\n";
+    out << "  const float2 ndc = float2(input.position.x / surface_size.x * 2.0f - 1.0f,\n";
+    out << "                            1.0f - input.position.y / surface_size.y * 2.0f);\n";
+    out << "  output.position = float4(ndc, input.position.z, 1.0f);\n";
+    out << "  output.r0 = input.color;\n";
+    out << "  return output;\n";
+    out << "}\n";
+    return true;
+  }
+
+  if (runtime_shader.stage == 0 &&
       disassembly.find("max o0.0000, r0, r0") != std::string::npos &&
       disassembly.find("max oPos.0001, r1, r1") != std::string::npos) {
     out << "struct VSInput\n";
