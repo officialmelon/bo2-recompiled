@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #if defined(_WIN32)
@@ -557,6 +558,15 @@ struct UploadedRealDraw {
   std::array<std::string, kMaxRealReplayTextureSlots> texture_notes;
 };
 
+struct D3D12ReplayPipeline {
+  uint64_t vertex_shader_hash = 0;
+  uint64_t pixel_shader_hash = 0;
+  ComPtr<ID3D12RootSignature> root_signature;
+  ComPtr<ID3D12PipelineState> pipeline_state;
+  const RenderStateRecord *render_state = nullptr;
+  bool used_diagnostic_shader = false;
+};
+
 struct NativeShaderOverridePair {
   std::filesystem::path vertex_path;
   std::filesystem::path pixel_path;
@@ -892,6 +902,8 @@ std::size_t CountDrawsForShaderPair(const ReplayCapture &capture,
   }
   return count;
 }
+
+using ShaderPairKey = std::tuple<uint64_t, uint64_t>;
 
 struct FrameRealReplayPlan {
   std::size_t frame_index = 0;
@@ -2560,15 +2572,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       return false;
     }
     prepared = frame_plan.supported_draws.front();
-    const ReplayDrawState &first_state = capture.draws[prepared.draw_index];
-    for (const PreparedRealDraw &candidate : frame_plan.supported_draws) {
-      const ReplayDrawState &candidate_state =
-          capture.draws[candidate.draw_index];
-      if (candidate_state.vertex_shader.hash == first_state.vertex_shader.hash &&
-          candidate_state.pixel_shader.hash == first_state.pixel_shader.hash) {
-        prepared_draws.push_back(candidate);
-      }
-    }
+    prepared_draws = frame_plan.supported_draws;
   } else {
     if (!PrepareFirstRealDraw(capture, options, prepared, error)) {
       return false;
@@ -2577,38 +2581,6 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   }
 
   const ReplayDrawState &draw_state = capture.draws[prepared.draw_index];
-  NativeShaderOverridePair override_pair;
-  const char *vertex_shader_source = nullptr;
-  const char *pixel_shader_source = nullptr;
-  const char *vertex_shader_entry = "VSMain";
-  const char *pixel_shader_entry = "PSMain";
-  const char *vertex_shader_profile = "vs_5_0";
-  const char *pixel_shader_profile = "ps_5_0";
-  std::string vertex_shader_name_storage = "NativeRenderReplayDiagnostic.hlsl";
-  std::string pixel_shader_name_storage = "NativeRenderReplayDiagnostic.hlsl";
-  bool using_shader_override = false;
-  bool write_override_cache_index = false;
-  if (LoadNativeShaderOverridePair(draw_state, options, override_pair, error)) {
-    vertex_shader_source = override_pair.vertex_source.c_str();
-    pixel_shader_source = override_pair.pixel_source.c_str();
-    vertex_shader_entry = override_pair.vertex_entry.c_str();
-    pixel_shader_entry = override_pair.pixel_entry.c_str();
-    vertex_shader_profile = override_pair.vertex_profile.c_str();
-    pixel_shader_profile = override_pair.pixel_profile.c_str();
-    vertex_shader_name_storage = override_pair.vertex_path.string();
-    pixel_shader_name_storage = override_pair.pixel_path.string();
-    using_shader_override = true;
-    write_override_cache_index = !override_pair.vertex_source.empty() &&
-                                 !override_pair.pixel_source.empty();
-  } else if (options.allow_diagnostic_shader) {
-    vertex_shader_source = DiagnosticRealGeometryShaderSource();
-    pixel_shader_source = DiagnosticRealGeometryShaderSource();
-    vertex_shader_name_storage = "NativeRenderReplayDiagnosticVS.hlsl";
-    pixel_shader_name_storage = "NativeRenderReplayDiagnosticPS.hlsl";
-  } else {
-    return false;
-  }
-
   const ReplaySurfaceSize size = ChooseSurfaceSize(capture);
   const uint32_t width = std::clamp<uint32_t>(size.width, 64, 3840);
   const uint32_t height = std::clamp<uint32_t>(size.height, 64, 2160);
@@ -2692,36 +2664,124 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       rtv_heap->GetCPUDescriptorHandleForHeapStart();
   device->CreateRenderTargetView(target.Get(), nullptr, rtv);
 
-  ComPtr<ID3D12RootSignature> root_signature;
-  ComPtr<ID3D12PipelineState> pipeline_state;
-  const RenderStateRecord *pipeline_render_state =
-      draw_state.draw.render_state.present ? &draw_state.draw.render_state
-                                           : nullptr;
-  if (!CreateRealGeometryPipeline(device.Get(), root_signature, pipeline_state,
-                                  format, pipeline_render_state,
-                                  vertex_shader_source,
-                                  vertex_shader_name_storage.c_str(),
-                                  vertex_shader_entry, vertex_shader_profile,
-                                  override_pair.vertex_cache_path,
-                                  override_pair.vertex_log_path,
-                                  pixel_shader_source,
-                                  pixel_shader_name_storage.c_str(),
-                                  pixel_shader_entry, pixel_shader_profile,
-                                  override_pair.pixel_cache_path,
-                                  override_pair.pixel_log_path, error)) {
+  std::map<ShaderPairKey, D3D12ReplayPipeline> pipelines;
+  std::size_t pso_cache_hits = 0;
+  std::size_t pso_cache_misses = 0;
+  std::size_t diagnostic_pipeline_count = 0;
+  std::size_t cache_index_write_count = 0;
+  auto get_pipeline_for_draw =
+      [&](const ReplayDrawState &state) -> D3D12ReplayPipeline * {
+    const ShaderPairKey key{state.vertex_shader.hash, state.pixel_shader.hash};
+    auto found = pipelines.find(key);
+    if (found != pipelines.end()) {
+      ++pso_cache_hits;
+      return &found->second;
+    }
+
+    NativeShaderOverridePair override_pair;
+    const char *vertex_shader_source = nullptr;
+    const char *pixel_shader_source = nullptr;
+    const char *vertex_shader_entry = "VSMain";
+    const char *pixel_shader_entry = "PSMain";
+    const char *vertex_shader_profile = "vs_5_0";
+    const char *pixel_shader_profile = "ps_5_0";
+    std::string vertex_shader_name_storage = "NativeRenderReplayDiagnostic.hlsl";
+    std::string pixel_shader_name_storage = "NativeRenderReplayDiagnostic.hlsl";
+    bool write_override_cache_index = false;
+    bool used_diagnostic_shader = false;
+    if (LoadNativeShaderOverridePair(state, options, override_pair, error)) {
+      vertex_shader_source = override_pair.vertex_source.c_str();
+      pixel_shader_source = override_pair.pixel_source.c_str();
+      vertex_shader_entry = override_pair.vertex_entry.c_str();
+      pixel_shader_entry = override_pair.pixel_entry.c_str();
+      vertex_shader_profile = override_pair.vertex_profile.c_str();
+      pixel_shader_profile = override_pair.pixel_profile.c_str();
+      vertex_shader_name_storage = override_pair.vertex_path.string();
+      pixel_shader_name_storage = override_pair.pixel_path.string();
+      write_override_cache_index = !override_pair.vertex_source.empty() &&
+                                   !override_pair.pixel_source.empty();
+    } else if (options.allow_diagnostic_shader) {
+      vertex_shader_source = DiagnosticRealGeometryShaderSource();
+      pixel_shader_source = DiagnosticRealGeometryShaderSource();
+      vertex_shader_name_storage = "NativeRenderReplayDiagnosticVS.hlsl";
+      pixel_shader_name_storage = "NativeRenderReplayDiagnosticPS.hlsl";
+      used_diagnostic_shader = true;
+    } else {
+      return nullptr;
+    }
+
+    D3D12ReplayPipeline pipeline;
+    pipeline.vertex_shader_hash = state.vertex_shader.hash;
+    pipeline.pixel_shader_hash = state.pixel_shader.hash;
+    pipeline.render_state =
+        state.draw.render_state.present ? &state.draw.render_state : nullptr;
+    pipeline.used_diagnostic_shader = used_diagnostic_shader;
+    if (!CreateRealGeometryPipeline(
+            device.Get(), pipeline.root_signature, pipeline.pipeline_state,
+            format, pipeline.render_state, vertex_shader_source,
+            vertex_shader_name_storage.c_str(), vertex_shader_entry,
+            vertex_shader_profile, override_pair.vertex_cache_path,
+            override_pair.vertex_log_path, pixel_shader_source,
+            pixel_shader_name_storage.c_str(), pixel_shader_entry,
+            pixel_shader_profile, override_pair.pixel_cache_path,
+            override_pair.pixel_log_path, error)) {
+      error = "could not create D3D12 real replay PSO for draw " +
+              std::to_string(state.draw_index) + " VS=" +
+              FormatHex64(state.vertex_shader.hash) + " PS=" +
+              FormatHex64(state.pixel_shader.hash) + ": " + error;
+      return nullptr;
+    }
+    if (write_override_cache_index &&
+        !WriteOverrideCacheIndex(state, options, override_pair, error)) {
+      return nullptr;
+    }
+    ++pso_cache_misses;
+    if (used_diagnostic_shader) {
+      ++diagnostic_pipeline_count;
+    }
+    auto [inserted, _] = pipelines.emplace(key, std::move(pipeline));
+    return &inserted->second;
+  };
+
+  std::vector<PreparedRealDraw> pipeline_supported_draws;
+  pipeline_supported_draws.reserve(prepared_draws.size());
+  for (const PreparedRealDraw &prepared_draw : prepared_draws) {
+    const ReplayDrawState &state = capture.draws[prepared_draw.draw_index];
+    if (get_pipeline_for_draw(state)) {
+      pipeline_supported_draws.push_back(prepared_draw);
+      continue;
+    }
+    if (frame_replay && options.skip_unsupported) {
+      std::string reason =
+          "D3D12 pipeline creation failed for VS=" +
+          FormatHex64(state.vertex_shader.hash) + " PS=" +
+          FormatHex64(state.pixel_shader.hash);
+      if (!error.empty()) {
+        const std::size_t detail = error.rfind(": ");
+        reason += detail == std::string::npos ? ": " + error
+                                               : error.substr(detail);
+      }
+      ++frame_plan.skipped_draw_count;
+      ++frame_plan.unsupported_reasons[reason];
+      error.clear();
+      continue;
+    }
     return false;
   }
-  if (write_override_cache_index &&
-      !WriteOverrideCacheIndex(draw_state, options, override_pair, error)) {
+  prepared_draws = std::move(pipeline_supported_draws);
+  if (prepared_draws.empty()) {
+    error = "selected frame has no draw with both supported geometry and a "
+            "creatable D3D12 real replay PSO";
     return false;
   }
+  cache_index_write_count = pso_cache_misses - diagnostic_pipeline_count;
 
   if (frame_replay) {
     std::cout << "D3D12 frame replay plan frame=" << frame_plan.frame_index
               << " frame_draws=" << frame_plan.frame_draw_count
               << " geometry_supported=" << frame_plan.supported_draws.size()
               << " skipped=" << frame_plan.skipped_draw_count
-              << " rendered_current_shader_pair=" << prepared_draws.size()
+              << " submitted_supported_draws=" << prepared_draws.size()
               << " skip_unsupported="
               << (options.skip_unsupported ? "yes" : "no") << "\n";
     if (frame_plan.used_pre_frame_bucket) {
@@ -2733,11 +2793,6 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       for (const auto &[reason, count] : frame_plan.unsupported_reasons) {
         std::cout << "  " << count << " x " << reason << "\n";
       }
-    }
-    if (prepared_draws.size() != frame_plan.supported_draws.size()) {
-      std::cout << "D3D12 frame replay is still limited to one shader-pair "
-                   "batch; per-draw PSO switching is required to render all "
-                   "supported frame draws\n";
     }
   }
 
@@ -2898,13 +2953,36 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       CreateSampler(device.Get(), selected_fetch, sampler_descriptor);
     }
   }
-  std::cout << "D3D12 real replay submitted " << uploaded_draws.size()
-            << " supported draw(s) for shader pair VS="
-            << FormatHex64(draw_state.vertex_shader.hash) << " PS="
-            << FormatHex64(draw_state.pixel_shader.hash) << " out of "
-            << CountDrawsForShaderPair(capture, draw_state.vertex_shader.hash,
-                                       draw_state.pixel_shader.hash)
-            << " captured draw(s) with that pair\n";
+  if (frame_replay) {
+    std::map<ShaderPairKey, std::size_t> submitted_pairs;
+    for (const UploadedRealDraw &uploaded : uploaded_draws) {
+      const ReplayDrawState &state = capture.draws[uploaded.prepared.draw_index];
+      ++submitted_pairs[{state.vertex_shader.hash, state.pixel_shader.hash}];
+    }
+    std::cout << "D3D12 real frame replay submitted " << uploaded_draws.size()
+              << " supported draw(s) across " << submitted_pairs.size()
+              << " shader pair(s)\n";
+    for (const auto &[key, count] : submitted_pairs) {
+      std::cout << "  pair VS=" << FormatHex64(std::get<0>(key))
+                << " PS=" << FormatHex64(std::get<1>(key))
+                << " submitted=" << count << " captured="
+                << CountDrawsForShaderPair(capture, std::get<0>(key),
+                                           std::get<1>(key))
+                << "\n";
+    }
+  } else {
+    std::cout << "D3D12 real replay submitted " << uploaded_draws.size()
+              << " supported draw(s) for shader pair VS="
+              << FormatHex64(draw_state.vertex_shader.hash) << " PS="
+              << FormatHex64(draw_state.pixel_shader.hash) << " out of "
+              << CountDrawsForShaderPair(capture, draw_state.vertex_shader.hash,
+                                         draw_state.pixel_shader.hash)
+              << " captured draw(s) with that pair\n";
+  }
+  std::cout << "D3D12 real replay PSO cache: entries=" << pipelines.size()
+            << " misses=" << pso_cache_misses << " hits=" << pso_cache_hits
+            << " diagnostic_pipelines=" << diagnostic_pipeline_count
+            << " cache_index_writes=" << cache_index_write_count << "\n";
   std::cout << "D3D12 real replay bound " << captured_texture_count
             << " captured texture SRV(s), " << fallback_texture_count
             << " fallback texture SRV(s), unsupported_texture_attempts="
@@ -2917,17 +2995,20 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             << exact_sampler_clamp_count
             << ", clamp_addressing_fallbacks="
             << fallback_sampler_clamp_count << "\n";
-  if (pipeline_render_state) {
+  const RenderStateRecord *first_pipeline_render_state =
+      draw_state.draw.render_state.present ? &draw_state.draw.render_state
+                                           : nullptr;
+  if (first_pipeline_render_state) {
     std::cout << "D3D12 real replay applied render state from draw "
               << prepared.draw_index << ": color_mask="
-              << FormatHex32(pipeline_render_state->rb_color_mask)
-              << " cull=" << pipeline_render_state->cull_mode
+              << FormatHex32(first_pipeline_render_state->rb_color_mask)
+              << " cull=" << first_pipeline_render_state->cull_mode
               << " depth_test="
-              << (pipeline_render_state->depth_test_enable ? "yes" : "no")
+              << (first_pipeline_render_state->depth_test_enable ? "yes" : "no")
               << " depth_write="
-              << (pipeline_render_state->depth_write_enable ? "yes" : "no")
+              << (first_pipeline_render_state->depth_write_enable ? "yes" : "no")
               << " stencil="
-              << (pipeline_render_state->stencil_enable ? "yes" : "no")
+              << (first_pipeline_render_state->stencil_enable ? "yes" : "no")
               << "\n";
   } else {
     std::cout << "D3D12 real replay render state unavailable";
@@ -2944,24 +3025,35 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   viewport.MaxDepth = 1.0f;
 
   D3D12_RECT scissor =
-      ScissorRectFromRenderState(pipeline_render_state, width, height);
+      ScissorRectFromRenderState(first_pipeline_render_state, width, height);
 
   list->ClearRenderTargetView(rtv, clear_value.Color, 0, nullptr);
   ID3D12DescriptorHeap *descriptor_heaps[] = {srv_heap.Get(),
                                               sampler_heap.Get()};
   list->SetDescriptorHeaps(2, descriptor_heaps);
-  list->SetGraphicsRootSignature(root_signature.Get());
-  list->SetPipelineState(pipeline_state.Get());
   list->RSSetViewports(1, &viewport);
   list->RSSetScissorRects(1, &scissor);
   list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
   const float constants[4] = {static_cast<float>(width),
                               static_cast<float>(height), 0.0f, 0.0f};
-  list->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
 
+  D3D12ReplayPipeline *bound_pipeline = nullptr;
   for (const UploadedRealDraw &uploaded : uploaded_draws) {
     const ReplayDrawState &uploaded_state =
         capture.draws[uploaded.prepared.draw_index];
+    D3D12ReplayPipeline *pipeline = get_pipeline_for_draw(uploaded_state);
+    if (!pipeline) {
+      return false;
+    }
+    if (pipeline != bound_pipeline) {
+      list->SetGraphicsRootSignature(pipeline->root_signature.Get());
+      list->SetPipelineState(pipeline->pipeline_state.Get());
+      list->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
+      bound_pipeline = pipeline;
+    }
+    const D3D12_RECT draw_scissor =
+        ScissorRectFromRenderState(pipeline->render_state, width, height);
+    list->RSSetScissorRects(1, &draw_scissor);
     list->SetGraphicsRoot32BitConstants(
         1, static_cast<UINT>(uploaded.constants.dwords.size()),
         uploaded.constants.dwords.data(), 0);
