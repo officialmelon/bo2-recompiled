@@ -602,6 +602,8 @@ native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_capture
 native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --semantic-disassemble
 native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --write-semantic C:\Users\braxt\bo2-recompiled\shader_work\out\semantic --write-semantic-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
 native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --write-semantic C:\Users\braxt\bo2-recompiled\shader_work\out\semantic --write-semantic-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --write-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --write-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
 native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --shader-usage
 ```
 
@@ -613,6 +615,10 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
   - `shader_work\cache\ir\VS_0xB6C9863F710683EC.semantic.bo2shaderir.json`
   - `shader_work\out\semantic\PS_0xA4A965C189287B99.xenos.semantic.txt`
   - `shader_work\cache\ir\PS_0xA4A965C189287B99.semantic.bo2shaderir.json`
+- Diagnostic HLSL scaffold writing succeeds:
+  - `shader_work\cache\hlsl\VS_0xB6C9863F710683EC.diagnostic.hlsl`
+  - `shader_work\cache\hlsl\PS_0xA4A965C189287B99.diagnostic.hlsl`
+  These files are explicitly diagnostic/interface scaffolding and are not counted as real Xenos translation.
 - Replay shader usage on `shader_probe_capture_007` still parses `5000` events, `1106` draws, `8` unique runtime shaders, `7` shader pairs, and `233/233` shader payload uploads with payload.
 - Static extracted `.ucode` semantic decode is not accepted as solved. The raw static commands still work, but static `.ucode` files include extracted metadata/constants before the analyzer's expected payload; an attempted offset scan was removed because wrong offsets can run too long. The next reverse-engineering target is the extracted `.ucode` file layout/container descriptor boundary, or direct semantic IR generation from captured runtime PM4 payloads.
 

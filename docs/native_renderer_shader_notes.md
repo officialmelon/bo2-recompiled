@@ -336,6 +336,20 @@ Verified outputs:
 
 The runtime semantic IR schema is `bo2shaderir.semantic_xenos.v1`. It currently records source capture, runtime hash, draw/load counts, payload hashes, control-flow bound, register bound, export metadata, decoded disassembly lines, and raw backing words. It is a semantic inspection/cache artifact, not yet a complete executable shader IR for HLSL generation.
 
+Diagnostic runtime HLSL scaffolding is now available for captured runtime shader hashes:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --write-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --write-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
+```
+
+Verified outputs:
+
+- `shader_work\cache\hlsl\VS_0xB6C9863F710683EC.diagnostic.hlsl`
+- `shader_work\cache\hlsl\PS_0xA4A965C189287B99.diagnostic.hlsl`
+
+These files are deliberately labeled diagnostic. They define stable entry points and placeholder bindings for captured constants at `b1`, texture `t0`, and sampler `s0`, but they do not lower decoded Xenos ALU/texture operations yet.
+
 Static extracted `.ucode` files remain unresolved for semantic decode. They still dump raw words and raw IR correctly, but the tested static files begin with extracted metadata/constants rather than the exact runtime shader payload layout expected by `Shader::AnalyzeUcode`. A first auto-offset scan was removed because a wrong static offset can make the analyzer run too long. The next static-file task is to reverse the extracted `.ucode` layout or use the container descriptor fields to pass only the true microcode program range to the analyzer.
 
 ## Native renderer path forward

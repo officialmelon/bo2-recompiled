@@ -49,6 +49,7 @@ struct CliOptions {
   std::filesystem::path ir_output_path;
   std::filesystem::path semantic_output_path;
   std::filesystem::path semantic_ir_output_path;
+  std::filesystem::path hlsl_output_path;
   bool show_summary = false;
   bool find_hash = false;
   bool list_runtime_shaders = false;
@@ -183,6 +184,8 @@ void PrintHelp() {
             << "                     Write semantic Xenos analysis to file or directory\n"
             << "  --write-semantic-ir <path>\n"
             << "                     Write semantic backend-neutral shader IR JSON\n"
+            << "  --write-hlsl <path>\n"
+            << "                     Write diagnostic HLSL from runtime semantic metadata\n"
             << "  --top-shaders <n>  Runtime shader/pair print limit (default 20)\n"
             << "  --hash <value>     Hash or substring to find\n"
             << "  --find             Search the index for --hash\n"
@@ -1839,6 +1842,109 @@ bool WriteSemanticRuntimeIrArtifact(const RuntimeShaderCapture &capture,
   return true;
 }
 
+std::filesystem::path MakeRuntimeHlslArtifactPath(
+    const std::filesystem::path &requested, const RuntimeShaderUsage &shader) {
+  if (requested.has_extension()) {
+    return requested;
+  }
+  std::string stem = RuntimeSemanticArtifactStem(shader);
+  std::replace(stem.begin(), stem.end(), ':', '_');
+  return requested / (stem + ".diagnostic.hlsl");
+}
+
+void EmitDiagnosticRuntimeHlsl(std::ostream &out,
+                               const RuntimeShaderCapture &capture,
+                               const RuntimeShaderUsage &runtime_shader) {
+  out << "// BO2 native renderer diagnostic HLSL generated from runtime "
+         "semantic metadata.\n";
+  out << "// This is interface scaffolding, not real translated Xenos shader "
+         "code.\n";
+  out << "// capture: " << capture.path.string() << "\n";
+  out << "// runtime_hash: " << Hex64(runtime_shader.hash) << "\n";
+  out << "// stage: " << StageName(runtime_shader.stage) << "\n";
+  out << "// payload_sha256_le: " << runtime_shader.payload_sha256_le << "\n";
+  out << "// payload_sha256_be: " << runtime_shader.payload_sha256_be << "\n\n";
+  out << "cbuffer BO2CapturedConstants : register(b1)\n";
+  out << "{\n";
+  out << "  uint4 bo2_constants[256];\n";
+  out << "};\n\n";
+
+  if (runtime_shader.stage == 0) {
+    out << "struct VSInput\n";
+    out << "{\n";
+    out << "  float3 position : POSITION0;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 texcoord : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "struct VSOutput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 texcoord : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "VSOutput main(VSInput input)\n";
+    out << "{\n";
+    out << "  VSOutput output;\n";
+    out << "  output.position = float4(input.position.xy, input.position.z, "
+           "1.0);\n";
+    out << "  output.color = input.color;\n";
+    out << "  output.texcoord = input.texcoord;\n";
+    out << "  return output;\n";
+    out << "}\n";
+  } else {
+    out << "Texture2D bo2_texture0 : register(t0);\n";
+    out << "SamplerState bo2_sampler0 : register(s0);\n\n";
+    out << "struct PSInput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 texcoord : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "float4 main(PSInput input) : SV_Target0\n";
+    out << "{\n";
+    out << "  float4 texel = bo2_texture0.Sample(bo2_sampler0, "
+           "input.texcoord);\n";
+    out << "  return input.color * texel;\n";
+    out << "}\n";
+  }
+}
+
+bool WriteRuntimeDiagnosticHlslArtifact(const RuntimeShaderCapture &capture,
+                                        uint64_t runtime_hash,
+                                        const std::filesystem::path &requested,
+                                        std::filesystem::path &written_path,
+                                        std::string &error) {
+  const RuntimeShaderUsage *runtime_shader =
+      FindRuntimeShaderByHash(capture, runtime_hash);
+  if (!runtime_shader) {
+    error = "runtime shader hash not found in capture: " + Hex64(runtime_hash);
+    return false;
+  }
+
+  written_path = MakeRuntimeHlslArtifactPath(requested, *runtime_shader);
+  std::error_code ec;
+  const std::filesystem::path parent = written_path.parent_path();
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      error = "could not create HLSL output directory " + parent.string() +
+              ": " + ec.message();
+      return false;
+    }
+  }
+  std::ofstream file(written_path, std::ios::binary);
+  if (!file) {
+    error = "could not open HLSL output: " + written_path.string();
+    return false;
+  }
+  EmitDiagnosticRuntimeHlsl(file, capture, *runtime_shader);
+  if (!file) {
+    error = "could not write HLSL output: " + written_path.string();
+    return false;
+  }
+  return true;
+}
+
 std::optional<PayloadPrefixMatch> FindPayloadPrefixMatch(
     const std::vector<uint32_t> &secondary_dwords,
     const std::vector<uint32_t> &payload_dwords) {
@@ -2512,6 +2618,12 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.semantic_ir_output_path = value;
+    } else if (arg == "--write-hlsl") {
+      const char *value = require_value("--write-hlsl");
+      if (!value) {
+        return 2;
+      }
+      cli.hlsl_output_path = value;
     } else if (arg == "--top-shaders") {
       const char *value = require_value("--top-shaders");
       if (!value || !ParseSize(value, cli.top_shaders)) {
@@ -2543,7 +2655,7 @@ int main(int argc, char **argv) {
       !cli.shader_path.empty() || !cli.microcode_path.empty() ||
       !cli.disasm_output_path.empty() || !cli.ir_output_path.empty() ||
       !cli.semantic_output_path.empty() ||
-      !cli.semantic_ir_output_path.empty();
+      !cli.semantic_ir_output_path.empty() || !cli.hlsl_output_path.empty();
   if (!cli.show_summary && !cli.find_hash && !cli.list_runtime_shaders &&
       !cli.match_runtime_shaders && !cli.semantic_disassemble &&
       !file_inspection) {
@@ -2591,6 +2703,12 @@ int main(int argc, char **argv) {
       (cli.capture_path.empty() || cli.hash.empty())) {
     std::cerr << "--write-semantic-ir requires either --microcode <path> or "
                  "--capture <events.jsonl> and --hash <runtime_shader_hash>\n";
+    return 2;
+  }
+  if (!cli.hlsl_output_path.empty() &&
+      (cli.capture_path.empty() || cli.hash.empty())) {
+    std::cerr << "--write-hlsl requires --capture <events.jsonl> and --hash "
+                 "<runtime_shader_hash>\n";
     return 2;
   }
 
@@ -2694,7 +2812,8 @@ int main(int argc, char **argv) {
                              (!cli.semantic_output_path.empty() &&
                               cli.microcode_path.empty()) ||
                              (!cli.semantic_ir_output_path.empty() &&
-                              cli.microcode_path.empty());
+                              cli.microcode_path.empty()) ||
+                             !cli.hlsl_output_path.empty();
   if (!needs_index && !needs_capture) {
     return 0;
   }
@@ -2781,6 +2900,27 @@ int main(int argc, char **argv) {
       return 1;
     }
     std::cout << "wrote_semantic_ir=" << written_path.string() << "\n";
+    printed_anything = true;
+  }
+
+  if (!cli.hlsl_output_path.empty()) {
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    const auto hash = ParseHexU64(cli.hash);
+    if (!hash) {
+      std::cerr << "--hash expects a hexadecimal runtime shader hash\n";
+      return 2;
+    }
+    std::filesystem::path written_path;
+    std::string error;
+    if (!WriteRuntimeDiagnosticHlslArtifact(runtime_capture, *hash,
+                                            cli.hlsl_output_path, written_path,
+                                            error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    std::cout << "wrote_hlsl=" << written_path.string() << "\n";
     printed_anything = true;
   }
 

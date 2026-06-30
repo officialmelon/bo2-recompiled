@@ -57,6 +57,7 @@ native_shader_inspect.exe --index shader_work\shaders\index.json --capture nativ
 native_shader_inspect.exe --microcode shader_work\shaders\microcode\<stage_hash>.ucode --write-disasm shader_work\out\disasm
 native_shader_inspect.exe --microcode shader_work\shaders\microcode\<stage_hash>.ucode --write-ir shader_work\cache\ir
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --semantic-disassemble
+native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --write-hlsl shader_work\cache\hlsl
 ```
 
 Verified summary:
@@ -122,6 +123,22 @@ Verified output:
 
 This is not yet cached translated shader output. It is the first real semantic decode layer for captured runtime payloads and is the input for the next semantic IR/HLSL pass.
 
+## Diagnostic HLSL scaffold
+
+`native_shader_inspect.exe --write-hlsl` now writes metadata-driven diagnostic HLSL from a captured runtime shader hash. Verified commands:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --write-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --write-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
+```
+
+Outputs:
+
+- `shader_work\cache\hlsl\VS_0xB6C9863F710683EC.diagnostic.hlsl`
+- `shader_work\cache\hlsl\PS_0xA4A965C189287B99.diagnostic.hlsl`
+
+These files are explicitly marked diagnostic in comments and are not real Xenos translations. They provide the first generator/cache layout for runtime shader metadata, constants at `b1`, texture/sampler placeholders at `t0/s0`, and a stable entry point shape for later DXC/DXIL wiring.
+
 Static extracted `.ucode` semantic decode is still blocked by file-layout ambiguity. Raw `.ucode` artifact commands still work, but tested static files include metadata/constants before the analyzer's expected payload range.
 
 ## Not implemented yet
@@ -130,6 +147,7 @@ Static extracted `.ucode` semantic decode is still blocked by file-layout ambigu
 - Complete static-file Xenos shader disassembler.
 - Complete executable backend-neutral shader IR for runtime shaders. A raw unresolved `bo2shaderir.raw_xenos.v1` JSON skeleton exists for static `.ucode`, and runtime `bo2shaderir.semantic_xenos.v1` inspection artifacts now exist, but they are not yet a complete HLSL-ready operation graph.
 - HLSL/SPIR-V generation.
+- Real HLSL/SPIR-V generation from decoded Xenos operations. A diagnostic HLSL scaffold exists, but it does not lower semantic Xenos instructions.
 - DXC integration.
 - Persistent compiled shader cache.
 - DXC/DXIL compiler integration.
