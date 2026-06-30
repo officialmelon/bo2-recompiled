@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -761,6 +762,70 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
   return false;
 }
 
+std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
+                                            std::size_t index,
+                                            bool allow_non_indexed) {
+  if (index >= capture.draws.size()) {
+    return "draw index is out of range";
+  }
+
+  const ReplayDrawState &state = capture.draws[index];
+  const PM4DrawRecord &draw = state.draw;
+  const D3D12_PRIMITIVE_TOPOLOGY topology =
+      TopologyForPrimitive(draw.primitive_type);
+  if (!draw.indexed && !allow_non_indexed) {
+    return "non-indexed draw requires explicit draw/frame replay";
+  }
+  if (draw.vertex_fetches.empty()) {
+    return "draw has no captured vertex/fetch state";
+  }
+  if (topology != D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST &&
+      topology != D3D_PRIMITIVE_TOPOLOGY_POINTLIST) {
+    return "unsupported primitive topology " +
+           std::to_string(draw.primitive_type);
+  }
+  if (draw.indexed) {
+    if (draw.index_payload_missing) {
+      return "indexed draw has no captured index payload";
+    }
+    if (draw.index_payload_truncated) {
+      return "indexed draw index payload is truncated";
+    }
+    const std::vector<uint32_t> decoded_indices = DecodeReplayIndices(draw);
+    if (decoded_indices.empty()) {
+      return "indexed draw decoded no index values";
+    }
+    const uint32_t max_index =
+        *std::max_element(decoded_indices.begin(), decoded_indices.end());
+    for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
+      std::vector<RealReplayVertex> vertices;
+      if (BuildCanonicalVertices(fetch, vertices) &&
+          max_index < vertices.size()) {
+        return {};
+      }
+    }
+    return "decoded index range exceeds all captured vertex payloads";
+  }
+
+  if (draw.index_count == 0) {
+    return "non-indexed draw has zero vertex count";
+  }
+  for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
+    std::vector<RealReplayVertex> vertices;
+    if (!BuildCanonicalVertices(fetch, vertices)) {
+      continue;
+    }
+    const uint32_t needed =
+        topology == D3D_PRIMITIVE_TOPOLOGY_POINTLIST
+            ? static_cast<uint32_t>(vertices.size())
+            : draw.index_count;
+    if (needed <= vertices.size()) {
+      return {};
+    }
+  }
+  return "draw has no decodable canonical vertex payload";
+}
+
 bool PrepareFirstRealDraw(const ReplayCapture &capture,
                           const ReplayCliOptions &options,
                           PreparedRealDraw &prepared, std::string &error) {
@@ -826,6 +891,83 @@ std::size_t CountDrawsForShaderPair(const ReplayCapture &capture,
     }
   }
   return count;
+}
+
+struct FrameRealReplayPlan {
+  std::size_t frame_index = 0;
+  std::size_t frame_draw_count = 0;
+  std::size_t skipped_draw_count = 0;
+  bool used_pre_frame_bucket = false;
+  std::vector<PreparedRealDraw> supported_draws;
+  std::map<std::string, std::size_t> unsupported_reasons;
+};
+
+bool PrepareFrameRealReplayPlan(const ReplayCapture &capture,
+                                const ReplayCliOptions &options,
+                                FrameRealReplayPlan &plan,
+                                std::string &error) {
+  if (!options.frame_index) {
+    error = "frame replay plan requested without --frame";
+    return false;
+  }
+  if (*options.frame_index >= capture.frames.size()) {
+    error = "selected frame is out of range";
+    return false;
+  }
+
+  const ReplayFrame &frame = capture.frames[*options.frame_index];
+  plan.frame_index = *options.frame_index;
+  plan.frame_draw_count = frame.draw_count;
+  const bool capture_has_frame_draws =
+      std::any_of(capture.frames.begin(), capture.frames.end(),
+                  [](const ReplayFrame &candidate) {
+                    return candidate.draw_count != 0;
+                  });
+  std::size_t begin = frame.first_draw_index;
+  std::size_t end =
+      std::min<std::size_t>(begin + frame.draw_count, capture.draws.size());
+  if (frame.draw_count == 0 && !capture_has_frame_draws &&
+      *options.frame_index == 0) {
+    begin = 0;
+    end = capture.draws.size();
+    plan.frame_draw_count = capture.draws.size();
+    plan.used_pre_frame_bucket = true;
+  }
+  for (std::size_t draw_index = begin; draw_index < end; ++draw_index) {
+    PreparedRealDraw prepared;
+    if (PrepareRealDrawAtIndex(capture, draw_index, true, prepared)) {
+      plan.supported_draws.push_back(std::move(prepared));
+      if (plan.supported_draws.size() >= options.d3d12_draw_limit) {
+        break;
+      }
+      continue;
+    }
+
+    std::string reason =
+        DescribeRealDrawGeometrySupport(capture, draw_index, true);
+    if (reason.empty()) {
+      reason = "draw is unsupported by current D3D12 real replay path";
+    }
+    ++plan.skipped_draw_count;
+    ++plan.unsupported_reasons[reason];
+    if (!options.skip_unsupported) {
+      const ReplayDrawState &state = capture.draws[draw_index];
+      error = "D3D12 frame replay strict failure at frame " +
+              std::to_string(*options.frame_index) + " draw " +
+              std::to_string(draw_index) + " event " +
+              std::to_string(state.draw.event) + " VS=" +
+              FormatHex64(state.vertex_shader.hash) + " PS=" +
+              FormatHex64(state.pixel_shader.hash) + ": " + reason;
+      return false;
+    }
+  }
+
+  if (plan.supported_draws.empty()) {
+    error = "selected frame has no draw with complete geometry currently "
+            "supported by D3D12 real replay";
+    return false;
+  }
+  return true;
 }
 
 bool CreateUploadBuffer(ID3D12Device *device, const void *data,
@@ -2409,13 +2551,32 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
                                std::string &error) {
 #if defined(_WIN32)
   PreparedRealDraw prepared;
-  if (!PrepareFirstRealDraw(capture, options, prepared, error)) {
-    return false;
+  std::vector<PreparedRealDraw> prepared_draws;
+  FrameRealReplayPlan frame_plan;
+  const bool frame_replay =
+      options.frame_index.has_value() && !options.draw_index.has_value();
+  if (frame_replay) {
+    if (!PrepareFrameRealReplayPlan(capture, options, frame_plan, error)) {
+      return false;
+    }
+    prepared = frame_plan.supported_draws.front();
+    const ReplayDrawState &first_state = capture.draws[prepared.draw_index];
+    for (const PreparedRealDraw &candidate : frame_plan.supported_draws) {
+      const ReplayDrawState &candidate_state =
+          capture.draws[candidate.draw_index];
+      if (candidate_state.vertex_shader.hash == first_state.vertex_shader.hash &&
+          candidate_state.pixel_shader.hash == first_state.pixel_shader.hash) {
+        prepared_draws.push_back(candidate);
+      }
+    }
+  } else {
+    if (!PrepareFirstRealDraw(capture, options, prepared, error)) {
+      return false;
+    }
+    prepared_draws = CollectSupportedRealDraws(capture, options, prepared);
   }
 
   const ReplayDrawState &draw_state = capture.draws[prepared.draw_index];
-  const std::vector<PreparedRealDraw> prepared_draws =
-      CollectSupportedRealDraws(capture, options, prepared);
   NativeShaderOverridePair override_pair;
   const char *vertex_shader_source = nullptr;
   const char *pixel_shader_source = nullptr;
@@ -2553,6 +2714,31 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   if (write_override_cache_index &&
       !WriteOverrideCacheIndex(draw_state, options, override_pair, error)) {
     return false;
+  }
+
+  if (frame_replay) {
+    std::cout << "D3D12 frame replay plan frame=" << frame_plan.frame_index
+              << " frame_draws=" << frame_plan.frame_draw_count
+              << " geometry_supported=" << frame_plan.supported_draws.size()
+              << " skipped=" << frame_plan.skipped_draw_count
+              << " rendered_current_shader_pair=" << prepared_draws.size()
+              << " skip_unsupported="
+              << (options.skip_unsupported ? "yes" : "no") << "\n";
+    if (frame_plan.used_pre_frame_bucket) {
+      std::cout << "D3D12 frame replay used pre-frame draw bucket because this "
+                   "capture has frame markers but no frame-owned PM4 draws\n";
+    }
+    if (!frame_plan.unsupported_reasons.empty()) {
+      std::cout << "D3D12 frame replay unsupported reason counts:\n";
+      for (const auto &[reason, count] : frame_plan.unsupported_reasons) {
+        std::cout << "  " << count << " x " << reason << "\n";
+      }
+    }
+    if (prepared_draws.size() != frame_plan.supported_draws.size()) {
+      std::cout << "D3D12 frame replay is still limited to one shader-pair "
+                   "batch; per-draw PSO switching is required to render all "
+                   "supported frame draws\n";
+    }
   }
 
   std::vector<UploadedRealDraw> uploaded_draws;

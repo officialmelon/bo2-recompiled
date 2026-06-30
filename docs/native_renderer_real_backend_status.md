@@ -99,3 +99,15 @@ Draw `1209` in `native_captures\shader_payload_capture_001` has enough packet da
 4. Expand D3D12 real replay from one selected draw to all supported draws in the captured frame.
 5. Add DXC/DXIL support and reuse the same cache index for translated shaders.
 6. Add sidecar payload capture for larger vertex buffers. PM4 swap/frontbuffer sidecars are implemented, but draw-time render-target/depth snapshots are still missing.
+
+## Frame replay status
+
+The real D3D12 replay path now accepts `--strict` and `--skip-unsupported`. For `--frame N --backend d3d12`, the default behavior is strict/fail-closed: the first unsupported draw stops replay and reports the draw index, event id, shader hashes, and concrete unsupported reason. `--skip-unsupported` enables a bring-up mode that groups unsupported reasons and renders the first currently supported shader-pair batch.
+
+Verified on `native_captures\vertex_recapture_001\events.jsonl`:
+
+- Strict command: `native_render_replay.exe --capture native_captures\vertex_recapture_001\events.jsonl --frame 0 --backend d3d12 --shader-override-root empty_shader_overrides --shader-cache-root shader_work\cache --d3d12-output native-renderer-frame0-strict-d3d12.bmp --no-summary`
+- Strict result: exit `1`, `D3D12 frame replay strict failure at frame 0 draw 0 event 1 VS=0xB6C9863F710683EC PS=0xA4A965C189287B99: draw has no captured vertex/fetch state`.
+- Skip command: `native_render_replay.exe --capture native_captures\vertex_recapture_001\events.jsonl --frame 0 --backend d3d12 --skip-unsupported --shader-override-root empty_shader_overrides --shader-cache-root shader_work\cache --d3d12-output native-renderer-frame0-skip-d3d12.bmp --no-summary`
+- Skip result: exit `0`, `frame_draws=2415`, `geometry_supported=260`, `skipped=2155`, `rendered_current_shader_pair=120`, output `native-renderer-frame0-skip-d3d12.bmp`.
+- Capture-boundary note: this capture has `46` frame markers, but every PM4 draw is currently classified before those markers. Frame `0` therefore uses an explicitly logged pre-frame draw bucket fallback for this capture only. The next capture/replay target is assigning PM4 draws to actual frame ranges, then replacing the one-shader-pair batch limitation with per-draw PSO/root-state switching.

@@ -2521,6 +2521,10 @@ void PrintHelp() {
       << "  --allow-diagnostic-shader\n"
          "                          Permit --backend d3d12 to use the "
          "temporary diagnostic shader fallback\n"
+      << "  --strict               Fail frame replay on the first unsupported "
+         "draw (default for --frame --backend d3d12)\n"
+      << "  --skip-unsupported     In frame replay, skip unsupported draws and "
+         "print grouped reasons\n"
       << "  --validate             Parse/analyze only; output errors decide "
          "exit code\n"
       << "  --help                 Show this help\n";
@@ -4078,6 +4082,10 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       cli.validate_only = true;
     } else if (arg == "--allow-diagnostic-shader") {
       cli.allow_diagnostic_shader = true;
+    } else if (arg == "--strict") {
+      cli.strict_frame_replay = true;
+    } else if (arg == "--skip-unsupported") {
+      cli.skip_unsupported = true;
     } else if (arg == "--frame") {
       const char *value = require_value("--frame");
       std::size_t parsed = 0;

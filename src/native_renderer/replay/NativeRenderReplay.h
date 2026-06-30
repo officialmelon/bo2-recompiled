@@ -554,6 +554,8 @@ struct ReplayCliOptions {
   bool show_shader_record_probes = false;
   bool validate_only = false;
   bool allow_diagnostic_shader = false;
+  bool strict_frame_replay = false;
+  bool skip_unsupported = false;
   std::optional<std::size_t> frame_index;
   std::optional<std::size_t> draw_index;
   std::optional<std::size_t> frontbuffer_index;
