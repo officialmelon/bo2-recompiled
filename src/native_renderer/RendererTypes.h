@@ -199,8 +199,6 @@ struct VertexFetchInfo {
 };
 
 struct TextureFetchInfo {
-  static constexpr std::size_t kMaxPayloadBytes = 16 * 1024;
-
   uint32_t shader_type = 0;
   uint32_t binding_index = 0;
   uint32_t fetch_constant = 0;
@@ -245,7 +243,7 @@ struct TextureFetchInfo {
   uint32_t dimension = 0;
   bool packed_mips = false;
   uint32_t payload_byte_count = 0;
-  std::array<uint8_t, kMaxPayloadBytes> payload_bytes{};
+  std::vector<uint8_t> payload_bytes;
   bool payload_truncated = false;
   bool payload_missing = true;
 };

@@ -200,14 +200,17 @@ void CopyTextureFetchInfo(const TextureFetchEvent &source,
   target.aniso_bias = source.aniso_bias;
   target.dimension = source.dimension;
   target.packed_mips = source.packed_mips;
-  target.payload_byte_count = std::min<uint32_t>(
-      source.payload_byte_count, target.payload_bytes.size());
-  for (uint32_t j = 0; j < target.payload_byte_count; ++j) {
+  target.payload_byte_count = source.payload_byte_count;
+  const uint32_t captured_payload_count = std::min<uint32_t>(
+      source.payload_byte_count,
+      static_cast<uint32_t>(std::size(source.payload_bytes)));
+  target.payload_bytes.resize(captured_payload_count);
+  for (uint32_t j = 0; j < captured_payload_count; ++j) {
     target.payload_bytes[j] = source.payload_bytes[j];
   }
   target.payload_truncated =
       source.payload_truncated ||
-      source.payload_byte_count > target.payload_bytes.size();
+      source.payload_byte_count > captured_payload_count;
   target.payload_missing = source.payload_missing;
 }
 
