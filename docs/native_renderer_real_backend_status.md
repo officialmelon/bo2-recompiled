@@ -1,6 +1,6 @@
 # Native Renderer Real Backend Status
 
-Last updated: 2026-06-29
+Last updated: 2026-07-01
 
 ## Status
 
@@ -89,12 +89,12 @@ Draw `1209` in `native_captures\shader_payload_capture_001` has enough packet da
 - Latest D3D12 render-state evidence: real replay on `state_capture_004` reports `D3D12 real replay applied render state from draw 799: color_mask=0x0000000F cull=2 depth_test=no depth_write=no stencil=no`. The replay PSO now consumes the captured rasterizer cull/front-face/fill/depth-clip subset, color write mask, blend factors/ops, and disabled depth/stencil state for the first supported draw.
 - Latest present-resource evidence: fresh `frontbuffer_capture_001` validates `3000` events, `16` frames, `673` draws, and `15` PM4 swap frontbuffer sidecars totaling `55296000` bytes. The manifest parses with `15` `frontbuffer_payload` resources, each `3686400` bytes (`1280x720x4`). The first observed payloads are all zero, so the blocker has moved from no present payload capture to needing draw-time color/depth target payloads from the render-state base registers.
 - Latest target-resource evidence: fresh `target_snapshot_capture_003` validates `1800` events, `10` frames, and `395` draws, with `368` color target sidecars and `369` depth target sidecars. Draw `29` records a corrected `1280x720x4` target footprint with `payload=16384/3686400` at `offset=1843200`. All scanned color/depth target sidecars are zero, which proves CPU target-base copies are not enough; the next target is ReXGlue/Xenos GPU render-target backing/readback or resolve instrumentation.
-- Missing: automatic Xenos shader translation, DXC/DXIL compilation, full constant-layout reconstruction, GPU-side render-target/depth readback or resolve snapshots, texture formats/mips beyond 2D format `6`, full sampler LOD/mip validation, real DSV binding for depth-enabled draws, per-state PSO switching across heterogeneous draws, and full-frame multi-draw replay.
+- Missing: automatic Xenos shader translation, DXC/DXIL compilation, full constant-layout reconstruction, GPU-side render-target/depth readback or resolve snapshots, texture formats/mips beyond the current decoded subset, full sampler LOD/mip validation, exact Xenos stencil-op translation, and full-frame draw sequencing against real BO2 frame boundaries.
 
 ## Next implementation targets
 
 1. Expand sidecar-backed texture snapshots beyond 2D format `6`: mip footprints, compressed/packed formats, and additional captured formats.
-2. Expand captured render-state handling: GPU-side color/depth target readback or resolve snapshots, real target descriptors, real DSV binding for depth-enabled draws, per-draw/per-state PSO switching, and complete stencil/blend coverage.
+2. Expand captured render-state handling: GPU-side color/depth target readback or resolve snapshots, real target descriptors, exact Xenos stencil-op translation, and complete blend coverage.
 3. Replace flattened constant root data with layout-aware constant buffers from shader metadata.
 4. Expand D3D12 real replay from one selected draw to all supported draws in the captured frame.
 5. Add DXC/DXIL support and reuse the same cache index for translated shaders.
@@ -114,5 +114,5 @@ Verified on `native_captures\vertex_recapture_001\events.jsonl`:
 - Captured-state PSO-key result: exit `0`, same `230` submitted draws, output `native-renderer-statekey-frame0-skip-d3d12.bmp`, `PSO cache: entries=8 misses=8 hits=222`. The key now includes shader hashes, expanded topology, render target format, captured depth/color formats, blend/depth/stencil/raster registers, decoded depth/stencil/cull/fill/front-face flags, color mask, and MSAA sample count.
 - Phase 1 input/resource result: exit `0` for `--draw 24 --d3d12-draws 128`, `120/120` submitted, output `native-renderer-phase1-draw24-d3d12.bmp`, and `PSO cache: entries=3 misses=3 hits=117`, proving the same shader pair now splits by captured state/input-layout keying. Frame skip replay still submits `230` draws across `5` shader pairs and writes `native-renderer-phase1-frame0-d3d12.bmp`.
 - Real texture strictness result: `--draw 909 --d3d12-draws 32 --backend d3d12` exits `0`, submits `26/26` draws for `81311A/246E`, binds `104` captured texture SRVs and `104` captured samplers, and reports `0` texture fallbacks. Unsupported captured texture fetches now fail strict real replay or are counted/skipped only under frame `--skip-unsupported`.
-- DSV status: real D3D12 replay now creates, clears, and binds an offscreen `D32_FLOAT` DSV for real draws. This validates DSV plumbing and lets depth-enabled PSOs bind a depth target, but it is not yet captured BO2 depth data.
+- DSV status: real D3D12 replay now creates, clears, and binds an offscreen `D24_UNORM_S8_UINT` DSV for real draws. Captured depth test/write flags, depth compare, stencil enable, stencil masks, and stencil ref now feed the PSO/stencil state. Verified `--draw 24 --d3d12-draws 128 --backend d3d12` submits `120/120` draws and reports `depth_enabled_draws=82 depth_write_draws=82 stencil_enabled_draws=120`; verified frame skip replay still submits `230` supported draws across `5` shader pairs. This is still not captured BO2 depth contents, and stencil ops are currently conservative `KEEP` operations until the Xenos op fields are decoded.
 - Capture-boundary note: this capture has `46` frame markers, but every PM4 draw is currently classified before those markers. Frame `0` therefore uses an explicitly logged pre-frame draw bucket fallback for this capture only. The next capture/replay targets are assigning PM4 draws to actual frame ranges and replacing the offscreen placeholder target/depth resources with captured BO2 target/depth resources.

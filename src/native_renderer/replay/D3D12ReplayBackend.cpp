@@ -42,6 +42,7 @@ constexpr uint32_t kInputLayoutColor0 = 1u << 1;
 constexpr uint32_t kInputLayoutTexcoord0 = 1u << 2;
 constexpr uint32_t kInputLayoutNormal0 = 1u << 3;
 constexpr uint32_t kInputLayoutTexcoord1 = 1u << 4;
+constexpr DXGI_FORMAT kReplayDepthStencilFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 
 bool CompileShader(const char *source, const char *entry, const char *target,
                    const char *source_name, ComPtr<ID3DBlob> &blob,
@@ -167,6 +168,32 @@ D3D12_COMPARISON_FUNC D3D12CompareFuncFromXenos(uint32_t func) {
   return kMap[func & 0x7];
 }
 
+D3D12_DEPTH_STENCILOP_DESC DefaultKeepStencilOp(D3D12_COMPARISON_FUNC func) {
+  D3D12_DEPTH_STENCILOP_DESC op{};
+  op.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+  op.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+  op.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+  op.StencilFunc = func;
+  return op;
+}
+
+uint8_t StencilReadMaskFromRenderState(const RenderStateRecord &state) {
+  const uint32_t mask = (state.rb_stencilrefmask >> 8) & 0xFF;
+  return static_cast<uint8_t>(mask ? mask : D3D12_DEFAULT_STENCIL_READ_MASK);
+}
+
+uint8_t StencilWriteMaskFromRenderState(const RenderStateRecord &state) {
+  const uint32_t mask = (state.rb_stencilrefmask >> 16) & 0xFF;
+  return static_cast<uint8_t>(mask ? mask : D3D12_DEFAULT_STENCIL_WRITE_MASK);
+}
+
+uint32_t StencilRefFromRenderState(const RenderStateRecord *state) {
+  if (!state || !state->present) {
+    return 0;
+  }
+  return state->rb_stencilrefmask & 0xFF;
+}
+
 D3D12_BLEND D3D12BlendFromXenos(uint32_t factor, bool alpha) {
   static constexpr D3D12_BLEND kColorMap[32] = {
       D3D12_BLEND_ZERO,
@@ -281,12 +308,21 @@ D3D12_DEPTH_STENCIL_DESC DepthStencilDescFromRenderState(
     return desc;
   }
 
-  // The replay target does not have a captured depth resource yet. Keep the PSO
-  // valid while preserving the disabled-depth case exactly for current draws.
-  desc.DepthEnable = FALSE;
-  desc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+  desc.DepthEnable =
+      (state->depth_test_enable || state->depth_write_enable) ? TRUE : FALSE;
+  desc.DepthWriteMask = state->depth_write_enable
+                            ? D3D12_DEPTH_WRITE_MASK_ALL
+                            : D3D12_DEPTH_WRITE_MASK_ZERO;
   desc.DepthFunc = D3D12CompareFuncFromXenos(state->depth_func);
-  desc.StencilEnable = FALSE;
+  desc.StencilEnable = state->stencil_enable ? TRUE : FALSE;
+  if (state->stencil_enable) {
+    desc.StencilReadMask = StencilReadMaskFromRenderState(*state);
+    desc.StencilWriteMask = StencilWriteMaskFromRenderState(*state);
+    const D3D12_COMPARISON_FUNC stencil_func =
+        D3D12CompareFuncFromXenos((state->rb_depthcontrol >> 8) & 0x7);
+    desc.FrontFace = DefaultKeepStencilOp(stencil_func);
+    desc.BackFace = DefaultKeepStencilOp(stencil_func);
+  }
   return desc;
 }
 
@@ -1687,7 +1723,7 @@ bool CreateRealGeometryPipeline(
   pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   pso_desc.NumRenderTargets = 1;
   pso_desc.RTVFormats[0] = format;
-  pso_desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+  pso_desc.DSVFormat = kReplayDepthStencilFormat;
   pso_desc.SampleDesc.Count = 1;
   pso_desc.SampleDesc.Quality = 0;
 
@@ -2956,13 +2992,13 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   depth_desc.Height = height;
   depth_desc.DepthOrArraySize = 1;
   depth_desc.MipLevels = 1;
-  depth_desc.Format = DXGI_FORMAT_D32_FLOAT;
+  depth_desc.Format = kReplayDepthStencilFormat;
   depth_desc.SampleDesc.Count = 1;
   depth_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
   depth_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
   D3D12_CLEAR_VALUE depth_clear{};
-  depth_clear.Format = DXGI_FORMAT_D32_FLOAT;
+  depth_clear.Format = kReplayDepthStencilFormat;
   depth_clear.DepthStencil.Depth = 1.0f;
   depth_clear.DepthStencil.Stencil = 0;
 
@@ -3351,6 +3387,29 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             << exact_sampler_clamp_count
             << ", clamp_addressing_fallbacks="
             << fallback_sampler_clamp_count << "\n";
+  std::size_t depth_enabled_draws = 0;
+  std::size_t depth_write_draws = 0;
+  std::size_t stencil_enabled_draws = 0;
+  for (const UploadedRealDraw &uploaded : uploaded_draws) {
+    const ReplayDrawState &state = capture.draws[uploaded.prepared.draw_index];
+    if (!state.draw.render_state.present) {
+      continue;
+    }
+    if (state.draw.render_state.depth_test_enable ||
+        state.draw.render_state.depth_write_enable) {
+      ++depth_enabled_draws;
+    }
+    if (state.draw.render_state.depth_write_enable) {
+      ++depth_write_draws;
+    }
+    if (state.draw.render_state.stencil_enable) {
+      ++stencil_enabled_draws;
+    }
+  }
+  std::cout << "D3D12 real replay depth target format=D24_UNORM_S8_UINT"
+            << " depth_enabled_draws=" << depth_enabled_draws
+            << " depth_write_draws=" << depth_write_draws
+            << " stencil_enabled_draws=" << stencil_enabled_draws << "\n";
   const RenderStateRecord *first_pipeline_render_state =
       draw_state.draw.render_state.present ? &draw_state.draw.render_state
                                            : nullptr;
@@ -3390,8 +3449,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   list->RSSetViewports(1, &viewport);
   list->RSSetScissorRects(1, &scissor);
   list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-  list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0,
-                              nullptr);
+  list->ClearDepthStencilView(
+      dsv, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0,
+      nullptr);
   const float constants[4] = {static_cast<float>(width),
                               static_cast<float>(height), 0.0f, 0.0f};
 
@@ -3410,6 +3470,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       list->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
       bound_pipeline = pipeline;
     }
+    list->OMSetStencilRef(StencilRefFromRenderState(pipeline->render_state));
     const D3D12_RECT draw_scissor =
         ScissorRectFromRenderState(pipeline->render_state, width, height);
     list->RSSetScissorRects(1, &draw_scissor);
