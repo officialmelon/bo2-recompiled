@@ -577,6 +577,7 @@ struct ShaderCacheRecord {
   std::string backend;
   std::string stage;
   uint64_t runtime_hash = 0;
+  std::string entry;
   std::string profile;
   std::string compiler;
   std::string format;

@@ -2760,6 +2760,7 @@ bool LoadShaderCacheIndex(const std::filesystem::path &path,
     record.backend = GetString(object, "backend");
     record.stage = GetString(object, "stage");
     record.runtime_hash = GetU64(object, "runtime_hash");
+    record.entry = GetString(object, "entry");
     record.profile = GetString(object, "profile");
     record.compiler = GetString(object, "compiler");
     record.format = GetString(object, "format");

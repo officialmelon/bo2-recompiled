@@ -22,6 +22,7 @@ The D3D12 replay backend now resolves shaders in this order:
 6. Fail closed.
 
 Real replay ignores cache entries marked `"diagnostic": true`; JSONL cache entries may point at either `.dxbc` or `.dxil` blobs.
+JSONL cache entries may also include a `source` HLSL path and `entry`; if the cache blob is missing, the D3D12 replay backend can compile that source into the requested cache path.
 
 The manual D3D12 replay override cache still stores D3DCompile output (`.dxbc`). A separate generated diagnostic DXC path now stores `.dxil`; real translated-shader DXC/DXIL is still required for the final shader pipeline.
 
@@ -49,6 +50,7 @@ Verified behavior:
 - `state_capture_004` real D3D12 replay compiles the layout4 override pair and reports `D3D12 real replay bound 4 captured texture SRV(s), 0 fallback texture SRV(s), unsupported_texture_attempts=0` and `D3D12 real replay bound 4 captured sampler descriptor(s), 0 fallback sampler descriptor(s)`.
 - Cache-only layout4 replay with `--shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache` also succeeds on `state_capture_004`, binds the same `4` captured texture SRVs and `4` captured sampler descriptors, and writes `native-renderer-state-capture-004-d3d12-sampler-bound-cache-only.bmp`, SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 - JSONL cache-only replay was verified with a temporary cache root containing only `shader_cache_index.jsonl` and no override manifest. On `sidecar_capture_002`, `native_render_replay.exe --backend d3d12 --shader-override-root native_captures\empty_shader_overrides --shader-cache-root shader_work\cache-jsonl-replay-test` submitted `5/5` supported draws, bound `5` captured texture SRVs and `5` captured samplers, applied captured render state from draw `748`, and wrote `native-renderer-cache-jsonl-d3d12-real.bmp`, SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+- Mixed generated/manual shader replay was verified with `shader_work\cache-mixed-translated-vs-source-test-002\shader_cache_index.jsonl`: VS `0x5D918D91043B3ED0` came from generated `xenos_limited_semantic_v2` HLSL and compiled through replay-side `D3DCompile` to `shader_work\cache-mixed-translated-vs-source-test-002\d3d12\VS_0x5D918D91043B3ED0.translated.v2.d3dcompile.dxbc` (`17148` bytes), while PS `0xC4ED2979F29C9139` came from the existing manual cached PS blob. With `--shader-override-root native_captures\empty_shader_overrides`, replay submitted `5/5` supported draws and wrote `native-renderer-mixed-translated-vs-source-002-d3d12-real.bmp`, SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
 
 Current supported commands:
 
@@ -233,7 +235,14 @@ Verified outputs:
 - `shader_work\cache\logs\PS_0xA4A965C189287B99.translated.dxc.dxc.log`
 - `shader_work\cache\shader_cache_index.jsonl`
 
-The first VS/PS compile prints `cache_hit=false`; a repeated VS command prints `cache_hit=true`. Unsupported shaders fail closed before compilation. The current real-resource VS `0x5D918D91043B3ED0` returns `no limited translated-HLSL rule`.
+The first VS/PS compile prints `cache_hit=false`; a repeated VS command prints `cache_hit=true`. The real-resource VS `0x5D918D91043B3ED0` now generates HLSL from the decoded `vfetch`/`dp4`/export pattern and compiles to:
+
+- `shader_work\cache\hlsl\VS_0x5D918D91043B3ED0.translated.hlsl`
+- `shader_work\cache\hlsl\VS_0x5D918D91043B3ED0.translated.v2.dxc.hlsl`
+- `shader_work\cache\d3d12\VS_0x5D918D91043B3ED0.translated.v2.dxc.dxil`
+- `shader_work\cache\logs\VS_0x5D918D91043B3ED0.translated.v2.dxc.dxc.log`
+
+Unsupported shaders still fail closed before compilation. The real-resource PS `0xC4ED2979F29C9139` is not automatically translated yet.
 
 Static extracted `.ucode` semantic decode is still blocked by file-layout ambiguity. Raw `.ucode` artifact commands still work, but tested static files include metadata/constants before the analyzer's expected payload range.
 

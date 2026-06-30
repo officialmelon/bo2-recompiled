@@ -132,7 +132,9 @@ Latest real-resource semantic check on `shader_probe_capture_007`:
 - VS `0x5D918D91043B3ED0`: one vertex binding (`vf95`), three attributes, `vfetch_full`, two `vfetch_mini` operations, `mad`, `sge`, seven `dp4` matrix/vector operations, `max oPos`, `max o0.xy__`, and `max o1`.
 - PS `0xC4ED2979F29C9139`: four texture bindings (`tf4`, `tf3`, `tf2`, `tf1`), `mul`, `sge`, `sne`, `floors`, `mulsc`, `cndeq`, four `tfetch2D` operations, `dp2add`, `dp3`, `adds`, `add`, and final `mul o0`.
 
-This pair should not be represented by a small pattern rule. The next implementation target is a real semantic lowering path for ALU/vector ops, texture fetch ops, swizzles/write masks, constants, and interpolator exports/imports.
+The VS side now has a limited generated lowering rule for this exact decoded pattern. It emits canonical replay-interface HLSL because replay has already decoded `vf95` into `POSITION`, `COLOR0`, and `TEXCOORD0`. This is a useful step beyond a manual VS override, but it is not a complete Xenos VS translator because the full constant-driven matrix path is not represented as general IR yet.
+
+The PS side should not be represented by a small pattern rule. The next implementation target is a real semantic lowering path for pixel ALU/vector ops, texture fetch ops, swizzles/write masks, constants, and interpolator imports.
 
 ## Runtime replay shader evidence
 

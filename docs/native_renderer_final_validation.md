@@ -46,6 +46,45 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
 
 Status: D3D12 real replay can now resolve non-diagnostic cache records from `shader_cache_index.jsonl` and accepts both `.dxbc` and `.dxil` blobs. The limited translated DXIL pair still needs a resource-backed capture/draw and compatible shader interface before it can be proven as rendered scene output.
 
+## 2026-06-30 generated real-resource VS pass
+
+Targeted builds:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j8 native_shader_inspect native_render_replay"
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j8 native_render_replay"
+```
+
+- Results: both exit code `0`.
+
+Generated VS commands:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0x5D918D91043B3ED0 --write-translated-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0x5D918D91043B3ED0 --compile-translated-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+```
+
+- Generated HLSL: `shader_work\cache\hlsl\VS_0x5D918D91043B3ED0.translated.hlsl`.
+- Generated DXC source: `shader_work\cache\hlsl\VS_0x5D918D91043B3ED0.translated.v2.dxc.hlsl`.
+- Generated DXIL: `shader_work\cache\d3d12\VS_0x5D918D91043B3ED0.translated.v2.dxc.dxil`.
+- DXC log: `shader_work\cache\logs\VS_0x5D918D91043B3ED0.translated.v2.dxc.dxc.log`.
+- DXC result: `cache_hit=false` on first compile.
+
+Real D3D12 replay with generated VS source:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\sidecar_capture_002\events.jsonl --backend d3d12 --shader-override-root C:\Users\braxt\bo2-recompiled\native_captures\empty_shader_overrides --shader-cache-root C:\Users\braxt\bo2-recompiled\shader_work\cache-mixed-translated-vs-source-test-002 --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mixed-translated-vs-source-002-d3d12-real.bmp --no-summary
+```
+
+- Result: exit code `0`.
+- Shader source: JSONL cache root only; override root was empty.
+- VS `0x5D918D91043B3ED0`: generated `xenos_limited_semantic_v2` HLSL compiled by replay-side `D3DCompile` to `shader_work\cache-mixed-translated-vs-source-test-002\d3d12\VS_0x5D918D91043B3ED0.translated.v2.d3dcompile.dxbc` (`17148` bytes).
+- PS `0xC4ED2979F29C9139`: existing manual cached PS blob.
+- Replay submitted `5/5` supported draws, bound `5` captured texture SRVs, bound `5` captured samplers, and applied captured render state from draw `748`.
+- Output SHA-256: `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+
+DXIL note: the generated VS DXIL blob compiles successfully with DXC, but a mixed DXIL VS / existing DXBC PS replay attempt failed PSO creation with HRESULT `0x80070057`. The source-backed DXBC path is the current validated D3D12 binding path for the generated VS.
+
 ## 2026-06-28 index-payload pass
 
 Full Windows build:

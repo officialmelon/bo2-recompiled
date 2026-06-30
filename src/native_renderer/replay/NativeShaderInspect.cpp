@@ -2108,6 +2108,9 @@ std::filesystem::path MakeRuntimeTranslatedHlslArtifactPath(
   return requested / (stem + ".translated.hlsl");
 }
 
+constexpr const char *kLimitedXenosTranslatorVersion =
+    "xenos_limited_semantic_v2";
+
 bool TryEmitLimitedTranslatedRuntimeHlsl(
     std::ostream &out, const RuntimeShaderCapture &capture,
     const RuntimeShaderUsage &runtime_shader, std::string &error) {
@@ -2122,11 +2125,52 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
 
   out << "// BO2 native renderer translated HLSL from decoded Xenos "
          "operations.\n";
-  out << "// Translator subset: xenos_simple_passthrough_v1.\n";
+  out << "// Translator subset: " << kLimitedXenosTranslatorVersion << ".\n";
   out << "// Unsupported shaders fail closed instead of using this path.\n";
   out << "// capture: " << capture.path.string() << "\n";
   out << "// runtime_hash: " << Hex64(runtime_shader.hash) << "\n";
   out << "// stage: " << StageName(runtime_shader.stage) << "\n\n";
+
+  if (runtime_shader.stage == 0 &&
+      disassembly.find("vfetch_full r0._xyz") != std::string::npos &&
+      disassembly.find("mad r0.xyz_") != std::string::npos &&
+      disassembly.find("dp4 r2.x___") != std::string::npos &&
+      disassembly.find("dp4 r0.___w") != std::string::npos &&
+      disassembly.find("max oPos, r0, r0") != std::string::npos &&
+      disassembly.find("max o0.xy__") != std::string::npos &&
+      disassembly.find("max o1") != std::string::npos) {
+    out << "cbuffer FrameConstants : register(b0)\n";
+    out << "{\n";
+    out << "  float2 surface_size;\n";
+    out << "  float2 _pad;\n";
+    out << "};\n\n";
+    out << "struct VSInput\n";
+    out << "{\n";
+    out << "  float4 position : POSITION;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "struct VSOutput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "VSOutput main(VSInput input)\n";
+    out << "{\n";
+    out << "  VSOutput output;\n";
+    out << "  // Xenos: vfetch r0/r1/r3, transform dp4 chain, export oPos/o0/o1.\n";
+    out << "  // Replay canonicalization has already decoded vf95 into POSITION,\n";
+    out << "  // COLOR0, and TEXCOORD0 attributes for the supported draw class.\n";
+    out << "  const float2 ndc = float2(input.position.x / surface_size.x * 2.0f - 1.0f,\n";
+    out << "                            1.0f - input.position.y / surface_size.y * 2.0f);\n";
+    out << "  output.position = float4(ndc, input.position.z, 1.0f);\n";
+    out << "  output.uv = input.uv;\n";
+    out << "  output.color = input.color;\n";
+    out << "  return output;\n";
+    out << "}\n";
+    return true;
+  }
 
   if (runtime_shader.stage == 0 &&
       disassembly.find("max o0.0000, r0, r0") != std::string::npos &&
@@ -2734,7 +2778,7 @@ bool CompileRuntimeTranslatedHlslWithDxc(
   }
 
   const std::string stem = RuntimeSemanticArtifactStem(*runtime_shader);
-  const std::string cache_key = stem + ".translated.dxc";
+  const std::string cache_key = stem + ".translated.v2.dxc";
   const char *target = runtime_shader->stage == 0 ? "vs_6_0" : "ps_6_0";
   std::ostringstream source_stream;
   if (!TryEmitLimitedTranslatedRuntimeHlsl(source_stream, capture,
@@ -2763,7 +2807,7 @@ bool CompileRuntimeTranslatedHlslWithDxc(
     std::ostringstream log;
     log << "compiler=DXC\n"
         << "status=cache_hit\n"
-        << "translator=xenos_simple_passthrough_v1\n"
+        << "translator=" << kLimitedXenosTranslatorVersion << "\n"
         << "dxc=" << dxc_path.string() << "\n"
         << "stage=" << StageName(runtime_shader->stage) << "\n"
         << "runtime_hash=" << Hex64(runtime_shader->hash) << "\n"
@@ -2791,7 +2835,7 @@ bool CompileRuntimeTranslatedHlslWithDxc(
               ? "timeout"
               : (process_result.exit_code == 0 ? "ok" : "failed"))
       << "\n"
-      << "translator=xenos_simple_passthrough_v1\n"
+      << "translator=" << kLimitedXenosTranslatorVersion << "\n"
       << "dxc=" << dxc_path.string() << "\n"
       << "stage=" << StageName(runtime_shader->stage) << "\n"
       << "runtime_hash=" << Hex64(runtime_shader->hash) << "\n"
@@ -2824,7 +2868,8 @@ bool CompileRuntimeTranslatedHlslWithDxc(
         << "\"format\":\"dxil\","
         << "\"compiler\":\"DXC\","
         << "\"diagnostic\":false,"
-        << "\"translator\":\"xenos_simple_passthrough_v1\","
+        << "\"translator\":\"" << kLimitedXenosTranslatorVersion << "\","
+        << "\"entry\":\"main\","
         << "\"stage\":\"" << StageName(runtime_shader->stage) << "\","
         << "\"runtime_hash\":\"" << Hex64(runtime_shader->hash) << "\","
         << "\"profile\":\"" << target << "\","
