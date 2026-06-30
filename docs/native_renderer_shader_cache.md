@@ -20,7 +20,7 @@ The D3D12 replay backend now resolves shaders in this order:
 4. Explicit diagnostic shader only when `--allow-diagnostic-shader` is supplied.
 5. Fail closed.
 
-The compiled cache currently stores D3DCompile output (`.dxbc`) because `dxc.exe` is not available on the current PATH. DXC/DXIL is still required for the final shader pipeline.
+The manual D3D12 replay override cache still stores D3DCompile output (`.dxbc`). A separate generated diagnostic DXC path now stores `.dxil`; real translated-shader DXC/DXIL is still required for the final shader pipeline.
 
 Verified cache artifacts for draw `1209` with the original constant-only binding layout:
 
@@ -59,6 +59,7 @@ native_shader_inspect.exe --microcode shader_work\shaders\microcode\<stage_hash>
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --semantic-disassemble
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --write-hlsl shader_work\cache\hlsl
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --compile-hlsl shader_work\cache
+native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --compile-hlsl-dxc shader_work\cache
 ```
 
 Verified summary:
@@ -157,7 +158,37 @@ Outputs:
 - `shader_work\cache\logs\PS_0xA4A965C189287B99.diagnostic.log`
 - `shader_work\cache\diagnostic_shader_cache_index.jsonl`
 
-This proves a generated runtime-shader artifact can enter a persistent D3D12 cache path, but it is still diagnostic DXBC, not real translated Xenos DXIL. DXC integration remains a separate pending task.
+This proves a generated runtime-shader artifact can enter a persistent D3D12 cache path, but it is still diagnostic DXBC, not real translated Xenos shader output. The DXC/DXIL diagnostic path below is separate from this D3DCompile path.
+
+## Diagnostic DXC/DXIL cache
+
+`native_shader_inspect.exe --compile-hlsl-dxc` now compiles generated diagnostic HLSL through DXC and writes DXIL cache entries. The tool auto-discovers the installed Windows SDK DXC at:
+
+```text
+C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxc.exe
+```
+
+Verified commands:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --compile-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+```
+
+The first two commands compile VS/PS DXIL and print `cache_hit=false`. The repeated VS command prints `cache_hit=true`.
+
+Outputs:
+
+- `shader_work\cache\hlsl\VS_0xB6C9863F710683EC.diagnostic.dxc.hlsl`
+- `shader_work\cache\d3d12\VS_0xB6C9863F710683EC.diagnostic.dxc.dxil`
+- `shader_work\cache\logs\VS_0xB6C9863F710683EC.diagnostic.dxc.dxc.log`
+- `shader_work\cache\hlsl\PS_0xA4A965C189287B99.diagnostic.dxc.hlsl`
+- `shader_work\cache\d3d12\PS_0xA4A965C189287B99.diagnostic.dxc.dxil`
+- `shader_work\cache\logs\PS_0xA4A965C189287B99.diagnostic.dxc.dxc.log`
+- `shader_work\cache\shader_cache_index.jsonl`
+
+This satisfies a diagnostic DXC/DXIL cache milestone only. It still does not translate decoded Xenos operations into real BO2 shader HLSL.
 
 Static extracted `.ucode` semantic decode is still blocked by file-layout ambiguity. Raw `.ucode` artifact commands still work, but tested static files include metadata/constants before the analyzer's expected payload range.
 
@@ -168,9 +199,9 @@ Static extracted `.ucode` semantic decode is still blocked by file-layout ambigu
 - Complete executable backend-neutral shader IR for runtime shaders. A raw unresolved `bo2shaderir.raw_xenos.v1` JSON skeleton exists for static `.ucode`, and runtime `bo2shaderir.semantic_xenos.v1` inspection artifacts now exist, but they are not yet a complete HLSL-ready operation graph.
 - HLSL/SPIR-V generation.
 - Real HLSL/SPIR-V generation from decoded Xenos operations. A diagnostic HLSL scaffold exists, but it does not lower semantic Xenos instructions.
-- DXC integration.
-- Persistent compiled shader cache.
-- DXC/DXIL compiler integration.
+- Real translated-shader DXC integration.
+- Persistent compiled shader cache for real translated shaders. Diagnostic DXBC and DXIL cache paths now exist.
+- DXC/DXIL compiler integration for real semantic Xenos lowering.
 - Cache entries for automatically translated Xenos shaders.
 
 ## Current matching rule

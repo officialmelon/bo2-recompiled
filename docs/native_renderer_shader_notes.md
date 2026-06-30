@@ -367,6 +367,23 @@ Verified outputs:
 
 This path uses `D3DCompile` because that is already used by the current replay backend. It is a compiler/cache proof for generated runtime shader artifacts, not DXC/DXIL and not real Xenos operation lowering.
 
+Diagnostic DXC/DXIL compilation is now also available:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --compile-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+```
+
+Verified outputs:
+
+- `shader_work\cache\d3d12\VS_0xB6C9863F710683EC.diagnostic.dxc.dxil`
+- `shader_work\cache\d3d12\PS_0xA4A965C189287B99.diagnostic.dxc.dxil`
+- `shader_work\cache\logs\VS_0xB6C9863F710683EC.diagnostic.dxc.dxc.log`
+- `shader_work\cache\logs\PS_0xA4A965C189287B99.diagnostic.dxc.dxc.log`
+- `shader_work\cache\shader_cache_index.jsonl`
+
+The current host auto-discovers DXC at `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxc.exe`. A repeated VS compile reports `cache_hit=true`. This proves DXC/DXIL cache plumbing for generated diagnostic shaders, not real Xenos operation lowering.
+
 The runtime semantic IR now serializes analyzer-exposed shader interface metadata in addition to text disassembly:
 
 - constant float/bool/loop/vertex-fetch bitmaps and dynamic addressing flags

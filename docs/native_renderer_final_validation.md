@@ -606,6 +606,9 @@ native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_capture
 native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --write-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache\hlsl
 native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache
 native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --compile-hlsl C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --compile-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
 native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0x5D918D91043B3ED0 --write-semantic-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
 native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xC4ED2979F29C9139 --write-semantic-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
 native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --shader-usage
@@ -630,6 +633,15 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
   - `shader_work\cache\logs\PS_0xA4A965C189287B99.diagnostic.log`
   - `shader_work\cache\diagnostic_shader_cache_index.jsonl`
   This is a generated diagnostic shader-cache proof only; it is not DXC/DXIL and not real Xenos shader translation.
+- Diagnostic DXC/DXIL shader compilation succeeds:
+  - DXC auto-discovered at `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\dxc.exe`.
+  - `shader_work\cache\d3d12\VS_0xB6C9863F710683EC.diagnostic.dxc.dxil`
+  - `shader_work\cache\d3d12\PS_0xA4A965C189287B99.diagnostic.dxc.dxil`
+  - `shader_work\cache\logs\VS_0xB6C9863F710683EC.diagnostic.dxc.dxc.log`
+  - `shader_work\cache\logs\PS_0xA4A965C189287B99.diagnostic.dxc.dxc.log`
+  - `shader_work\cache\shader_cache_index.jsonl`
+  - Repeated VS compile reports `cache_hit=true`.
+  This is still diagnostic shader-cache plumbing and is not counted as real Xenos shader translation.
 - Runtime semantic IR interface metadata now serializes non-empty fetch state for the current supported real-resource shader pair:
   - VS `0x5D918D91043B3ED0`: fetch constant `95`, stride `8` dwords, Xenos attribute formats `38`, `6`, and `37`.
   - PS `0xC4ED2979F29C9139`: four `tfetch2D` bindings on texture fetch constants `4`, `3`, `2`, and `1`.

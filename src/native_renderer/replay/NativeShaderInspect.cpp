@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #if defined(_WIN32)
@@ -52,6 +53,8 @@ struct CliOptions {
   std::filesystem::path semantic_ir_output_path;
   std::filesystem::path hlsl_output_path;
   std::filesystem::path hlsl_compile_cache_path;
+  std::filesystem::path hlsl_dxc_compile_cache_path;
+  std::filesystem::path dxc_path;
   bool show_summary = false;
   bool find_hash = false;
   bool list_runtime_shaders = false;
@@ -190,6 +193,9 @@ void PrintHelp() {
             << "                     Write diagnostic HLSL from runtime semantic metadata\n"
             << "  --compile-hlsl <path>\n"
             << "                     Compile diagnostic HLSL into a D3D12 shader cache\n"
+            << "  --compile-hlsl-dxc <path>\n"
+            << "                     Compile diagnostic HLSL to DXIL with DXC\n"
+            << "  --dxc-path <path>  DXC executable path for --compile-hlsl-dxc\n"
             << "  --top-shaders <n>  Runtime shader/pair print limit (default 20)\n"
             << "  --hash <value>     Hash or substring to find\n"
             << "  --find             Search the index for --hash\n"
@@ -2299,6 +2305,286 @@ bool CompileRuntimeDiagnosticHlslToD3D12(
 #endif
 }
 
+std::string QuoteWindowsArg(const std::string &arg) {
+  std::string quoted = "\"";
+  for (char ch : arg) {
+    if (ch == '"') {
+      quoted += "\\\"";
+    } else {
+      quoted += ch;
+    }
+  }
+  quoted += "\"";
+  return quoted;
+}
+
+std::optional<std::filesystem::path> FindDefaultDxcPath() {
+#if defined(_WIN32)
+  std::vector<std::filesystem::path> candidates;
+  candidates.emplace_back(
+      "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\dxc.exe");
+  candidates.emplace_back(
+      "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\dxc.exe");
+  candidates.emplace_back(
+      "C:\\Program Files (x86)\\Windows Kits\\10\\Redist\\D3D\\x64\\dxc.exe");
+
+  const std::filesystem::path sdk_root =
+      "C:\\Program Files (x86)\\Windows Kits\\10\\bin";
+  std::error_code ec;
+  if (std::filesystem::is_directory(sdk_root, ec) && !ec) {
+    for (const auto &entry : std::filesystem::directory_iterator(sdk_root, ec)) {
+      if (ec || !entry.is_directory()) {
+        continue;
+      }
+      candidates.push_back(entry.path() / "x64" / "dxc.exe");
+    }
+  }
+
+  std::sort(candidates.begin(), candidates.end());
+  candidates.erase(std::unique(candidates.begin(), candidates.end()),
+                   candidates.end());
+  for (auto it = candidates.rbegin(); it != candidates.rend(); ++it) {
+    if (std::filesystem::is_regular_file(*it, ec) && !ec) {
+      return *it;
+    }
+  }
+#endif
+  return std::nullopt;
+}
+
+struct ProcessResult {
+  uint32_t exit_code = 0;
+  bool timed_out = false;
+  std::string output;
+};
+
+bool RunProcessCaptureOutput(const std::string &command_line,
+                             uint32_t timeout_ms, ProcessResult &result,
+                             std::string &error) {
+#if defined(_WIN32)
+  SECURITY_ATTRIBUTES security_attributes{};
+  security_attributes.nLength = sizeof(security_attributes);
+  security_attributes.bInheritHandle = TRUE;
+
+  HANDLE read_pipe = nullptr;
+  HANDLE write_pipe = nullptr;
+  if (!CreatePipe(&read_pipe, &write_pipe, &security_attributes, 0)) {
+    error = "CreatePipe failed";
+    return false;
+  }
+  SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+
+  STARTUPINFOA startup_info{};
+  startup_info.cb = sizeof(startup_info);
+  startup_info.dwFlags = STARTF_USESTDHANDLES;
+  startup_info.hStdOutput = write_pipe;
+  startup_info.hStdError = write_pipe;
+  startup_info.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+  PROCESS_INFORMATION process_info{};
+  std::string mutable_command = command_line;
+  if (!CreateProcessA(nullptr, mutable_command.data(), nullptr, nullptr, TRUE,
+                      CREATE_NO_WINDOW, nullptr, nullptr, &startup_info,
+                      &process_info)) {
+    CloseHandle(read_pipe);
+    CloseHandle(write_pipe);
+    error = "CreateProcess failed for: " + command_line;
+    return false;
+  }
+  CloseHandle(write_pipe);
+
+  std::array<char, 4096> buffer{};
+  uint32_t elapsed_ms = 0;
+  for (;;) {
+    DWORD available = 0;
+    while (PeekNamedPipe(read_pipe, nullptr, 0, nullptr, &available, nullptr) &&
+           available > 0) {
+      DWORD bytes_read = 0;
+      if (!ReadFile(read_pipe, buffer.data(),
+                    static_cast<DWORD>(buffer.size()), &bytes_read, nullptr) ||
+          bytes_read == 0) {
+        break;
+      }
+      result.output.append(buffer.data(), bytes_read);
+    }
+
+    const DWORD wait_result = WaitForSingleObject(process_info.hProcess, 25);
+    if (wait_result == WAIT_OBJECT_0) {
+      break;
+    }
+    if (wait_result == WAIT_TIMEOUT) {
+      elapsed_ms += 25;
+      if (elapsed_ms >= timeout_ms) {
+        result.timed_out = true;
+        TerminateProcess(process_info.hProcess, 0xFFFF);
+        WaitForSingleObject(process_info.hProcess, 1000);
+        break;
+      }
+      continue;
+    }
+    break;
+  }
+
+  DWORD exit_code = 0;
+  GetExitCodeProcess(process_info.hProcess, &exit_code);
+  result.exit_code = exit_code;
+
+  DWORD bytes_read = 0;
+  while (ReadFile(read_pipe, buffer.data(), static_cast<DWORD>(buffer.size()),
+                  &bytes_read, nullptr) &&
+         bytes_read > 0) {
+    result.output.append(buffer.data(), bytes_read);
+  }
+
+  CloseHandle(process_info.hThread);
+  CloseHandle(process_info.hProcess);
+  CloseHandle(read_pipe);
+  return true;
+#else
+  (void)command_line;
+  (void)timeout_ms;
+  (void)result;
+  error = "process execution is only implemented on Windows";
+  return false;
+#endif
+}
+
+bool CompileRuntimeDiagnosticHlslWithDxc(
+    const RuntimeShaderCapture &capture, uint64_t runtime_hash,
+    const std::filesystem::path &cache_root,
+    const std::filesystem::path &requested_dxc_path,
+    D3D12HlslCompileResult &result, bool &cache_hit, std::string &error) {
+#if defined(_WIN32)
+  const RuntimeShaderUsage *runtime_shader =
+      FindRuntimeShaderByHash(capture, runtime_hash);
+  if (!runtime_shader) {
+    error = "runtime shader hash not found in capture: " + Hex64(runtime_hash);
+    return false;
+  }
+
+  std::filesystem::path dxc_path = requested_dxc_path;
+  if (dxc_path.empty()) {
+    const auto discovered = FindDefaultDxcPath();
+    if (!discovered) {
+      error = "dxc.exe was not found; pass --dxc-path";
+      return false;
+    }
+    dxc_path = *discovered;
+  }
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(dxc_path, ec) || ec) {
+    error = "DXC executable not found: " + dxc_path.string();
+    return false;
+  }
+
+  const std::string stem = RuntimeSemanticArtifactStem(*runtime_shader);
+  const std::string cache_key = stem + ".diagnostic.dxc";
+  const char *target = runtime_shader->stage == 0 ? "vs_6_0" : "ps_6_0";
+  const std::string source = BuildDiagnosticRuntimeHlsl(capture, *runtime_shader);
+
+  result.hlsl_path = cache_root / "hlsl" / (cache_key + ".hlsl");
+  result.shader_path = cache_root / "d3d12" / (cache_key + ".dxil");
+  result.log_path = cache_root / "logs" / (cache_key + ".dxc.log");
+  result.index_path = cache_root / "shader_cache_index.jsonl";
+
+  if (!WriteTextFile(result.hlsl_path, source, error)) {
+    return false;
+  }
+
+  std::filesystem::create_directories(result.shader_path.parent_path(), ec);
+  if (ec) {
+    error = "could not create DXIL cache directory " +
+            result.shader_path.parent_path().string() + ": " + ec.message();
+    return false;
+  }
+
+  if (std::filesystem::is_regular_file(result.shader_path, ec) && !ec) {
+    cache_hit = true;
+    std::ostringstream log;
+    log << "compiler=DXC\n"
+        << "status=cache_hit\n"
+        << "dxc=" << dxc_path.string() << "\n"
+        << "stage=" << StageName(runtime_shader->stage) << "\n"
+        << "runtime_hash=" << Hex64(runtime_shader->hash) << "\n"
+        << "target=" << target << "\n"
+        << "source=" << result.hlsl_path.string() << "\n"
+        << "cache=" << result.shader_path.string() << "\n";
+    return WriteTextFile(result.log_path, log.str(), error);
+  }
+
+  cache_hit = false;
+  const std::string command =
+      QuoteWindowsArg(dxc_path.string()) + " -nologo -E main -T " + target +
+      " -Fo " + QuoteWindowsArg(result.shader_path.string()) + " " +
+      QuoteWindowsArg(result.hlsl_path.string());
+
+  ProcessResult process_result;
+  if (!RunProcessCaptureOutput(command, 30000, process_result, error)) {
+    return false;
+  }
+
+  std::ostringstream log;
+  log << "compiler=DXC\n"
+      << "status="
+      << (process_result.timed_out
+              ? "timeout"
+              : (process_result.exit_code == 0 ? "ok" : "failed"))
+      << "\n"
+      << "dxc=" << dxc_path.string() << "\n"
+      << "stage=" << StageName(runtime_shader->stage) << "\n"
+      << "runtime_hash=" << Hex64(runtime_shader->hash) << "\n"
+      << "entry=main\n"
+      << "target=" << target << "\n"
+      << "source=" << result.hlsl_path.string() << "\n"
+      << "cache=" << result.shader_path.string() << "\n"
+      << "exit_code=" << process_result.exit_code << "\n"
+      << process_result.output;
+  if (!WriteTextFile(result.log_path, log.str(), error)) {
+    return false;
+  }
+
+  if (process_result.timed_out) {
+    error = "DXC timed out for " + stem + "; see " + result.log_path.string();
+    return false;
+  }
+  if (process_result.exit_code != 0) {
+    error = "DXC failed for " + stem + "; see " + result.log_path.string();
+    return false;
+  }
+  if (!std::filesystem::is_regular_file(result.shader_path, ec) || ec) {
+    error = "DXC completed but did not write " + result.shader_path.string();
+    return false;
+  }
+
+  std::ostringstream index;
+  index << "{"
+        << "\"backend\":\"d3d12\","
+        << "\"format\":\"dxil\","
+        << "\"compiler\":\"DXC\","
+        << "\"diagnostic\":true,"
+        << "\"stage\":\"" << StageName(runtime_shader->stage) << "\","
+        << "\"runtime_hash\":\"" << Hex64(runtime_shader->hash) << "\","
+        << "\"profile\":\"" << target << "\","
+        << "\"cache_key\":\"" << JsonEscape(cache_key) << "\","
+        << "\"source\":\"" << JsonEscape(result.hlsl_path.generic_string())
+        << "\","
+        << "\"path\":\"" << JsonEscape(result.shader_path.generic_string())
+        << "\","
+        << "\"log\":\"" << JsonEscape(result.log_path.generic_string())
+        << "\"}\n";
+  return AppendTextFile(result.index_path, index.str(), error);
+#else
+  (void)capture;
+  (void)runtime_hash;
+  (void)cache_root;
+  (void)requested_dxc_path;
+  (void)result;
+  (void)cache_hit;
+  error = "--compile-hlsl-dxc is only available on Windows";
+  return false;
+#endif
+}
+
 std::optional<PayloadPrefixMatch> FindPayloadPrefixMatch(
     const std::vector<uint32_t> &secondary_dwords,
     const std::vector<uint32_t> &payload_dwords) {
@@ -2984,6 +3270,18 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.hlsl_compile_cache_path = value;
+    } else if (arg == "--compile-hlsl-dxc") {
+      const char *value = require_value("--compile-hlsl-dxc");
+      if (!value) {
+        return 2;
+      }
+      cli.hlsl_dxc_compile_cache_path = value;
+    } else if (arg == "--dxc-path") {
+      const char *value = require_value("--dxc-path");
+      if (!value) {
+        return 2;
+      }
+      cli.dxc_path = value;
     } else if (arg == "--top-shaders") {
       const char *value = require_value("--top-shaders");
       if (!value || !ParseSize(value, cli.top_shaders)) {
@@ -3016,7 +3314,8 @@ int main(int argc, char **argv) {
       !cli.disasm_output_path.empty() || !cli.ir_output_path.empty() ||
       !cli.semantic_output_path.empty() ||
       !cli.semantic_ir_output_path.empty() || !cli.hlsl_output_path.empty() ||
-      !cli.hlsl_compile_cache_path.empty();
+      !cli.hlsl_compile_cache_path.empty() ||
+      !cli.hlsl_dxc_compile_cache_path.empty();
   if (!cli.show_summary && !cli.find_hash && !cli.list_runtime_shaders &&
       !cli.match_runtime_shaders && !cli.semantic_disassemble &&
       !file_inspection) {
@@ -3076,6 +3375,12 @@ int main(int argc, char **argv) {
       (cli.capture_path.empty() || cli.hash.empty())) {
     std::cerr << "--compile-hlsl requires --capture <events.jsonl> and --hash "
                  "<runtime_shader_hash>\n";
+    return 2;
+  }
+  if (!cli.hlsl_dxc_compile_cache_path.empty() &&
+      (cli.capture_path.empty() || cli.hash.empty())) {
+    std::cerr << "--compile-hlsl-dxc requires --capture <events.jsonl> and "
+                 "--hash <runtime_shader_hash>\n";
     return 2;
   }
 
@@ -3181,7 +3486,8 @@ int main(int argc, char **argv) {
                              (!cli.semantic_ir_output_path.empty() &&
                               cli.microcode_path.empty()) ||
                              !cli.hlsl_output_path.empty() ||
-                             !cli.hlsl_compile_cache_path.empty();
+                             !cli.hlsl_compile_cache_path.empty() ||
+                             !cli.hlsl_dxc_compile_cache_path.empty();
   if (!needs_index && !needs_capture) {
     return 0;
   }
@@ -3314,6 +3620,33 @@ int main(int argc, char **argv) {
               << "\n"
               << "compile_log=" << result.log_path.string() << "\n"
               << "compile_index=" << result.index_path.string() << "\n";
+    printed_anything = true;
+  }
+
+  if (!cli.hlsl_dxc_compile_cache_path.empty()) {
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    const auto hash = ParseHexU64(cli.hash);
+    if (!hash) {
+      std::cerr << "--hash expects a hexadecimal runtime shader hash\n";
+      return 2;
+    }
+    D3D12HlslCompileResult result;
+    bool cache_hit = false;
+    std::string error;
+    if (!CompileRuntimeDiagnosticHlslWithDxc(
+            runtime_capture, *hash, cli.hlsl_dxc_compile_cache_path,
+            cli.dxc_path, result, cache_hit, error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    std::cout << "compiled_hlsl=" << result.hlsl_path.string() << "\n"
+              << "compiled_d3d12_dxil=" << result.shader_path.string()
+              << "\n"
+              << "compile_log=" << result.log_path.string() << "\n"
+              << "compile_index=" << result.index_path.string() << "\n"
+              << "cache_hit=" << (cache_hit ? "true" : "false") << "\n";
     printed_anything = true;
   }
 
