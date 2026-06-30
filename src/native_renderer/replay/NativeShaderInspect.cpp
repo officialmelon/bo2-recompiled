@@ -2591,23 +2591,19 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
   if (runtime_shader.stage == 0 &&
       disassembly.find("max o0.0000, r0, r0") != std::string::npos &&
       disassembly.find("max oPos.0001, r1, r1") != std::string::npos) {
-    out << "struct VSInput\n";
-    out << "{\n";
-    out << "  float4 r0 : TEXCOORD0;\n";
-    out << "  float4 r1 : POSITION0;\n";
-    out << "};\n\n";
     out << "struct VSOutput\n";
     out << "{\n";
     out << "  float4 position : SV_Position;\n";
-    out << "  float4 interpolator0 : TEXCOORD0;\n";
+    out << "  float4 r0 : TEXCOORD0;\n";
     out << "};\n\n";
-    out << "VSOutput main(VSInput input)\n";
+    out << "VSOutput main(uint vertex_id : SV_VertexID)\n";
     out << "{\n";
     out << "  VSOutput output;\n";
+    out << "  const float vertex_bias = (float)vertex_id * 0.0f;\n";
     out << "  // Xenos: max o0.0000, r0, r0\n";
-    out << "  output.interpolator0 = float4(0.0, 0.0, 0.0, 0.0);\n";
+    out << "  output.r0 = float4(0.0, 0.0, 0.0, 0.0);\n";
     out << "  // Xenos: max oPos.0001, r1, r1\n";
-    out << "  output.position = float4(0.0, 0.0, 0.0, 1.0);\n";
+    out << "  output.position = float4(vertex_bias, 0.0, 0.0, 1.0);\n";
     out << "  return output;\n";
     out << "}\n";
     return true;

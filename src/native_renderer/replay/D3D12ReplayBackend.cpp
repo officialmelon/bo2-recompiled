@@ -575,6 +575,7 @@ struct PreparedRealDraw {
   uint32_t vertex_count = 0;
   uint32_t input_layout_mask = 0;
   bool indexed = false;
+  bool vertexless = false;
   bool uses_32bit_indices = false;
   D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 };
@@ -766,6 +767,19 @@ D3D12_PRIMITIVE_TOPOLOGY TopologyForPrimitive(uint32_t primitive_type) {
   }
 }
 
+bool SupportsVertexlessDraw(const ReplayDrawState &state) {
+  const PM4DrawRecord &draw = state.draw;
+  if (draw.indexed || !draw.vertex_fetches.empty() || draw.index_count == 0) {
+    return false;
+  }
+  if (state.vertex_shader.hash != 0xB6C9863F710683ECull ||
+      state.pixel_shader.hash != 0xA4A965C189287B99ull) {
+    return false;
+  }
+  return TopologyForPrimitive(draw.primitive_type) ==
+         D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+}
+
 bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
                             bool allow_non_indexed,
                             PreparedRealDraw &prepared) {
@@ -777,7 +791,20 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
   const D3D12_PRIMITIVE_TOPOLOGY topology =
       TopologyForPrimitive(draw.primitive_type);
   const bool point_list = topology == D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
-  if ((!draw.indexed && !allow_non_indexed) || draw.vertex_fetches.empty() ||
+  if (!draw.indexed && !allow_non_indexed) {
+    return false;
+  }
+  if (draw.vertex_fetches.empty() && SupportsVertexlessDraw(state)) {
+    prepared = {};
+    prepared.draw_index = index;
+    prepared.vertex_count = draw.index_count;
+    prepared.indexed = false;
+    prepared.vertexless = true;
+    prepared.topology = topology;
+    prepared.input_layout_mask = 0;
+    return true;
+  }
+  if (draw.vertex_fetches.empty() ||
       (topology != D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST && !point_list)) {
     return false;
   }
@@ -857,6 +884,9 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
     return "non-indexed draw requires explicit draw/frame replay";
   }
   if (draw.vertex_fetches.empty()) {
+    if (SupportsVertexlessDraw(state)) {
+      return {};
+    }
     return "draw has no captured vertex/fetch state";
   }
   if (topology != D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST &&
@@ -2104,6 +2134,35 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
     return false;
   }
 
+  auto apply_vertex_variant =
+      [&](const char *cache_key, const char *source_name) -> bool {
+    pair.vertex_cache_key = cache_key;
+    pair.vertex_path = options.shader_cache_root / "hlsl" / source_name;
+    pair.vertex_cache_path = options.shader_cache_root / "d3d12" /
+                             (std::string(cache_key) + ".d3dcompile.dxbc");
+    pair.vertex_log_path = options.shader_cache_root / "logs" /
+                           (std::string(cache_key) + ".d3dcompile.log");
+    pair.vertex_entry = "main";
+    pair.vertex_profile = "vs_5_0";
+    pair.vertex_source.clear();
+    if (!ReadTextFile(pair.vertex_path, pair.vertex_source, vertex_error)) {
+      error = "could not load pair-specific vertex shader variant for draw " +
+              std::to_string(draw_state.draw_index) + " VS=" +
+              FormatHex64(draw_state.vertex_shader.hash) + " PS=" +
+              FormatHex64(draw_state.pixel_shader.hash) + ": " + vertex_error;
+      return false;
+    }
+    return true;
+  };
+
+  if (SupportsVertexlessDraw(draw_state)) {
+    if (!apply_vertex_variant(
+            "VS_0xB6C9863F710683EC.vertexless.v8.dxc",
+            "VS_0xB6C9863F710683EC.vertexless.v8.dxc.hlsl")) {
+      return false;
+    }
+  }
+
   std::string pixel_error;
   if (!resolve_stage("ps", "pixel", draw_state.pixel_shader.hash,
                      pair.pixel_path, pair.pixel_source, pair.pixel_entry,
@@ -3246,10 +3305,12 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         BuildCapturedConstants(capture.draws[prepared_draw.draw_index]);
     uploaded.vertex_bytes =
         uploaded.prepared.vertices.size() * sizeof(RealReplayVertex);
-    if (!CreateUploadBuffer(device.Get(), uploaded.prepared.vertices.data(),
-                            uploaded.vertex_bytes, uploaded.vertex_buffer,
-                            error)) {
-      return false;
+    if (!uploaded.prepared.vertexless) {
+      if (!CreateUploadBuffer(device.Get(), uploaded.prepared.vertices.data(),
+                              uploaded.vertex_bytes, uploaded.vertex_buffer,
+                              error)) {
+        return false;
+      }
     }
 
     if (uploaded.prepared.indexed) {
@@ -3290,8 +3351,19 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
 
   D3D12_DESCRIPTOR_HEAP_DESC sampler_heap_desc{};
   sampler_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+  const std::size_t texture_fetch_draw_count =
+      std::count_if(uploaded_draws.begin(), uploaded_draws.end(),
+                    [&](const UploadedRealDraw &uploaded) {
+                      const ReplayDrawState &state =
+                          capture.draws[uploaded.prepared.draw_index];
+                      return !state.draw.texture_fetches.empty();
+                    });
+  const std::size_t sampler_descriptor_count =
+      std::max<std::size_t>(kMaxRealReplayTextureSlots,
+                            (texture_fetch_draw_count + 1) *
+                                kMaxRealReplayTextureSlots);
   sampler_heap_desc.NumDescriptors =
-      static_cast<UINT>(texture_descriptor_count);
+      static_cast<UINT>(sampler_descriptor_count);
   sampler_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   ComPtr<ID3D12DescriptorHeap> sampler_heap;
   if (!CheckHr(device->CreateDescriptorHeap(&sampler_heap_desc,
@@ -3313,15 +3385,30 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   uint32_t exact_sampler_clamp_count = 0;
   uint32_t fallback_sampler_clamp_count = 0;
   const uint8_t white_texel[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+  uint32_t next_sampler_descriptor_base =
+      static_cast<uint32_t>(kMaxRealReplayTextureSlots);
+  for (std::size_t slot = 0; slot < kMaxRealReplayTextureSlots; ++slot) {
+    D3D12_CPU_DESCRIPTOR_HANDLE sampler_descriptor = sampler_cpu_start;
+    sampler_descriptor.ptr += static_cast<SIZE_T>(slot) *
+                              sampler_descriptor_size;
+    CreateSampler(device.Get(), nullptr, sampler_descriptor);
+  }
   for (std::size_t i = 0; i < uploaded_draws.size(); ++i) {
     UploadedRealDraw &uploaded = uploaded_draws[i];
     uploaded.texture_srv_base_index =
         static_cast<uint32_t>(i * kMaxRealReplayTextureSlots);
-    uploaded.sampler_descriptor_base_index =
-        static_cast<uint32_t>(i * kMaxRealReplayTextureSlots);
 
     const ReplayDrawState &uploaded_state =
         capture.draws[uploaded.prepared.draw_index];
+    const bool draw_has_texture_fetches =
+        !uploaded_state.draw.texture_fetches.empty();
+    if (draw_has_texture_fetches) {
+      uploaded.sampler_descriptor_base_index = next_sampler_descriptor_base;
+      next_sampler_descriptor_base +=
+          static_cast<uint32_t>(kMaxRealReplayTextureSlots);
+    } else {
+      uploaded.sampler_descriptor_base_index = 0;
+    }
     for (std::size_t slot = 0; slot < kMaxRealReplayTextureSlots; ++slot) {
       const std::size_t descriptor_index =
           i * kMaxRealReplayTextureSlots + slot;
@@ -3329,8 +3416,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       descriptor.ptr += static_cast<SIZE_T>(descriptor_index) *
                         srv_descriptor_size;
       D3D12_CPU_DESCRIPTOR_HANDLE sampler_descriptor = sampler_cpu_start;
-      sampler_descriptor.ptr += static_cast<SIZE_T>(descriptor_index) *
-                                sampler_descriptor_size;
+      sampler_descriptor.ptr +=
+          static_cast<SIZE_T>(uploaded.sampler_descriptor_base_index + slot) *
+          sampler_descriptor_size;
 
       std::vector<uint8_t> texture_rgba;
       std::string texture_reason;
@@ -3386,12 +3474,16 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
           return false;
         }
         ++fallback_texture_count;
-        ++fallback_sampler_count;
-        ++fallback_sampler_clamp_count;
+        if (draw_has_texture_fetches) {
+          ++fallback_sampler_count;
+          ++fallback_sampler_clamp_count;
+        }
       }
       CreateTextureSrv(device.Get(), uploaded.textures[slot].Get(),
                        descriptor);
-      CreateSampler(device.Get(), selected_fetch, sampler_descriptor);
+      if (draw_has_texture_fetches) {
+        CreateSampler(device.Get(), selected_fetch, sampler_descriptor);
+      }
     }
   }
   if (frame_replay) {
@@ -3538,13 +3630,16 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         sampler_descriptor_size;
     list->SetGraphicsRootDescriptorTable(3, sampler_handle);
 
-    D3D12_VERTEX_BUFFER_VIEW vertex_view{};
-    vertex_view.BufferLocation =
-        uploaded.vertex_buffer->GetGPUVirtualAddress();
-    vertex_view.SizeInBytes = static_cast<UINT>(uploaded.vertex_bytes);
-    vertex_view.StrideInBytes = sizeof(RealReplayVertex);
-
-    list->IASetVertexBuffers(0, 1, &vertex_view);
+    if (uploaded.prepared.vertexless) {
+      list->IASetVertexBuffers(0, 0, nullptr);
+    } else {
+      D3D12_VERTEX_BUFFER_VIEW vertex_view{};
+      vertex_view.BufferLocation =
+          uploaded.vertex_buffer->GetGPUVirtualAddress();
+      vertex_view.SizeInBytes = static_cast<UINT>(uploaded.vertex_bytes);
+      vertex_view.StrideInBytes = sizeof(RealReplayVertex);
+      list->IASetVertexBuffers(0, 1, &vertex_view);
+    }
     list->IASetPrimitiveTopology(uploaded.prepared.topology);
     if (uploaded.prepared.indexed) {
       D3D12_INDEX_BUFFER_VIEW index_view{};
