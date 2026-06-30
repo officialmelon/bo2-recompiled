@@ -242,14 +242,16 @@ The first VS/PS compile prints `cache_hit=false`; a repeated VS command prints `
 - `shader_work\cache\d3d12\VS_0x5D918D91043B3ED0.translated.v2.dxc.dxil`
 - `shader_work\cache\logs\VS_0x5D918D91043B3ED0.translated.v2.dxc.dxc.log`
 
-The `xenos_limited_semantic_v4` cache version adds generated HLSL for the real-resource PS `0xC4ED2979F29C9139` by recognizing its decoded four-`tfetch2D` plus `mul oC0, r0.xywz, r1` pattern:
+The `xenos_limited_semantic_v5` cache version keeps the generated real-resource shader pair and adds generated HLSL for non-indexed VS `0xAB1E86137A0240E8`:
 
-- `shader_work\cache\hlsl\VS_0x5D918D91043B3ED0.translated.v4.dxc.hlsl`
-- `shader_work\cache\d3d12\VS_0x5D918D91043B3ED0.translated.v4.dxc.dxil`
-- `shader_work\cache\logs\VS_0x5D918D91043B3ED0.translated.v4.dxc.dxc.log`
-- `shader_work\cache\hlsl\PS_0xC4ED2979F29C9139.translated.v4.dxc.hlsl`
-- `shader_work\cache\d3d12\PS_0xC4ED2979F29C9139.translated.v4.dxc.dxil`
-- `shader_work\cache\logs\PS_0xC4ED2979F29C9139.translated.v4.dxc.dxc.log`
+- `shader_work\cache\hlsl\VS_0xAB1E86137A0240E8.translated.v5.dxc.hlsl`
+- `shader_work\cache\d3d12\VS_0xAB1E86137A0240E8.translated.v5.dxc.dxil`
+- `shader_work\cache\hlsl\VS_0x5D918D91043B3ED0.translated.v5.dxc.hlsl`
+- `shader_work\cache\d3d12\VS_0x5D918D91043B3ED0.translated.v5.dxc.dxil`
+- `shader_work\cache\hlsl\PS_0xA4A965C189287B99.translated.v5.dxc.hlsl`
+- `shader_work\cache\d3d12\PS_0xA4A965C189287B99.translated.v5.dxc.dxil`
+- `shader_work\cache\hlsl\PS_0xC4ED2979F29C9139.translated.v5.dxc.hlsl`
+- `shader_work\cache\d3d12\PS_0xC4ED2979F29C9139.translated.v5.dxc.dxil`
 
 The PS lowering is intentionally limited, but it now uses four D3D12 texture/sampler bindings for the decoded fetch constants. D3D12 replay allocates four SRV/sampler descriptors per supported draw and binds the draw's texture fetch records in shader binding order, so this shader maps `tf4/tf3/tf2/tf1` to `t0/t1/t2/t3` and `s0/s1/s2/s3`. Unsupported shaders still fail closed before compilation.
 
@@ -259,7 +261,15 @@ Verified generated-pair replay:
 native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\sidecar_capture_002\events.jsonl --backend d3d12 --shader-override-root C:\Users\braxt\bo2-recompiled\native_captures\empty_shader_overrides --shader-cache-root C:\Users\braxt\bo2-recompiled\shader_work\cache --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-generated-v4-multitexture-d3d12-real.bmp --no-summary
 ```
 
-Result: `5/5` supported draws for `VS=0x5D918D91043B3ED0 PS=0xC4ED2979F29C9139`, `20` captured texture SRVs, `20` captured sampler descriptors, captured render state from draw `748`, and output SHA-256 `6C10E0294634A70F7B465C8DF951875A65717920F8320498E139933DE4E34421`.
+Result: `5/5` supported draws for `VS=0x5D918D91043B3ED0 PS=0xC4ED2979F29C9139`, `20` captured texture SRVs, `20` captured sampler descriptors, captured render state from draw `748`, and output SHA-256 `AF172ED5685D34C32696219E3C9E8630CDB8085341613BEFDBA2E3F85EF86FEB` with the v5 cache.
+
+Explicit non-indexed replay:
+
+```cmd
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\sidecar_capture_002\events.jsonl --draw 25 --backend d3d12 --shader-override-root C:\Users\braxt\bo2-recompiled\native_captures\empty_shader_overrides --shader-cache-root C:\Users\braxt\bo2-recompiled\shader_work\cache --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-ab1e-nonindexed-d3d12-real.bmp --no-summary
+```
+
+Result: one non-indexed `PM4_DRAW_INDX_2` draw for `VS=0xAB1E86137A0240E8 PS=0xA4A965C189287B99`, fallback white descriptors for the no-texture shader pair, default PSO state for non-indexed bring-up, and output SHA-256 `A20B0105C2961DEB0BD9AEFBD91CD34E69D483FACC52AB2AD037099DBE7B7EB8`.
 
 Static extracted `.ucode` semantic decode is still blocked by file-layout ambiguity. Raw `.ucode` artifact commands still work, but tested static files include metadata/constants before the analyzer's expected payload range.
 

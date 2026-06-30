@@ -58,6 +58,35 @@ bool CheckHr(HRESULT hr, const char *what, std::string &error) {
   return false;
 }
 
+void AppendD3D12InfoQueueMessages(ID3D12Device *device, std::string &error) {
+  if (!device) {
+    return;
+  }
+  ComPtr<ID3D12InfoQueue> info_queue;
+  if (FAILED(device->QueryInterface(IID_PPV_ARGS(&info_queue)))) {
+    return;
+  }
+
+  const UINT64 message_count =
+      info_queue->GetNumStoredMessagesAllowedByRetrievalFilter();
+  const UINT64 first_message = message_count > 8 ? message_count - 8 : 0;
+  for (UINT64 i = first_message; i < message_count; ++i) {
+    SIZE_T message_size = 0;
+    if (FAILED(info_queue->GetMessage(i, nullptr, &message_size)) ||
+        message_size == 0) {
+      continue;
+    }
+    std::vector<uint8_t> storage(message_size);
+    auto *message = reinterpret_cast<D3D12_MESSAGE *>(storage.data());
+    if (FAILED(info_queue->GetMessage(i, message, &message_size)) ||
+        !message->pDescription) {
+      continue;
+    }
+    error += "\nD3D12: ";
+    error.append(message->pDescription, message->DescriptionByteLength);
+  }
+}
+
 D3D12_RASTERIZER_DESC DefaultRasterizerDesc() {
   D3D12_RASTERIZER_DESC desc{};
   desc.FillMode = D3D12_FILL_MODE_SOLID;
@@ -470,6 +499,8 @@ struct PreparedRealDraw {
   std::vector<RealReplayVertex> vertices;
   std::vector<uint16_t> indices16;
   std::vector<uint32_t> indices32;
+  uint32_t vertex_count = 0;
+  bool indexed = false;
   bool uses_32bit_indices = false;
 };
 
@@ -540,7 +571,8 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
       }
 
       if ((attribute.data_format == 38 || attribute.data_format == 57 ||
-           attribute.data_format == 36) &&
+           attribute.data_format == 36 ||
+           (attribute.data_format == 37 && fetch.attributes.size() == 1)) &&
           !components.empty()) {
         has_position = true;
         vertex.position[0] = components.size() > 0 ? components[0] : 0.0f;
@@ -581,21 +613,29 @@ D3D12_PRIMITIVE_TOPOLOGY TopologyForPrimitive(uint32_t primitive_type) {
 }
 
 bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
+                            bool allow_non_indexed,
                             PreparedRealDraw &prepared) {
   if (index >= capture.draws.size()) {
     return false;
   }
   const ReplayDrawState &state = capture.draws[index];
   const PM4DrawRecord &draw = state.draw;
-  if (!draw.indexed || draw.index_payload_missing ||
-      draw.index_payload_truncated || draw.vertex_fetches.empty() ||
+  if ((!draw.indexed && !allow_non_indexed) || draw.vertex_fetches.empty() ||
       TopologyForPrimitive(draw.primitive_type) !=
           D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) {
     return false;
   }
 
-  std::vector<uint32_t> decoded_indices = DecodeReplayIndices(draw);
-  if (decoded_indices.empty()) {
+  std::vector<uint32_t> decoded_indices;
+  if (draw.indexed) {
+    if (draw.index_payload_missing || draw.index_payload_truncated) {
+      return false;
+    }
+    decoded_indices = DecodeReplayIndices(draw);
+    if (decoded_indices.empty()) {
+      return false;
+    }
+  } else if (draw.index_count == 0) {
     return false;
   }
 
@@ -606,21 +646,31 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
       continue;
     }
 
-    const uint32_t max_index =
-        *std::max_element(decoded_indices.begin(), decoded_indices.end());
-    if (max_index >= candidate.vertices.size()) {
-      continue;
-    }
-
-    candidate.uses_32bit_indices =
-        draw.index_format != 0 || max_index > UINT16_MAX;
-    if (candidate.uses_32bit_indices) {
-      candidate.indices32 = decoded_indices;
-    } else {
-      candidate.indices16.reserve(decoded_indices.size());
-      for (uint32_t decoded_index : decoded_indices) {
-        candidate.indices16.push_back(static_cast<uint16_t>(decoded_index));
+    candidate.indexed = draw.indexed;
+    if (draw.indexed) {
+      const uint32_t max_index =
+          *std::max_element(decoded_indices.begin(), decoded_indices.end());
+      if (max_index >= candidate.vertices.size()) {
+        continue;
       }
+
+      candidate.uses_32bit_indices =
+          draw.index_format != 0 || max_index > UINT16_MAX;
+      if (candidate.uses_32bit_indices) {
+        candidate.indices32 = decoded_indices;
+      } else {
+        candidate.indices16.reserve(decoded_indices.size());
+        for (uint32_t decoded_index : decoded_indices) {
+          candidate.indices16.push_back(static_cast<uint16_t>(decoded_index));
+        }
+      }
+      candidate.vertex_count = static_cast<uint32_t>(decoded_indices.size());
+    } else {
+      if (draw.index_count > candidate.vertices.size()) {
+        continue;
+      }
+      candidate.uses_32bit_indices = false;
+      candidate.vertex_count = draw.index_count;
     }
     prepared = std::move(candidate);
     return true;
@@ -639,7 +689,8 @@ bool PrepareFirstRealDraw(const ReplayCapture &capture,
                          : capture.draws.size();
 
   for (std::size_t i = begin; i < end; ++i) {
-    if (PrepareRealDrawAtIndex(capture, i, prepared)) {
+    if (PrepareRealDrawAtIndex(capture, i, options.draw_index.has_value(),
+                               prepared)) {
       return true;
     }
   }
@@ -673,7 +724,8 @@ std::vector<PreparedRealDraw> CollectSupportedRealDraws(
     }
 
     PreparedRealDraw prepared;
-    if (PrepareRealDrawAtIndex(capture, i, prepared)) {
+    if (PrepareRealDrawAtIndex(capture, i, first_draw.indexed == false,
+                               prepared)) {
       draws.push_back(std::move(prepared));
     }
   }
@@ -1163,10 +1215,16 @@ bool CreateRealGeometryPipeline(ID3D12Device *device,
   pso_desc.SampleDesc.Count = 1;
   pso_desc.SampleDesc.Quality = 0;
 
-  return CheckHr(device->CreateGraphicsPipelineState(
-                     &pso_desc, IID_PPV_ARGS(&pipeline_state)),
-                 "ID3D12Device::CreateGraphicsPipelineState(real geometry)",
-                 error);
+  const HRESULT pso_hr = device->CreateGraphicsPipelineState(
+      &pso_desc, IID_PPV_ARGS(&pipeline_state));
+  if (FAILED(pso_hr)) {
+    error =
+        HrError("ID3D12Device::CreateGraphicsPipelineState(real geometry)",
+                pso_hr);
+    AppendD3D12InfoQueueMessages(device, error);
+    return false;
+  }
+  return true;
 }
 
 const char *DiagnosticRealGeometryShaderSource() {
@@ -1345,7 +1403,9 @@ bool FindCacheShaderPath(const std::filesystem::path &root,
       return false;
     }
 
-    for (const ShaderCacheRecord &record : records) {
+    for (auto record_it = records.rbegin(); record_it != records.rend();
+         ++record_it) {
+      const ShaderCacheRecord &record = *record_it;
       if (record.diagnostic || LowerAscii(record.backend) != "d3d12" ||
           record.runtime_hash != hash ||
           !StageMatches(record.stage, short_stage, long_stage)) {
@@ -1425,6 +1485,15 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
         if (std::filesystem::is_regular_file(source_path, ec) && !ec &&
             !ReadTextFile(source_path, source, stage_error)) {
           return false;
+        }
+        if (!source.empty() && cache_path.extension() == ".dxil") {
+          const std::string d3dcompile_profile =
+              std::string(short_stage) + "_5_0";
+          profile = d3dcompile_profile;
+          cache_path = options.shader_cache_root / "d3d12" /
+                       (cache_key + ".d3dcompile.dxbc");
+          log_path = options.shader_cache_root / "logs" /
+                     (cache_key + ".d3dcompile.log");
         }
       }
       return true;
@@ -2001,6 +2070,11 @@ bool RunD3D12DiagnosticReplayBackend(const ReplayCapture &capture,
   const uint32_t height = std::clamp<uint32_t>(size.height, 64, 2160);
   const DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
+  ComPtr<ID3D12Debug> debug;
+  if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
+    debug->EnableDebugLayer();
+  }
+
   ComPtr<ID3D12Device> device;
   if (!CheckHr(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
                                  IID_PPV_ARGS(&device)),
@@ -2353,8 +2427,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   ComPtr<ID3D12RootSignature> root_signature;
   ComPtr<ID3D12PipelineState> pipeline_state;
   const RenderStateRecord *pipeline_render_state =
-      draw_state.draw.render_state.present ? &draw_state.draw.render_state
-                                           : nullptr;
+      prepared.indexed && draw_state.draw.render_state.present
+          ? &draw_state.draw.render_state
+          : nullptr;
   if (!CreateRealGeometryPipeline(device.Get(), root_signature, pipeline_state,
                                   format, pipeline_render_state,
                                   vertex_shader_source,
@@ -2389,17 +2464,19 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       return false;
     }
 
-    const void *index_data =
-        uploaded.prepared.uses_32bit_indices
-            ? static_cast<const void *>(uploaded.prepared.indices32.data())
-            : static_cast<const void *>(uploaded.prepared.indices16.data());
-    uploaded.index_bytes =
-        uploaded.prepared.uses_32bit_indices
-            ? uploaded.prepared.indices32.size() * sizeof(uint32_t)
-            : uploaded.prepared.indices16.size() * sizeof(uint16_t);
-    if (!CreateUploadBuffer(device.Get(), index_data, uploaded.index_bytes,
-                            uploaded.index_buffer, error)) {
-      return false;
+    if (uploaded.prepared.indexed) {
+      const void *index_data =
+          uploaded.prepared.uses_32bit_indices
+              ? static_cast<const void *>(uploaded.prepared.indices32.data())
+              : static_cast<const void *>(uploaded.prepared.indices16.data());
+      uploaded.index_bytes =
+          uploaded.prepared.uses_32bit_indices
+              ? uploaded.prepared.indices32.size() * sizeof(uint32_t)
+              : uploaded.prepared.indices16.size() * sizeof(uint16_t);
+      if (!CreateUploadBuffer(device.Get(), index_data, uploaded.index_bytes,
+                              uploaded.index_buffer, error)) {
+        return false;
+      }
     }
     uploaded_draws.push_back(std::move(uploaded));
   }
@@ -2554,8 +2631,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
               << (pipeline_render_state->stencil_enable ? "yes" : "no")
               << "\n";
   } else {
-    std::cout << "D3D12 real replay render state unavailable; using default "
-                 "D3D12 PSO state\n";
+    std::cout << "D3D12 real replay render state unavailable";
+    if (!prepared.indexed && draw_state.draw.render_state.present) {
+      std::cout << " for non-indexed draw bring-up";
+    }
+    std::cout << "; using default D3D12 PSO state\n";
   }
 
   D3D12_VIEWPORT viewport{};
@@ -2604,22 +2684,27 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     vertex_view.SizeInBytes = static_cast<UINT>(uploaded.vertex_bytes);
     vertex_view.StrideInBytes = sizeof(RealReplayVertex);
 
-    D3D12_INDEX_BUFFER_VIEW index_view{};
-    index_view.BufferLocation = uploaded.index_buffer->GetGPUVirtualAddress();
-    index_view.SizeInBytes = static_cast<UINT>(uploaded.index_bytes);
-    index_view.Format = uploaded.prepared.uses_32bit_indices
-                            ? DXGI_FORMAT_R32_UINT
-                            : DXGI_FORMAT_R16_UINT;
-
     list->IASetVertexBuffers(0, 1, &vertex_view);
-    list->IASetIndexBuffer(&index_view);
     list->IASetPrimitiveTopology(
         TopologyForPrimitive(uploaded_state.draw.primitive_type));
-    const UINT index_count =
-        static_cast<UINT>(uploaded.prepared.uses_32bit_indices
-                              ? uploaded.prepared.indices32.size()
-                              : uploaded.prepared.indices16.size());
-    list->DrawIndexedInstanced(index_count, 1, 0, 0, 0);
+    if (uploaded.prepared.indexed) {
+      D3D12_INDEX_BUFFER_VIEW index_view{};
+      index_view.BufferLocation =
+          uploaded.index_buffer->GetGPUVirtualAddress();
+      index_view.SizeInBytes = static_cast<UINT>(uploaded.index_bytes);
+      index_view.Format = uploaded.prepared.uses_32bit_indices
+                              ? DXGI_FORMAT_R32_UINT
+                              : DXGI_FORMAT_R16_UINT;
+      list->IASetIndexBuffer(&index_view);
+      const UINT index_count =
+          static_cast<UINT>(uploaded.prepared.uses_32bit_indices
+                                ? uploaded.prepared.indices32.size()
+                                : uploaded.prepared.indices16.size());
+      list->DrawIndexedInstanced(index_count, 1, 0, 0, 0);
+    } else {
+      list->IASetIndexBuffer(nullptr);
+      list->DrawInstanced(uploaded.prepared.vertex_count, 1, 0, 0);
+    }
   }
 
   D3D12_RESOURCE_BARRIER barrier{};
