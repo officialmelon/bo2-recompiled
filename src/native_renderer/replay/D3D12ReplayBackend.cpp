@@ -1169,9 +1169,59 @@ struct FrameRealReplayPlan {
   std::size_t skipped_draw_count = 0;
   std::size_t elided_noop_draw_count = 0;
   bool used_pre_frame_bucket = false;
+  bool used_sequence_frame_bucket = false;
+  uint64_t sequence_begin = 0;
+  uint64_t sequence_end = 0;
   std::vector<PreparedRealDraw> supported_draws;
   std::map<std::string, std::size_t> unsupported_reasons;
 };
+
+uint64_t FrameBoundarySeq(const ReplayFrame &frame) {
+  if (frame.has_end && frame.end_seq != 0) {
+    return frame.end_seq;
+  }
+  return frame.begin_seq;
+}
+
+bool FindSequenceFrameDrawRange(const ReplayCapture &capture,
+                                std::size_t frame_index, std::size_t &begin,
+                                std::size_t &end, uint64_t &sequence_begin,
+                                uint64_t &sequence_end) {
+  if (frame_index >= capture.frames.size()) {
+    return false;
+  }
+
+  sequence_begin = 0;
+  if (frame_index != 0) {
+    sequence_begin = FrameBoundarySeq(capture.frames[frame_index - 1]);
+  }
+  sequence_end = FrameBoundarySeq(capture.frames[frame_index]);
+  if (sequence_end == 0 || sequence_end <= sequence_begin) {
+    return false;
+  }
+
+  begin = capture.draws.size();
+  end = begin;
+  for (std::size_t draw_index = 0; draw_index < capture.draws.size();
+       ++draw_index) {
+    const uint64_t draw_seq = capture.draws[draw_index].seq;
+    if (draw_seq <= sequence_begin) {
+      continue;
+    }
+    if (draw_seq > sequence_end) {
+      if (begin != capture.draws.size()) {
+        break;
+      }
+      continue;
+    }
+    if (begin == capture.draws.size()) {
+      begin = draw_index;
+    }
+    end = draw_index + 1;
+  }
+
+  return begin < end;
+}
 
 bool PrepareFrameRealReplayPlan(const ReplayCapture &capture,
                                 const ReplayCliOptions &options,
@@ -1197,12 +1247,21 @@ bool PrepareFrameRealReplayPlan(const ReplayCapture &capture,
   std::size_t begin = frame.first_draw_index;
   std::size_t end =
       std::min<std::size_t>(begin + frame.draw_count, capture.draws.size());
-  if (frame.draw_count == 0 && !capture_has_frame_draws &&
-      *options.frame_index == 0) {
-    begin = 0;
-    end = capture.draws.size();
-    plan.frame_draw_count = capture.draws.size();
-    plan.used_pre_frame_bucket = true;
+  if (frame.draw_count == 0 && !capture_has_frame_draws) {
+    uint64_t sequence_begin = 0;
+    uint64_t sequence_end = 0;
+    if (FindSequenceFrameDrawRange(capture, *options.frame_index, begin, end,
+                                   sequence_begin, sequence_end)) {
+      plan.frame_draw_count = end - begin;
+      plan.used_sequence_frame_bucket = true;
+      plan.sequence_begin = sequence_begin;
+      plan.sequence_end = sequence_end;
+    } else if (*options.frame_index == 0) {
+      begin = 0;
+      end = capture.draws.size();
+      plan.frame_draw_count = capture.draws.size();
+      plan.used_pre_frame_bucket = true;
+    }
   }
   for (std::size_t draw_index = begin; draw_index < end; ++draw_index) {
     const ReplayDrawState &state = capture.draws[draw_index];
@@ -3559,6 +3618,12 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     if (frame_plan.used_pre_frame_bucket) {
       std::cout << "D3D12 frame replay used pre-frame draw bucket because this "
                    "capture has frame markers but no frame-owned PM4 draws\n";
+    }
+    if (frame_plan.used_sequence_frame_bucket) {
+      std::cout << "D3D12 frame replay used sequence-inferred draw bucket seq=("
+                << frame_plan.sequence_begin << ","
+                << frame_plan.sequence_end << "] because this capture has "
+                   "frame markers but no frame-owned PM4 draws\n";
     }
     if (!frame_plan.unsupported_reasons.empty()) {
       std::cout << "D3D12 frame replay unsupported reason counts:\n";

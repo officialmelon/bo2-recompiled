@@ -243,7 +243,7 @@ Primitive/source summary:
 | Source select | `0` | 60 |
 | Source select | `2` | 4328 |
 
-The current frame markers come from `VdSwap`/present hooks, so most command-processor traffic in this capture is pre-frame from the replay tool's perspective. A real backend must not assume all draw work appears between current `begin_frame` and `end_frame`; the CP stream and present packet together define the usable frame boundary.
+The current frame markers come from `VdSwap`/present hooks, so some command-processor traffic can still be pre-frame from the replay tool's parser perspective. The D3D12 real replay path now has a sequence-inferred fallback for captures with frame markers but no frame-owned PM4 draws: frame `N` uses draw events with sequence numbers after frame `N - 1`'s boundary and through frame `N`'s boundary, instead of assigning every pre-frame draw to frame `0`. A real live backend still must capture CP execution and present boundaries from the same timeline rather than assuming all draw work appears between current `begin_frame` and `end_frame`.
 
 ## D3D12 diagnostic output
 
