@@ -51,6 +51,8 @@ bool CompileShaderWithCache(const char *source, const char *entry,
                             const std::filesystem::path &cache_path,
                             const std::filesystem::path &log_path,
                             ComPtr<ID3DBlob> &blob, std::string &error);
+bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
+                        std::vector<uint8_t> &rgba, std::string &reason);
 
 std::string HrError(const char *what, HRESULT hr) {
   return std::string(what) + " failed with HRESULT 0x" +
@@ -1102,6 +1104,29 @@ bool PrepareFrameRealReplayPlan(const ReplayCapture &capture,
   if (plan.supported_draws.empty()) {
     error = "selected frame has no draw with complete geometry currently "
             "supported by D3D12 real replay";
+    return false;
+  }
+  return true;
+}
+
+bool CheckCapturedTextureSupport(const ReplayDrawState &state,
+                                 std::string &reason) {
+  const std::size_t texture_count =
+      std::min<std::size_t>(state.draw.texture_fetches.size(),
+                            kMaxRealReplayTextureSlots);
+  for (std::size_t slot = 0; slot < texture_count; ++slot) {
+    const TextureFetchRecord &fetch = state.draw.texture_fetches[slot];
+    std::vector<uint8_t> texture_rgba;
+    std::string texture_reason;
+    if (DecodeTextureRgba8(fetch, texture_rgba, texture_reason)) {
+      continue;
+    }
+    reason = "unsupported captured texture slot " + std::to_string(slot) +
+             " format " +
+             std::to_string(fetch.format);
+    if (!texture_reason.empty()) {
+      reason += ": " + texture_reason;
+    }
     return false;
   }
   return true;
@@ -3075,6 +3100,36 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             "creatable D3D12 real replay PSO";
     return false;
   }
+
+  std::vector<PreparedRealDraw> texture_supported_draws;
+  texture_supported_draws.reserve(prepared_draws.size());
+  for (const PreparedRealDraw &prepared_draw : prepared_draws) {
+    const ReplayDrawState &state = capture.draws[prepared_draw.draw_index];
+    std::string texture_reason;
+    if (CheckCapturedTextureSupport(state, texture_reason) ||
+        options.allow_diagnostic_shader) {
+      texture_supported_draws.push_back(prepared_draw);
+      continue;
+    }
+    if (frame_replay && options.skip_unsupported) {
+      if (texture_reason.empty()) {
+        texture_reason = "unsupported captured texture";
+      }
+      ++frame_plan.skipped_draw_count;
+      ++frame_plan.unsupported_reasons[texture_reason];
+      continue;
+    }
+    error = texture_reason.empty() ? "unsupported captured texture"
+                                   : texture_reason;
+    return false;
+  }
+  prepared_draws = std::move(texture_supported_draws);
+  if (prepared_draws.empty()) {
+    error = "selected frame has no draw with supported geometry, PSO, and "
+            "captured texture state";
+    return false;
+  }
+
   cache_index_write_count = pso_cache_misses - diagnostic_pipeline_count;
 
   if (frame_replay) {
