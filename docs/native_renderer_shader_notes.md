@@ -125,6 +125,8 @@ The existing cache script writes `.xsh` files with:
 
 Full automatic native shader replacement is not implemented yet. The extracted microcode is structurally valid, but native pipeline variants require live render state. Existing `SHADERS.md` notes that directly seeding all extracted shaders into ReXGlue is unsafe and has hit unsupported Xenos operations such as export register `48`.
 
+The current BO2-local translated-shader path is intentionally narrow. `native_shader_inspect.exe --compile-translated-hlsl-dxc` can lower and cache the `xenos_simple_passthrough_v1` subset seen in runtime VS `0xB6C9863F710683EC` and PS `0xA4A965C189287B99`, but it fails closed for the real-resource VS `0x5D918D91043B3ED0`. The next shader target is expanding semantic lowering for the real-resource shader pair currently covered by manual D3D12 overrides.
+
 ## Runtime replay shader evidence
 
 `native_render_replay.exe` was run on `native-renderer-capture-limit.jsonl` on 2026-06-28. The capture contains `1011` shader-load events and `4388` draw events. Replay found `8` unique live shader hashes and `7` live shader pairs, with no draw missing a VS or PS hash.

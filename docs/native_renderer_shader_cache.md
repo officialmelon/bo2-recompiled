@@ -60,6 +60,8 @@ native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\eve
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --write-hlsl shader_work\cache\hlsl
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --compile-hlsl shader_work\cache
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --compile-hlsl-dxc shader_work\cache
+native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --write-translated-hlsl shader_work\cache\hlsl
+native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --compile-translated-hlsl-dxc shader_work\cache
 ```
 
 Verified summary:
@@ -209,7 +211,25 @@ These files are not diagnostic fallbacks. They are generated only when the decod
 - `shader_work\cache\d3d12\VS_0xB6C9863F710683EC.translated.dxil`
 - `shader_work\cache\d3d12\PS_0xA4A965C189287B99.translated.dxil`
 
-Unsupported shaders fail closed. The current real-resource VS `0x5D918D91043B3ED0` returns `no limited translated-HLSL rule`.
+`native_shader_inspect.exe --compile-translated-hlsl-dxc` now performs that DXC compile directly and writes persistent non-diagnostic cache records:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-translated-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --compile-translated-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-translated-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+```
+
+Verified outputs:
+
+- `shader_work\cache\hlsl\VS_0xB6C9863F710683EC.translated.dxc.hlsl`
+- `shader_work\cache\d3d12\VS_0xB6C9863F710683EC.translated.dxc.dxil`
+- `shader_work\cache\logs\VS_0xB6C9863F710683EC.translated.dxc.dxc.log`
+- `shader_work\cache\hlsl\PS_0xA4A965C189287B99.translated.dxc.hlsl`
+- `shader_work\cache\d3d12\PS_0xA4A965C189287B99.translated.dxc.dxil`
+- `shader_work\cache\logs\PS_0xA4A965C189287B99.translated.dxc.dxc.log`
+- `shader_work\cache\shader_cache_index.jsonl`
+
+The first VS/PS compile prints `cache_hit=false`; a repeated VS command prints `cache_hit=true`. Unsupported shaders fail closed before compilation. The current real-resource VS `0x5D918D91043B3ED0` returns `no limited translated-HLSL rule`.
 
 Static extracted `.ucode` semantic decode is still blocked by file-layout ambiguity. Raw `.ucode` artifact commands still work, but tested static files include metadata/constants before the analyzer's expected payload range.
 
@@ -218,12 +238,12 @@ Static extracted `.ucode` semantic decode is still blocked by file-layout ambigu
 - Proven runtime 64-bit shader hash to static container/microcode matching.
 - Complete static-file Xenos shader disassembler.
 - Complete executable backend-neutral shader IR for runtime shaders. A raw unresolved `bo2shaderir.raw_xenos.v1` JSON skeleton exists for static `.ucode`, and runtime `bo2shaderir.semantic_xenos.v1` inspection artifacts now exist, but they are not yet a complete HLSL-ready operation graph.
-- HLSL/SPIR-V generation.
-- Real HLSL/SPIR-V generation from decoded Xenos operations. A diagnostic HLSL scaffold exists, but it does not lower semantic Xenos instructions.
-- Real translated-shader DXC integration.
-- Persistent compiled shader cache for real translated shaders. Diagnostic DXBC and DXIL cache paths now exist.
-- DXC/DXIL compiler integration for real semantic Xenos lowering.
-- Cache entries for automatically translated Xenos shaders.
+- Complete HLSL/SPIR-V generation.
+- Broad real HLSL/SPIR-V generation from decoded Xenos operations. A diagnostic HLSL scaffold exists, and a very small `xenos_simple_passthrough_v1` translated HLSL subset exists, but most semantic Xenos instructions are not lowered.
+- Full translated-shader DXC integration into replay/live backend shader selection. The inspect tool can now compile the limited translated subset to DXIL cache artifacts, but the D3D12 replay backend does not yet consume those automatic translated entries.
+- Persistent compiled shader cache for broadly translated shaders. Diagnostic DXBC/DXIL cache paths and limited translated DXIL cache entries now exist.
+- DXC/DXIL compiler integration for full semantic Xenos lowering.
+- Cache entries for all runtime-used automatically translated Xenos shaders.
 
 ## Current matching rule
 

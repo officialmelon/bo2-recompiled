@@ -6,6 +6,32 @@ Last updated: 2026-06-29
 
 Native rendering is not complete. The current verified output is diagnostic D3D12 replay output, not BO2 scene rendering.
 
+## 2026-06-30 translated DXC cache pass
+
+Targeted build:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j8 native_shader_inspect native_render_replay"
+```
+
+- Result: exit code `0`.
+- Scope: project-local `native_shader_inspect.exe` and `native_render_replay.exe`; no `rexglue-sdk` edits.
+
+Translated DXC compile validation:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-translated-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --compile-translated-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --compile-translated-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0x5D918D91043B3ED0 --compile-translated-hlsl-dxc C:\Users\braxt\bo2-recompiled\shader_work\cache
+```
+
+- VS `0xB6C9863F710683EC`: generated `shader_work\cache\hlsl\VS_0xB6C9863F710683EC.translated.dxc.hlsl`, compiled `shader_work\cache\d3d12\VS_0xB6C9863F710683EC.translated.dxc.dxil`, `cache_hit=false` on first run and `cache_hit=true` on repeat.
+- PS `0xA4A965C189287B99`: generated `shader_work\cache\hlsl\PS_0xA4A965C189287B99.translated.dxc.hlsl`, compiled `shader_work\cache\d3d12\PS_0xA4A965C189287B99.translated.dxc.dxil`, `cache_hit=false`.
+- Unsupported real-resource VS `0x5D918D91043B3ED0`: exit code `1`, expected error `no limited translated-HLSL rule for VS 0x5D918D91043B3ED0`.
+
+Status: this is a real non-diagnostic translated-shader cache path for a tiny verified Xenos subset. It is not a complete shader translator and is not yet consumed by the D3D12 replay/live backend shader resolver.
+
 ## 2026-06-28 index-payload pass
 
 Full Windows build:
