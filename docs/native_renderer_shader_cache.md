@@ -255,6 +255,15 @@ The `xenos_limited_semantic_v5` cache version keeps the generated real-resource 
 
 The PS lowering is intentionally limited, but it now uses four D3D12 texture/sampler bindings for the decoded fetch constants. D3D12 replay allocates four SRV/sampler descriptors per supported draw and binds the draw's texture fetch records in shader binding order, so this shader maps `tf4/tf3/tf2/tf1` to `t0/t1/t2/t3` and `s0/s1/s2/s3`. Unsupported shaders still fail closed before compilation.
 
+The `xenos_limited_semantic_v6` cache version adds the next runtime post-process pair:
+
+- `shader_work\cache\hlsl\VS_0x81311AC4B1FBD082.translated.v6.dxc.hlsl`
+- `shader_work\cache\d3d12\VS_0x81311AC4B1FBD082.translated.v6.dxc.dxil`
+- `shader_work\cache\hlsl\PS_0x246E20EF10E0DDC7.translated.v6.dxc.hlsl`
+- `shader_work\cache\d3d12\PS_0x246E20EF10E0DDC7.translated.v6.dxc.dxil`
+
+Both entries are non-diagnostic cache records produced by `native_shader_inspect.exe --compile-translated-hlsl-dxc`. The VS rule preserves captured vf95 position/UV data through the replay canonical input layout. The PS rule is partial: it proves D3D12 binding for the captured format-2 texture resources and captured constants, but does not yet lower the full predicated/scalar Xenos ALU. Replay draw `1013` on `sidecar_capture_002` writes `native-renderer-246e-draw1013-v6-d3d12-real.bmp` with SHA-256 `BA999F177A69BAA48BFB044B9B0142A05EF7EE6E013570F47EEF087FC04B0A70`.
+
 Verified generated-pair replay:
 
 ```cmd

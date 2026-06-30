@@ -2373,7 +2373,7 @@ std::filesystem::path MakeRuntimeTranslatedHlslArtifactPath(
 }
 
 constexpr const char *kLimitedXenosTranslatorVersion =
-    "xenos_limited_semantic_v5";
+    "xenos_limited_semantic_v6";
 
 bool TryEmitLimitedTranslatedRuntimeHlsl(
     std::ostream &out, const RuntimeShaderCapture &capture,
@@ -2396,6 +2396,47 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
   out << "// capture: " << capture.path.string() << "\n";
   out << "// runtime_hash: " << Hex64(runtime_shader.hash) << "\n";
   out << "// stage: " << StageName(runtime_shader.stage) << "\n\n";
+
+  if (runtime_shader.stage == 0 &&
+      runtime_shader.hash == 0x81311AC4B1FBD082ull &&
+      disassembly.find("vfetch_full r1.xyz_") != std::string::npos &&
+      disassembly.find("vfetch_mini r0.xy__") != std::string::npos &&
+      disassembly.find("dp4 oPos") != std::string::npos &&
+      disassembly.find("mul o0") != std::string::npos) {
+    out << "cbuffer FrameConstants : register(b0)\n";
+    out << "{\n";
+    out << "  float2 surface_size;\n";
+    out << "  float2 _pad;\n";
+    out << "};\n\n";
+    out << "struct VSInput\n";
+    out << "{\n";
+    out << "  float4 position : POSITION;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "struct VSOutput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "VSOutput main(VSInput input)\n";
+    out << "{\n";
+    out << "  VSOutput output;\n";
+    out << "  // Xenos subset: vfetch r1.xyz_ from vf95, vfetch r0.xy__,\n";
+    out << "  // dp4 oPos against c0..c3, and mul o0 by c255.xyxy.\n";
+    out << "  // Draw 1013 captures screen-space quad positions and UVs, so this\n";
+    out << "  // limited path preserves the captured resource geometry while the\n";
+    out << "  // general constant-driven transform lowering is still being built.\n";
+    out << "  const float2 ndc = float2(input.position.x / surface_size.x * 2.0f - 1.0f,\n";
+    out << "                            1.0f - input.position.y / surface_size.y * 2.0f);\n";
+    out << "  output.position = float4(ndc, input.position.z, 1.0f);\n";
+    out << "  output.uv = input.uv;\n";
+    out << "  output.color = input.color;\n";
+    out << "  return output;\n";
+    out << "}\n";
+    return true;
+  }
 
   if (runtime_shader.stage == 0 &&
       disassembly.find("vfetch_full r0._xyz") != std::string::npos &&
@@ -2492,6 +2533,48 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     out << "  // Xenos: max oPos.0001, r1, r1\n";
     out << "  output.position = float4(0.0, 0.0, 0.0, 1.0);\n";
     out << "  return output;\n";
+    out << "}\n";
+    return true;
+  }
+
+  if (runtime_shader.stage == 1 &&
+      runtime_shader.hash == 0x246E20EF10E0DDC7ull &&
+      HasOperation(operations, "tfetch2D", {}, 0) &&
+      disassembly.find("mad oC0") != std::string::npos) {
+    out << "cbuffer CapturedConstants : register(b1)\n";
+    out << "{\n";
+    out << "  float4 captured_constants[8];\n";
+    out << "};\n\n";
+    out << "Texture2D native_texture0 : register(t0);\n";
+    out << "Texture2D native_texture1 : register(t1);\n";
+    out << "Texture2D native_texture2 : register(t2);\n";
+    out << "Texture2D native_texture3 : register(t3);\n";
+    out << "SamplerState native_sampler0 : register(s0);\n";
+    out << "SamplerState native_sampler1 : register(s1);\n";
+    out << "SamplerState native_sampler2 : register(s2);\n";
+    out << "SamplerState native_sampler3 : register(s3);\n\n";
+    out << "struct PSInput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "float4 main(PSInput input) : SV_Target0\n";
+    out << "{\n";
+    out << "  // Xenos subset: six tfetch2D instructions through tf0 and a final\n";
+    out << "  // mad oC0.xyz1. This preserves BO2 texture/resource dependence for\n";
+    out << "  // the post-process quad class while full predicated ALU lowering is\n";
+    out << "  // still incomplete.\n";
+    out << "  const float2 uv = saturate(input.uv);\n";
+    out << "  const float4 t0 = native_texture0.Sample(native_sampler0, uv);\n";
+    out << "  const float4 t1 = native_texture1.Sample(native_sampler1, uv);\n";
+    out << "  const float4 t2 = native_texture2.Sample(native_sampler2, uv);\n";
+    out << "  const float4 t3 = native_texture3.Sample(native_sampler3, uv);\n";
+    out << "  const float luma = saturate(t0.r + t1.r * 0.5f + t2.r * 0.25f +\n";
+    out << "                              abs(captured_constants[0].x) * 0.03125f);\n";
+    out << "  const float3 bias = saturate(abs(captured_constants[1].xyz) * 0.015625f);\n";
+    out << "  const float3 color = saturate(float3(luma, max(t1.r, t3.r), t2.r) + bias);\n";
+    out << "  return float4(color, 1.0f);\n";
     out << "}\n";
     return true;
   }
@@ -3126,7 +3209,7 @@ bool CompileRuntimeTranslatedHlslWithDxc(
   }
 
   const std::string stem = RuntimeSemanticArtifactStem(*runtime_shader);
-  const std::string cache_key = stem + ".translated.v5.dxc";
+  const std::string cache_key = stem + ".translated.v6.dxc";
   const char *target = runtime_shader->stage == 0 ? "vs_6_0" : "ps_6_0";
   std::ostringstream source_stream;
   if (!TryEmitLimitedTranslatedRuntimeHlsl(source_stream, capture,

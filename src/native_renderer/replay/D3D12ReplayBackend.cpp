@@ -811,12 +811,11 @@ uint32_t XenosTiledOffset2D(uint32_t x, uint32_t y, uint32_t pitch,
 bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
                         std::vector<uint8_t> &rgba, std::string &reason) {
   rgba.clear();
-  if (fetch.payload_missing || fetch.payload_truncated ||
-      fetch.payload_bytes.empty()) {
-    reason = "texture payload is missing or truncated";
+  if (fetch.payload_missing || fetch.payload_bytes.empty()) {
+    reason = "texture payload is missing";
     return false;
   }
-  if (fetch.format != 6) {
+  if (fetch.format != 6 && fetch.format != 2) {
     reason = "unsupported texture format " + std::to_string(fetch.format);
     return false;
   }
@@ -830,31 +829,52 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
   const std::size_t output_bytes = pixel_count * 4;
   const uint32_t pitch_texels =
       fetch.pitch != 0 ? fetch.pitch << 5 : fetch.width;
+  const uint32_t bytes_per_texel = fetch.format == 2 ? 1 : 4;
+  const uint32_t bytes_per_block_log2 = fetch.format == 2 ? 0 : 2;
   if (!fetch.tiled) {
     const std::size_t linear_footprint =
         (static_cast<std::size_t>(pitch_texels) * (fetch.height - 1) +
          fetch.width) *
-        4;
-    if (linear_footprint > fetch.payload_bytes.size()) {
+        bytes_per_texel;
+    if (linear_footprint > fetch.payload_bytes.size() &&
+        !fetch.payload_truncated) {
       reason =
-          "linear texture payload is smaller than the decoded 32bpp footprint";
+          "linear texture payload is smaller than the decoded footprint";
       return false;
     }
   }
 
   rgba.resize(output_bytes);
+  bool used_truncated_preview = false;
   for (uint32_t y = 0; y < fetch.height; ++y) {
     for (uint32_t x = 0; x < fetch.width; ++x) {
       const std::size_t pixel =
           static_cast<std::size_t>(y) * fetch.width + x;
       const std::size_t source_offset =
           fetch.tiled
-              ? XenosTiledOffset2D(x, y, pitch_texels, 2)
-              : (static_cast<std::size_t>(y) * pitch_texels + x) * 4;
-      if (source_offset + 4 > fetch.payload_bytes.size()) {
-        reason =
-            "texture payload is smaller than the tiled 32bpp footprint";
-        return false;
+              ? XenosTiledOffset2D(x, y, pitch_texels, bytes_per_block_log2)
+              : (static_cast<std::size_t>(y) * pitch_texels + x) *
+                    bytes_per_texel;
+      if (source_offset + bytes_per_texel > fetch.payload_bytes.size()) {
+        if (!fetch.payload_truncated) {
+          reason = "texture payload is smaller than the decoded footprint";
+          return false;
+        }
+        rgba[pixel * 4 + 0] = 0;
+        rgba[pixel * 4 + 1] = 0;
+        rgba[pixel * 4 + 2] = 0;
+        rgba[pixel * 4 + 3] = 255;
+        used_truncated_preview = true;
+        continue;
+      }
+
+      if (fetch.format == 2) {
+        const uint8_t value = fetch.payload_bytes[source_offset];
+        rgba[pixel * 4 + 0] = value;
+        rgba[pixel * 4 + 1] = value;
+        rgba[pixel * 4 + 2] = value;
+        rgba[pixel * 4 + 3] = 255;
+        continue;
       }
       const uint32_t word =
           GpuSwap32(LoadLittleEndian32(fetch.payload_bytes, source_offset),
@@ -869,7 +889,11 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
     reason = "decoded texture is empty";
     return false;
   }
-  reason.clear();
+  reason =
+      used_truncated_preview
+          ? "decoded partial/truncated format-" + std::to_string(fetch.format) +
+                " texture preview"
+          : "";
   return true;
 }
 
@@ -2519,6 +2543,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   uint32_t captured_texture_count = 0;
   uint32_t fallback_texture_count = 0;
   uint32_t unsupported_texture_count = 0;
+  uint32_t partial_texture_preview_count = 0;
   uint32_t captured_sampler_count = 0;
   uint32_t fallback_sampler_count = 0;
   uint32_t exact_sampler_clamp_count = 0;
@@ -2564,7 +2589,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         uploaded.texture_formats[slot] = selected_fetch->format;
         uploaded.texture_from_capture[slot] = true;
         uploaded.sampler_from_capture[slot] = true;
-        uploaded.texture_notes[slot] = "captured";
+        uploaded.texture_notes[slot] =
+            texture_reason.empty() ? "captured" : texture_reason;
+        if (!texture_reason.empty()) {
+          ++partial_texture_preview_count;
+        }
         if (!CreateTexture2DRgba8(
                 device.Get(), list.Get(), texture_rgba.data(),
                 uploaded.texture_widths[slot],
@@ -2611,7 +2640,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   std::cout << "D3D12 real replay bound " << captured_texture_count
             << " captured texture SRV(s), " << fallback_texture_count
             << " fallback texture SRV(s), unsupported_texture_attempts="
-            << unsupported_texture_count << "\n";
+            << unsupported_texture_count
+            << ", partial_texture_previews="
+            << partial_texture_preview_count << "\n";
   std::cout << "D3D12 real replay bound " << captured_sampler_count
             << " captured sampler descriptor(s), " << fallback_sampler_count
             << " fallback sampler descriptor(s), exact_clamp_modes="
