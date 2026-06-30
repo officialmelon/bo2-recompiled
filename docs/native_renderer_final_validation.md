@@ -594,6 +594,21 @@ native_shader_inspect.exe --index C:\Users\braxt\bo2-recompiled\shader_work\shad
 - Regression shader matching on `shader_probe_capture_007` is unchanged: direct runtime/static matches remain `0/8`, direct shader-record matches remain `0/24`, and conservative runtime payload-prefix matches remain `12/24`.
 - Status: this is shader container parsing, raw microcode listing, and raw unresolved IR artifact infrastructure. It is not yet a true Xenos shader disassembler, semantic backend-neutral shader IR, HLSL/DXIL generation, or SPIR-V generation.
 
+Runtime semantic shader disassembly validation:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j8 native_shader_inspect native_render_replay"
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --semantic-disassemble
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --semantic-disassemble
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --shader-usage
+```
+
+- Build status: focused `native_shader_inspect` and `native_render_replay` targets build successfully with the semantic analyzer wired in. The inspector links minimal ReXGlue shader analyzer sources directly and does not link the full `rex::graphics` target.
+- Runtime VS `0xB6C9863F710683EC`: semantic analysis succeeds with `payload_dwords=24`, `cf_pair_index_bound=3`, `register_static_address_bound=2`, and decoded disassembly containing `exec`, `alloc interpolators`, `alloc position`, `max o0.0000, r0, r0`, and `max oPos.0001, r1, r1`.
+- Runtime PS `0xA4A965C189287B99`: semantic analysis succeeds with `payload_dwords=9`, `cf_pair_index_bound=1`, `register_static_address_bound=1`, and decoded disassembly containing `alloc interpolators`, `exece`, and `max o0, r0, r0`.
+- Replay shader usage on `shader_probe_capture_007` still parses `5000` events, `1106` draws, `8` unique runtime shaders, `7` shader pairs, and `233/233` shader payload uploads with payload.
+- Static extracted `.ucode` semantic decode is not accepted as solved. The raw static commands still work, but static `.ucode` files include extracted metadata/constants before the analyzer's expected payload; an attempted offset scan was removed because wrong offsets can run too long. The next reverse-engineering target is the extracted `.ucode` file layout/container descriptor boundary, or direct semantic IR generation from captured runtime PM4 payloads.
+
 Ghidra-backed shader binder evidence from this pass:
 
 - XEX `0x82597DF8` reads the pass-relative shader record at `r5 + ((r10 + 0x70) << 3)`, reads microcode byte size from `record + 0x36c`, reads microcode offset from `record + 0x368`, adds pass base `*(r5 + 0x20)`, emits the shader-load PM4 packet, and copies the payload bytes.

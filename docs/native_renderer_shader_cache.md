@@ -56,6 +56,7 @@ native_shader_inspect.exe --index shader_work\shaders\index.json --capture nativ
 native_shader_inspect.exe --index shader_work\shaders\index.json --capture native_captures\shader_payload_capture_001\events.jsonl --list-runtime-shaders --match-runtime-shaders --top-shaders 20
 native_shader_inspect.exe --microcode shader_work\shaders\microcode\<stage_hash>.ucode --write-disasm shader_work\out\disasm
 native_shader_inspect.exe --microcode shader_work\shaders\microcode\<stage_hash>.ucode --write-ir shader_work\cache\ir
+native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --semantic-disassemble
 ```
 
 Verified summary:
@@ -100,11 +101,29 @@ Top/target payload hash examples from `shader_payload_capture_001`:
 | PS | `0xC4ED2979F29C9139` | `330eec0ea9acf5248701e56987cd934a1440721f1120e7308537af69c14a7baf` | `6b4da9f6a56a33138bd7a808177fef38133c5c9dc89b257682250829a5ff1281` | `330eec0ea9acf5248701e56987cd934a1440721f1120e7308537af69c14a7baf` | `6b4da9f6a56a33138bd7a808177fef38133c5c9dc89b257682250829a5ff1281` |
 | VS | `0x5D918D91043B3ED0` | `44b6f5e82fa042067532265cecd6a884c37521c5a544dfa2b1c9ac56702be88f` | `776490d2bb3e6c3d2f27d8443f7c930d2ea326f9d429ee5a1b8b9255aa1c39e4` | `44b6f5e82fa042067532265cecd6a884c37521c5a544dfa2b1c9ac56702be88f` | `776490d2bb3e6c3d2f27d8443f7c930d2ea326f9d429ee5a1b8b9255aa1c39e4` |
 
+## Runtime semantic analyzer checkpoint
+
+`native_shader_inspect.exe` now has a runtime semantic disassembly path backed by ReXGlue's Xenos analyzer:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --semantic-disassemble
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --semantic-disassemble
+```
+
+Verified output:
+
+- VS `0xB6C9863F710683EC`: `cf_pair_index_bound=3`, `register_static_address_bound=2`, D3D-style Xenos disassembly containing `exec`, `alloc interpolators`, `alloc position`, and `max` exports.
+- PS `0xA4A965C189287B99`: `cf_pair_index_bound=1`, `register_static_address_bound=1`, D3D-style Xenos disassembly containing `alloc interpolators`, `exece`, and `max o0, r0, r0`.
+
+This is not yet cached translated shader output. It is the first real semantic decode layer for captured runtime payloads and is the input for the next semantic IR/HLSL pass.
+
+Static extracted `.ucode` semantic decode is still blocked by file-layout ambiguity. Raw `.ucode` artifact commands still work, but tested static files include metadata/constants before the analyzer's expected payload range.
+
 ## Not implemented yet
 
 - Proven runtime 64-bit shader hash to static container/microcode matching.
-- Xenos shader disassembler.
-- Semantic backend-neutral shader IR. A raw unresolved `bo2shaderir.raw_xenos.v1` JSON skeleton exists, but every instruction is currently an `unknown` node.
+- Complete static-file Xenos shader disassembler.
+- Semantic backend-neutral shader IR for runtime shaders. A raw unresolved `bo2shaderir.raw_xenos.v1` JSON skeleton exists for static `.ucode`, and runtime semantic text decode now exists, but no complete translated `bo2shaderir.semantic_xenos.v1` cache path is finished.
 - HLSL/SPIR-V generation.
 - DXC integration.
 - Persistent compiled shader cache.

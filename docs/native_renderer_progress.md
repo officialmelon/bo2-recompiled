@@ -216,6 +216,7 @@ Runtime verification:
 - Offline replay now decodes captured vertex payload bytes for the observed Xenos fetch formats. Draw `1004` decodes to a real `1280x720` indexed quad with position/color/UV attributes, and draw `24` decodes non-indexed position data from format `57`.
 - Offline replay now parses texture fetch records and decoded render-state records from fresh captures. `--dump-bound-state` prints texture base/mip addresses, dimensions, format, tiling/endian/filter summary, payload byte count, and the current surface/depth/color/raster basics.
 - `native_shader_inspect.exe` can inspect extracted shader containers and `.ucode` files without loading a full shader index, including stage-guess header fields, descriptor size candidates, embedded shader/technique strings, big-endian dword dumps, an explicit unknown-preserving raw listing, full raw-disassembly artifact output, and raw unresolved IR JSON output for decoder bring-up.
+- `native_shader_inspect.exe --semantic-disassemble` now works on captured runtime PM4 shader payloads using ReXGlue's Xenos shader analyzer without linking the full ReXGlue graphics backend. On `shader_probe_capture_007`, top runtime VS `0xB6C9863F710683EC` and PS `0xA4A965C189287B99` produce real control-flow/ALU disassembly from `Shader::AnalyzeUcode`.
 - Offline D3D12 replay creates a native D3D12 render target, emits draw-derived clear rectangles, compiles a tiny HLSL VS/PS pair, submits synthetic triangle draw calls, copies the target to CPU memory, and writes a BMP without using ReXGlue/Xenia final rendering.
 - Offline real D3D12 replay can bind decoded captured BO2 vertex/index data for draw `1004`/`1209`, bind captured format-6 texture fetches for the current supported shader pair, submit `DrawIndexedInstanced`, copy the target to CPU memory, and write a BMP. Draw `1209`/`799` can use a hash-keyed manual HLSL override pair; the temporary diagnostic shader still exists only behind `--allow-diagnostic-shader`.
 - Ghidra MCP is usable for both programs: `CoDMPServer_PC.exe` provides PDB-backed renderer symbols, and `default.xex` instruction searches verify the XEX packet emitter addresses even where Ghidra's PPC function boundaries are broken.
@@ -234,14 +235,15 @@ Runtime verification:
 - The XEX equivalents for the static material asset-load functions are not fully mapped. The current map is strongest for runtime packet emitters and shader/material binding.
 - The cleanest XEX draw-packet target is now `0x8258CF68` (`PM4_DRAW_INDX_2` with variable initiator).
 - Shader replacement now exists for one runtime pair as D3D12 override files loaded through a parsed manifest or deterministic filename fallback. The compiled override pair is cached and can satisfy strict replay without override source. Runtime shader ranking and reproducible payload-hash evidence now exist, but runtime-to-static shader identity is still unproven.
+- Runtime shader payload semantic decode now exists for captured PM4 payloads, but static extracted `.ucode` semantic decode is not solved because those files include extracted metadata/constants before the analyzer's expected payload range. Raw static `.ucode` listing and raw IR still work.
 
 ## Next highest-impact targets
 
 1. Add an ARM64-safe generated-call interception path or generated-call rewrite, so Android direct calls cannot bypass dispatcher hooks.
 2. Capture material shader record metadata and use Ghidra-backed shader/material records so runtime hashes can be matched to static shader containers or explicit overrides.
-3. Replace flattened captured constants with layout-aware constant buffers for draw `1209`.
-4. Expand sidecar-backed texture snapshots into mip footprint handling and additional runtime-used formats.
-5. Use the decoded fetch0 frontbuffer path as a swap/resolve reference while expanding from the early solid-blue frame to useful scene frames.
-6. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends and apply color/depth/blend/raster state in D3D12.
-7. Add sidecar resource payloads for larger vertex snapshots.
-8. Replace the null runtime backend with a `D3D12Debug` backend once the replay D3D12 path proves device/swapchain/indexed draw submission.
+3. Convert ReXGlue runtime semantic disassembly into `bo2shaderir.semantic_xenos.v1` for captured runtime shaders, then begin HLSL generation.
+4. Reverse the static `.ucode` extracted-file payload layout so static shader files can use the same semantic analyzer.
+5. Replace flattened captured constants with layout-aware constant buffers for draw `1209`.
+6. Expand sidecar-backed texture snapshots into mip footprint handling and additional runtime-used formats.
+7. Use the decoded fetch0 frontbuffer path as a swap/resolve reference while expanding from the early solid-blue frame to useful scene frames.
+8. Add a backend-neutral `ReplayRenderState` layer between JSONL replay and real GPU backends and apply color/depth/blend/raster state in D3D12.

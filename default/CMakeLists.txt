@@ -54,6 +54,11 @@ set(NATIVE_RENDER_REPLAY_SOURCES
 
 set(NATIVE_SHADER_INSPECT_SOURCES
     ../src/native_renderer/replay/NativeShaderInspect.cpp
+    ${ReXGlue_SOURCE_DIR}/src/graphics/pipeline/shader/shader.cpp
+    ${ReXGlue_SOURCE_DIR}/src/graphics/pipeline/shader/translator.cpp
+    ${ReXGlue_SOURCE_DIR}/src/graphics/pipeline/shader/translator_disasm.cpp
+    ${ReXGlue_SOURCE_DIR}/src/graphics/format/ucode.cpp
+    ${ReXGlue_SOURCE_DIR}/src/graphics/xenos.cpp
 )
 
 set(DEFAULT_SOURCES
@@ -85,11 +90,16 @@ if(WIN32)
 endif()
 
 add_executable(native_shader_inspect ${NATIVE_SHADER_INSPECT_SOURCES})
+target_include_directories(native_shader_inspect PRIVATE
+    "${ReXGlue_SOURCE_DIR}/include"
+    "${ReXGlue_BINARY_DIR}/include"
+)
 target_compile_features(native_shader_inspect PRIVATE cxx_std_23)
 if(WIN32)
     target_compile_definitions(native_shader_inspect PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(native_shader_inspect PRIVATE bcrypt)
 endif()
+target_link_libraries(native_shader_inspect PRIVATE rexcore rexfilesystem)
 
 rexglue_setup_target(default)
 

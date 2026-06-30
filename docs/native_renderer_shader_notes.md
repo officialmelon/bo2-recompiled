@@ -292,6 +292,36 @@ default\out\build\win-amd64-clangmsvc-debug\native_renderer_direct_build\native_
 
 It loads `shader_work/shaders/index.json`, prints the summary counts, previews the first pixel and vertex containers, supports `--hash <value> --find` for static container/microcode substring search, and ranks/matches runtime capture hashes with `--capture`, `--list-runtime-shaders`, and `--match-runtime-shaders`.
 
+## Runtime Semantic Xenos Disassembly
+
+Evidence date: 2026-06-30
+
+`native_shader_inspect.exe --semantic-disassemble` now links only the minimal ReXGlue shader analyzer sources into the BO2 project tool:
+
+- `src/graphics/pipeline/shader/shader.cpp`
+- `src/graphics/pipeline/shader/translator.cpp`
+- `src/graphics/pipeline/shader/translator_disasm.cpp`
+- `src/graphics/format/ucode.cpp`
+- `src/graphics/xenos.cpp`
+
+The tool does not link the full `rex::graphics` backend. A project-local `dump_shaders` CVar storage stub keeps `Shader::AnalyzeUcode` from pulling `graphics/flags.cpp`, RenderDoc, UI, D3D12 backend, or system runtime symbols into the standalone inspection tool.
+
+Verified runtime commands:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xB6C9863F710683EC --semantic-disassemble
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xA4A965C189287B99 --semantic-disassemble
+```
+
+Results:
+
+- Runtime VS `0xB6C9863F710683EC`: `payload_dwords=24`, `cf_pair_index_bound=3`, `register_static_address_bound=2`, writes interpolator `0`; ReXGlue disassembly decodes `exec`, `alloc interpolators`, `alloc position`, `max o0.0000, r0, r0`, and `max oPos.0001, r1, r1`.
+- Runtime PS `0xA4A965C189287B99`: `payload_dwords=9`, `cf_pair_index_bound=1`, `register_static_address_bound=1`, writes interpolator `0`; ReXGlue disassembly decodes `alloc interpolators`, `exece`, and `max o0, r0, r0`.
+
+This proves captured PM4 shader payloads can be semantically decoded by ReXGlue's Xenos analyzer and are now beyond raw word preservation for runtime shaders.
+
+Static extracted `.ucode` files remain unresolved for semantic decode. They still dump raw words and raw IR correctly, but the tested static files begin with extracted metadata/constants rather than the exact runtime shader payload layout expected by `Shader::AnalyzeUcode`. A first auto-offset scan was removed because a wrong static offset can make the analyzer run too long. The next static-file task is to reverse the extracted `.ucode` layout or use the container descriptor fields to pass only the true microcode program range to the analyzer.
+
 ## Native renderer path forward
 
 1. Preserve the runtime `(stage, hash, guest_address, dword_count)` stream from replay as the first shader registry key.

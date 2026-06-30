@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
@@ -25,6 +26,18 @@
 #include <bcrypt.h>
 #endif
 
+#include <rex/graphics/pipeline/shader/shader.h>
+#include <rex/graphics/xenos.h>
+#include <rex/string/buffer.h>
+
+// ReXGlue's shader analyzer checks the optional graphics dump_shaders CVar.
+// The standalone inspector keeps that disabled without linking graphics/flags.cpp,
+// which would pull RenderDoc/UI/backend dependencies into this tool.
+std::string &FLAGS_dump_shaders_storage_() {
+  static std::string value;
+  return value;
+}
+
 namespace {
 
 struct CliOptions {
@@ -34,6 +47,8 @@ struct CliOptions {
   std::filesystem::path microcode_path;
   std::filesystem::path disasm_output_path;
   std::filesystem::path ir_output_path;
+  std::filesystem::path semantic_output_path;
+  std::filesystem::path semantic_ir_output_path;
   bool show_summary = false;
   bool find_hash = false;
   bool list_runtime_shaders = false;
@@ -41,6 +56,7 @@ struct CliOptions {
   bool dump_header = false;
   bool dump_words = false;
   bool disassemble = false;
+  bool semantic_disassemble = false;
   std::string hash;
   std::size_t limit = 8;
   std::size_t top_shaders = 20;
@@ -156,10 +172,17 @@ void PrintHelp() {
             << "                     Xenos microcode file to inspect\n"
             << "  --dump-words      Dump big-endian microcode dwords\n"
             << "  --disassemble     Emit an unknown-preserving raw Xenos dword listing\n"
+            << "  --semantic-disassemble\n"
+            << "                     Use ReXGlue's Xenos parser on --microcode or runtime\n"
+            << "                     shader payload selected by --capture and --hash\n"
             << "  --write-disasm <path>\n"
             << "                     Write full raw listing to file or output directory\n"
             << "  --write-ir <path>\n"
             << "                     Write raw backend-neutral shader IR JSON\n"
+            << "  --write-semantic <path>\n"
+            << "                     Write semantic Xenos analysis to file or directory\n"
+            << "  --write-semantic-ir <path>\n"
+            << "                     Write semantic backend-neutral shader IR JSON\n"
             << "  --top-shaders <n>  Runtime shader/pair print limit (default 20)\n"
             << "  --hash <value>     Hash or substring to find\n"
             << "  --find             Search the index for --hash\n"
@@ -227,6 +250,13 @@ std::string Hex32(uint32_t value) {
   std::ostringstream out;
   out << "0x" << std::hex << std::uppercase << std::setfill('0')
       << std::setw(8) << value;
+  return out.str();
+}
+
+std::string Hex64(uint64_t value) {
+  std::ostringstream out;
+  out << "0x" << std::hex << std::uppercase << std::setfill('0')
+      << std::setw(16) << value;
   return out.str();
 }
 
@@ -1088,6 +1118,514 @@ const char *StageName(uint32_t stage) {
   }
 }
 
+uint32_t CountBits32(uint32_t value) {
+  uint32_t count = 0;
+  while (value) {
+    value &= value - 1;
+    ++count;
+  }
+  return count;
+}
+
+rex::graphics::xenos::ShaderType RexShaderTypeFromRuntimeStage(uint32_t stage) {
+  return stage == 0 ? rex::graphics::xenos::ShaderType::kVertex
+                    : rex::graphics::xenos::ShaderType::kPixel;
+}
+
+rex::graphics::xenos::ShaderType RexShaderTypeFromStageName(
+    std::string_view stage) {
+  return stage == "pixel" ? rex::graphics::xenos::ShaderType::kPixel
+                          : rex::graphics::xenos::ShaderType::kVertex;
+}
+
+const RuntimeShaderUsage *FindRuntimeShaderByHash(
+    const RuntimeShaderCapture &capture, uint64_t hash) {
+  for (const RuntimeShaderUsage &shader : capture.shaders) {
+    if (shader.hash == hash) {
+      return &shader;
+    }
+  }
+  return nullptr;
+}
+
+void PrintBitmapWords(std::ostream &out, const char *label,
+                      const uint64_t *words, std::size_t word_count) {
+  out << "  " << label << "=";
+  for (std::size_t i = 0; i < word_count; ++i) {
+    if (i) {
+      out << ",";
+    }
+    out << "0x" << std::hex << std::uppercase << std::setfill('0')
+        << std::setw(16) << words[i] << std::dec << std::setfill(' ');
+  }
+  out << "\n";
+}
+
+void PrintBitmapWords32(std::ostream &out, const char *label,
+                        const uint32_t *words, std::size_t word_count) {
+  out << "  " << label << "=";
+  for (std::size_t i = 0; i < word_count; ++i) {
+    if (i) {
+      out << ",";
+    }
+    out << Hex32(words[i]);
+  }
+  out << "\n";
+}
+
+std::vector<uint32_t> BytesToBigEndianDwords(const std::vector<uint8_t> &bytes) {
+  std::vector<uint32_t> dwords;
+  dwords.reserve(bytes.size() / 4);
+  for (std::size_t i = 0; i + 3 < bytes.size(); i += 4) {
+    dwords.push_back(ReadBE32(bytes, i));
+  }
+  return dwords;
+}
+
+uint64_t HashPrefix64FromSha256(std::string_view sha256) {
+  if (sha256.size() < 16) {
+    return 0;
+  }
+  return ParseHexU64(std::string(sha256.substr(0, 16))).value_or(0);
+}
+
+void EmitSemanticShaderAnalysis(std::ostream &out, const char *source_kind,
+                                const std::string &source_label,
+                                const std::string &stage_name,
+                                uint64_t shader_hash,
+                                const std::vector<uint32_t> &dwords,
+                                bool include_disassembly,
+                                std::string &error) {
+  try {
+    rex::graphics::Shader shader(
+        RexShaderTypeFromStageName(stage_name), shader_hash, dwords.data(),
+        dwords.size(), std::endian::native);
+    rex::string::StringBuffer disasm_buffer;
+    shader.AnalyzeUcode(disasm_buffer);
+
+    const auto &constant_map = shader.constant_register_map();
+    uint32_t bool_count = 0;
+    for (uint32_t word : constant_map.bool_bitmap) {
+      bool_count += CountBits32(word);
+    }
+    uint32_t loop_count = CountBits32(constant_map.loop_bitmap);
+    uint32_t vertex_fetch_count = 0;
+    for (uint32_t word : constant_map.vertex_fetch_bitmap) {
+      vertex_fetch_count += CountBits32(word);
+    }
+
+    out << "ReXGlue semantic Xenos analysis\n";
+    out << "  source_kind=" << source_kind << "\n";
+    out << "  source=" << source_label << "\n";
+    out << "  stage=" << stage_name << " shader_hash=" << Hex64(shader_hash)
+        << " payload_dwords=" << dwords.size() << "\n";
+    out << "  cf_pair_index_bound=" << shader.cf_pair_index_bound()
+        << " register_static_address_bound="
+        << shader.register_static_address_bound()
+        << " dynamic_register_addressing="
+        << (shader.uses_register_dynamic_addressing() ? "yes" : "no") << "\n";
+    out << "  vertex_bindings=" << shader.vertex_bindings().size()
+        << " texture_bindings=" << shader.texture_bindings().size()
+        << " float_constants=" << constant_map.float_count
+        << " bool_constants=" << bool_count
+        << " loop_constants=" << loop_count
+        << " vertex_fetch_constants=" << vertex_fetch_count << "\n";
+    out << "  writes_interpolators=" << Hex32(shader.writes_interpolators())
+        << " writes_color_targets=" << Hex32(shader.writes_color_targets())
+        << " writes_depth=" << (shader.writes_depth() ? "yes" : "no")
+        << " kills_pixels=" << (shader.kills_pixels() ? "yes" : "no")
+        << " texture_fetch_results="
+        << (shader.uses_texture_fetch_instruction_results() ? "yes" : "no")
+        << "\n";
+    PrintBitmapWords(out, "float_constant_bitmap", constant_map.float_bitmap,
+                     std::size(constant_map.float_bitmap));
+    PrintBitmapWords32(out, "bool_constant_bitmap", constant_map.bool_bitmap,
+                       std::size(constant_map.bool_bitmap));
+    PrintBitmapWords32(out, "vertex_fetch_bitmap",
+                       constant_map.vertex_fetch_bitmap,
+                       std::size(constant_map.vertex_fetch_bitmap));
+
+    if (!shader.vertex_bindings().empty()) {
+      out << "Vertex bindings:\n";
+      for (const auto &binding : shader.vertex_bindings()) {
+        out << "  binding=" << binding.binding_index
+            << " fetch_constant=" << binding.fetch_constant
+            << " stride_words=" << binding.stride_words
+            << " attributes=" << binding.attributes.size() << "\n";
+      }
+    }
+    if (!shader.texture_bindings().empty()) {
+      out << "Texture bindings:\n";
+      for (const auto &binding : shader.texture_bindings()) {
+        out << "  binding=" << binding.binding_index
+            << " fetch_constant=" << binding.fetch_constant << "\n";
+      }
+    }
+
+    if (include_disassembly) {
+      out << "\nReXGlue Xenos disassembly:\n";
+      out << shader.ucode_disassembly();
+      if (!shader.ucode_disassembly().empty() &&
+          shader.ucode_disassembly().back() != '\n') {
+        out << "\n";
+      }
+    }
+  } catch (const std::exception &ex) {
+    error = std::string("ReXGlue shader analysis failed: ") + ex.what();
+  } catch (...) {
+    error = "ReXGlue shader analysis failed with an unknown exception";
+  }
+}
+
+bool PrintSemanticShaderDisassembly(const char *source_kind,
+                                    const std::string &source_label,
+                                    const std::string &stage_name,
+                                    uint64_t shader_hash,
+                                    const std::vector<uint32_t> &dwords,
+                                    std::string &error) {
+  EmitSemanticShaderAnalysis(std::cout, source_kind, source_label, stage_name,
+                             shader_hash, dwords, true, error);
+  return error.empty();
+}
+
+bool PrintSemanticRuntimeDisassembly(const RuntimeShaderCapture &capture,
+                                     uint64_t runtime_hash,
+                                     std::string &error) {
+  const RuntimeShaderUsage *runtime_shader =
+      FindRuntimeShaderByHash(capture, runtime_hash);
+  if (!runtime_shader) {
+    error = "runtime shader hash not found in capture: " + Hex64(runtime_hash);
+    return false;
+  }
+  if (runtime_shader->first_payload_dwords.empty()) {
+    error = "runtime shader has no captured payload dwords: " +
+            Hex64(runtime_hash);
+    return false;
+  }
+  return PrintSemanticShaderDisassembly(
+      "runtime_capture", capture.path.string(), StageName(runtime_shader->stage),
+      runtime_shader->hash, runtime_shader->first_payload_dwords, error);
+}
+
+bool LoadMicrocodeDwords(const std::filesystem::path &path,
+                         std::vector<uint8_t> &bytes,
+                         std::vector<uint32_t> &dwords, std::string &error) {
+  if (!LoadBinary(path, bytes)) {
+    error = "could not read microcode: " + path.string();
+    return false;
+  }
+  dwords = BytesToBigEndianDwords(bytes);
+  if (dwords.empty()) {
+    error = "microcode file has no complete dwords: " + path.string();
+    return false;
+  }
+  return true;
+}
+
+std::vector<uint32_t> SelectSemanticMicrocodePayload(
+    const std::vector<uint32_t> &dwords, const std::string &stage,
+    std::size_t &selected_offset) {
+  (void)stage;
+  selected_offset = 0;
+  return dwords;
+}
+
+bool PrintSemanticMicrocodeDisassembly(const std::filesystem::path &path,
+                                       std::string &error) {
+  std::vector<uint8_t> bytes;
+  std::vector<uint32_t> dwords;
+  if (!LoadMicrocodeDwords(path, bytes, dwords, error)) {
+    return false;
+  }
+  const std::string stage = InferMicrocodeStageFromPath(path);
+  if (stage == "unknown") {
+    error = "cannot infer shader stage from microcode filename: " +
+            path.filename().string();
+    return false;
+  }
+  std::size_t source_dword_offset = 0;
+  dwords = SelectSemanticMicrocodePayload(dwords, stage, source_dword_offset);
+  if (source_dword_offset) {
+    std::cout << "semantic_source_dword_offset=" << source_dword_offset << "\n";
+  }
+  const uint64_t hash = HashPrefix64FromSha256(Sha256Hex(bytes));
+  return PrintSemanticShaderDisassembly("microcode_file", path.string(), stage,
+                                        hash, dwords, error);
+}
+
+std::filesystem::path MakeSemanticArtifactPath(
+    const std::filesystem::path &requested,
+    const std::filesystem::path &microcode_path) {
+  if (requested.has_extension()) {
+    return requested;
+  }
+  const std::string stem = microcode_path.stem().string();
+  const std::string lower_stem = ToLower(stem);
+  std::string filename = stem;
+  if (lower_stem.rfind("pixel_", 0) != 0 &&
+      lower_stem.rfind("vertex_", 0) != 0) {
+    filename = InferMicrocodeStageFromPath(microcode_path) + "_" + stem;
+  }
+  return requested / (filename + ".xenos.semantic.txt");
+}
+
+bool WriteSemanticMicrocodeArtifact(const std::filesystem::path &path,
+                                    const std::filesystem::path &requested,
+                                    std::filesystem::path &written_path,
+                                    std::string &error) {
+  std::vector<uint8_t> bytes;
+  std::vector<uint32_t> dwords;
+  if (!LoadMicrocodeDwords(path, bytes, dwords, error)) {
+    return false;
+  }
+  const std::string stage = InferMicrocodeStageFromPath(path);
+  if (stage == "unknown") {
+    error = "cannot infer shader stage from microcode filename: " +
+            path.filename().string();
+    return false;
+  }
+
+  written_path = MakeSemanticArtifactPath(requested, path);
+  std::error_code ec;
+  const std::filesystem::path parent = written_path.parent_path();
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      error = "could not create semantic output directory " + parent.string() +
+              ": " + ec.message();
+      return false;
+    }
+  }
+
+  std::ofstream file(written_path, std::ios::binary);
+  if (!file) {
+    error = "could not open semantic output: " + written_path.string();
+    return false;
+  }
+  const uint64_t hash = HashPrefix64FromSha256(Sha256Hex(bytes));
+  std::size_t source_dword_offset = 0;
+  dwords = SelectSemanticMicrocodePayload(dwords, stage, source_dword_offset);
+  if (source_dword_offset) {
+    file << "semantic_source_dword_offset=" << source_dword_offset << "\n";
+  }
+  EmitSemanticShaderAnalysis(file, "microcode_file", path.string(), stage, hash,
+                             dwords, true, error);
+  if (!error.empty()) {
+    return false;
+  }
+  if (!file) {
+    error = "could not write semantic output: " + written_path.string();
+    return false;
+  }
+  return true;
+}
+
+void EmitJsonDwordArray(std::ostream &out,
+                        const std::vector<uint32_t> &dwords) {
+  out << "[";
+  for (std::size_t i = 0; i < dwords.size(); ++i) {
+    if (i) {
+      out << ", ";
+    }
+    out << "\"" << Hex32(dwords[i]) << "\"";
+  }
+  out << "]";
+}
+
+bool EmitSemanticShaderIrJson(std::ostream &out,
+                              const std::filesystem::path &path,
+                              const std::vector<uint8_t> &bytes,
+                              const std::vector<uint32_t> &dwords,
+                              std::size_t source_dword_offset,
+                              std::string &error) {
+  const std::string stage = InferMicrocodeStageFromPath(path);
+  if (stage == "unknown") {
+    error = "cannot infer shader stage from microcode filename: " +
+            path.filename().string();
+    return false;
+  }
+
+  try {
+    const uint64_t hash = HashPrefix64FromSha256(Sha256Hex(bytes));
+    rex::graphics::Shader shader(RexShaderTypeFromStageName(stage), hash,
+                                 dwords.data(), dwords.size(),
+                                 std::endian::native);
+    rex::string::StringBuffer disasm_buffer;
+    shader.AnalyzeUcode(disasm_buffer);
+    const auto &constant_map = shader.constant_register_map();
+
+    out << "{\n";
+    out << "  \"schema\": \"bo2shaderir.semantic_xenos.v1\",\n";
+    out << "  \"decoder_version\": 1,\n";
+    out << "  \"translator_version\": 0,\n";
+    out << "  \"semantic_source\": \"rex::graphics::Shader::AnalyzeUcode\",\n";
+    out << "  \"stage\": \"" << JsonEscape(stage) << "\",\n";
+    out << "  \"source_path\": \"" << JsonEscape(path.string()) << "\",\n";
+    out << "  \"source_file\": \"" << JsonEscape(path.filename().string())
+        << "\",\n";
+    out << "  \"microcode_sha256_be\": \"" << JsonEscape(Sha256Hex(bytes))
+        << "\",\n";
+    out << "  \"shader_hash\": \"" << Hex64(hash) << "\",\n";
+    out << "  \"source_dword_offset\": " << source_dword_offset << ",\n";
+    out << "  \"dword_count\": " << dwords.size() << ",\n";
+    out << "  \"cf_pair_index_bound\": " << shader.cf_pair_index_bound()
+        << ",\n";
+    out << "  \"register_static_address_bound\": "
+        << shader.register_static_address_bound() << ",\n";
+    out << "  \"uses_register_dynamic_addressing\": "
+        << (shader.uses_register_dynamic_addressing() ? "true" : "false")
+        << ",\n";
+    out << "  \"outputs\": {\n";
+    out << "    \"writes_interpolators\": \""
+        << Hex32(shader.writes_interpolators()) << "\",\n";
+    out << "    \"writes_color_targets\": \""
+        << Hex32(shader.writes_color_targets()) << "\",\n";
+    out << "    \"writes_depth\": "
+        << (shader.writes_depth() ? "true" : "false") << ",\n";
+    out << "    \"kills_pixels\": "
+        << (shader.kills_pixels() ? "true" : "false") << "\n";
+    out << "  },\n";
+    out << "  \"constants\": {\n";
+    out << "    \"float_count\": " << constant_map.float_count << ",\n";
+    out << "    \"float_bitmap\": [";
+    for (std::size_t i = 0; i < std::size(constant_map.float_bitmap); ++i) {
+      if (i) {
+        out << ", ";
+      }
+      out << "\"" << std::hex << std::uppercase << std::setfill('0')
+          << std::setw(16) << constant_map.float_bitmap[i] << std::dec
+          << std::setfill(' ') << "\"";
+    }
+    out << "],\n";
+    out << "    \"bool_bitmap\": [";
+    for (std::size_t i = 0; i < std::size(constant_map.bool_bitmap); ++i) {
+      if (i) {
+        out << ", ";
+      }
+      out << "\"" << Hex32(constant_map.bool_bitmap[i]) << "\"";
+    }
+    out << "],\n";
+    out << "    \"loop_bitmap\": \"" << Hex32(constant_map.loop_bitmap)
+        << "\",\n";
+    out << "    \"vertex_fetch_bitmap\": [";
+    for (std::size_t i = 0; i < std::size(constant_map.vertex_fetch_bitmap);
+         ++i) {
+      if (i) {
+        out << ", ";
+      }
+      out << "\"" << Hex32(constant_map.vertex_fetch_bitmap[i]) << "\"";
+    }
+    out << "]\n";
+    out << "  },\n";
+    out << "  \"vertex_fetches\": [\n";
+    for (std::size_t i = 0; i < shader.vertex_bindings().size(); ++i) {
+      const auto &binding = shader.vertex_bindings()[i];
+      out << "    {\"binding\": " << binding.binding_index
+          << ", \"fetch_constant\": " << binding.fetch_constant
+          << ", \"stride_words\": " << binding.stride_words
+          << ", \"attribute_count\": " << binding.attributes.size() << "}";
+      if (i + 1 < shader.vertex_bindings().size()) {
+        out << ",";
+      }
+      out << "\n";
+    }
+    out << "  ],\n";
+    out << "  \"textures\": [\n";
+    for (std::size_t i = 0; i < shader.texture_bindings().size(); ++i) {
+      const auto &binding = shader.texture_bindings()[i];
+      out << "    {\"binding\": " << binding.binding_index
+          << ", \"fetch_constant\": " << binding.fetch_constant << "}";
+      if (i + 1 < shader.texture_bindings().size()) {
+        out << ",";
+      }
+      out << "\n";
+    }
+    out << "  ],\n";
+    out << "  \"disassembly\": [\n";
+    std::istringstream disasm_lines(shader.ucode_disassembly());
+    std::string line;
+    bool first_line = true;
+    while (std::getline(disasm_lines, line)) {
+      if (!first_line) {
+        out << ",\n";
+      }
+      first_line = false;
+      out << "    \"" << JsonEscape(line) << "\"";
+    }
+    out << "\n  ],\n";
+    out << "  \"raw_words\": ";
+    EmitJsonDwordArray(out, dwords);
+    out << "\n";
+    out << "}\n";
+    return true;
+  } catch (const std::exception &ex) {
+    error = std::string("ReXGlue shader semantic IR failed: ") + ex.what();
+    return false;
+  } catch (...) {
+    error = "ReXGlue shader semantic IR failed with an unknown exception";
+    return false;
+  }
+}
+
+std::filesystem::path MakeSemanticIrArtifactPath(
+    const std::filesystem::path &requested,
+    const std::filesystem::path &microcode_path) {
+  if (requested.has_extension()) {
+    return requested;
+  }
+  const std::string stem = microcode_path.stem().string();
+  const std::string lower_stem = ToLower(stem);
+  std::string filename = stem;
+  if (lower_stem.rfind("pixel_", 0) != 0 &&
+      lower_stem.rfind("vertex_", 0) != 0) {
+    filename = InferMicrocodeStageFromPath(microcode_path) + "_" + stem;
+  }
+  return requested / (filename + ".semantic.bo2shaderir.json");
+}
+
+bool WriteSemanticMicrocodeIrArtifact(const std::filesystem::path &path,
+                                      const std::filesystem::path &requested,
+                                      std::filesystem::path &written_path,
+                                      std::string &error) {
+  std::vector<uint8_t> bytes;
+  std::vector<uint32_t> dwords;
+  if (!LoadMicrocodeDwords(path, bytes, dwords, error)) {
+    return false;
+  }
+  const std::string stage = InferMicrocodeStageFromPath(path);
+  std::size_t source_dword_offset = 0;
+  if (stage != "unknown") {
+    dwords = SelectSemanticMicrocodePayload(dwords, stage, source_dword_offset);
+  }
+
+  written_path = MakeSemanticIrArtifactPath(requested, path);
+  std::error_code ec;
+  const std::filesystem::path parent = written_path.parent_path();
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      error = "could not create semantic IR output directory " +
+              parent.string() + ": " + ec.message();
+      return false;
+    }
+  }
+
+  std::ofstream file(written_path, std::ios::binary);
+  if (!file) {
+    error = "could not open semantic IR output: " + written_path.string();
+    return false;
+  }
+  if (!EmitSemanticShaderIrJson(file, path, bytes, dwords, source_dword_offset,
+                                error)) {
+    return false;
+  }
+  if (!file) {
+    error = "could not write semantic IR output: " + written_path.string();
+    return false;
+  }
+  return true;
+}
+
 std::optional<PayloadPrefixMatch> FindPayloadPrefixMatch(
     const std::vector<uint32_t> &secondary_dwords,
     const std::vector<uint32_t> &payload_dwords) {
@@ -1735,6 +2273,8 @@ int main(int argc, char **argv) {
       cli.dump_words = true;
     } else if (arg == "--disassemble") {
       cli.disassemble = true;
+    } else if (arg == "--semantic-disassemble") {
+      cli.semantic_disassemble = true;
     } else if (arg == "--write-disasm") {
       const char *value = require_value("--write-disasm");
       if (!value) {
@@ -1747,6 +2287,18 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.ir_output_path = value;
+    } else if (arg == "--write-semantic") {
+      const char *value = require_value("--write-semantic");
+      if (!value) {
+        return 2;
+      }
+      cli.semantic_output_path = value;
+    } else if (arg == "--write-semantic-ir") {
+      const char *value = require_value("--write-semantic-ir");
+      if (!value) {
+        return 2;
+      }
+      cli.semantic_ir_output_path = value;
     } else if (arg == "--top-shaders") {
       const char *value = require_value("--top-shaders");
       if (!value || !ParseSize(value, cli.top_shaders)) {
@@ -1776,9 +2328,12 @@ int main(int argc, char **argv) {
   const bool file_inspection =
       cli.dump_header || cli.dump_words || cli.disassemble ||
       !cli.shader_path.empty() || !cli.microcode_path.empty() ||
-      !cli.disasm_output_path.empty() || !cli.ir_output_path.empty();
+      !cli.disasm_output_path.empty() || !cli.ir_output_path.empty() ||
+      !cli.semantic_output_path.empty() ||
+      !cli.semantic_ir_output_path.empty();
   if (!cli.show_summary && !cli.find_hash && !cli.list_runtime_shaders &&
-      !cli.match_runtime_shaders && !file_inspection) {
+      !cli.match_runtime_shaders && !cli.semantic_disassemble &&
+      !file_inspection) {
     cli.show_summary = true;
   }
   if (cli.find_hash && cli.hash.empty()) {
@@ -1789,6 +2344,12 @@ int main(int argc, char **argv) {
       cli.capture_path.empty()) {
     std::cerr << "--list-runtime-shaders/--match-runtime-shaders require "
                  "--capture <events.jsonl>\n";
+    return 2;
+  }
+  if (cli.semantic_disassemble && cli.microcode_path.empty() &&
+      (cli.capture_path.empty() || cli.hash.empty())) {
+    std::cerr << "--semantic-disassemble requires either --microcode <path> "
+                 "or --capture <events.jsonl> and --hash <runtime_shader_hash>\n";
     return 2;
   }
   if (cli.dump_header && cli.shader_path.empty()) {
@@ -1805,6 +2366,14 @@ int main(int argc, char **argv) {
   }
   if (!cli.ir_output_path.empty() && cli.microcode_path.empty()) {
     std::cerr << "--write-ir requires --microcode <path>\n";
+    return 2;
+  }
+  if (!cli.semantic_output_path.empty() && cli.microcode_path.empty()) {
+    std::cerr << "--write-semantic requires --microcode <path>\n";
+    return 2;
+  }
+  if (!cli.semantic_ir_output_path.empty() && cli.microcode_path.empty()) {
+    std::cerr << "--write-semantic-ir requires --microcode <path>\n";
     return 2;
   }
 
@@ -1845,6 +2414,47 @@ int main(int argc, char **argv) {
     std::cout << "wrote_ir=" << written_path.string() << "\n";
     printed_anything = true;
   }
+  if (!cli.semantic_output_path.empty()) {
+    std::filesystem::path written_path;
+    std::string error;
+    if (!WriteSemanticMicrocodeArtifact(cli.microcode_path,
+                                        cli.semantic_output_path, written_path,
+                                        error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    std::cout << "wrote_semantic=" << written_path.string() << "\n";
+    printed_anything = true;
+  }
+  if (!cli.semantic_ir_output_path.empty()) {
+    std::filesystem::path written_path;
+    std::string error;
+    if (!WriteSemanticMicrocodeIrArtifact(cli.microcode_path,
+                                          cli.semantic_ir_output_path,
+                                          written_path, error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    std::cout << "wrote_semantic_ir=" << written_path.string() << "\n";
+    printed_anything = true;
+  }
+  if (cli.semantic_disassemble && !cli.microcode_path.empty()) {
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    std::string error;
+    if (!PrintSemanticMicrocodeDisassembly(cli.microcode_path, error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    printed_anything = true;
+  }
   if (cli.dump_words || cli.disassemble) {
     if (printed_anything) {
       std::cout << "\n";
@@ -1860,7 +2470,11 @@ int main(int argc, char **argv) {
 
   const bool needs_index =
       cli.show_summary || cli.find_hash || cli.match_runtime_shaders;
-  if (!needs_index && !cli.list_runtime_shaders) {
+  const bool needs_capture = cli.list_runtime_shaders ||
+                             cli.match_runtime_shaders ||
+                             (cli.semantic_disassemble &&
+                              cli.microcode_path.empty());
+  if (!needs_index && !needs_capture) {
     return 0;
   }
 
@@ -1881,7 +2495,7 @@ int main(int argc, char **argv) {
   }
 
   RuntimeShaderCapture runtime_capture;
-  if (cli.list_runtime_shaders || cli.match_runtime_shaders) {
+  if (needs_capture) {
     std::string capture_error;
     if (!LoadRuntimeShaderCapture(cli.capture_path, runtime_capture,
                                   capture_error)) {
@@ -1890,7 +2504,27 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (cli.semantic_disassemble && cli.microcode_path.empty()) {
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    const auto hash = ParseHexU64(cli.hash);
+    if (!hash) {
+      std::cerr << "--hash expects a hexadecimal runtime shader hash\n";
+      return 2;
+    }
+    std::string error;
+    if (!PrintSemanticRuntimeDisassembly(runtime_capture, *hash, error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    printed_anything = true;
+  }
+
   if (cli.show_summary) {
+    if (printed_anything) {
+      std::cout << "\n";
+    }
     PrintSummary(text, *resolved);
   }
   if (cli.find_hash) {
