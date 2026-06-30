@@ -305,6 +305,21 @@ std::string JsonEscape(std::string_view value) {
   return out.str();
 }
 
+std::string_view TrimView(std::string_view value) {
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.front()))) {
+    value.remove_prefix(1);
+  }
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.back()))) {
+    value.remove_suffix(1);
+  }
+  return value;
+}
+
+void EmitDisassemblyOperationsJson(std::ostream &out,
+                                   const std::string &disassembly);
+
 std::string GuessStageFromFlags(uint32_t flags) {
   if ((flags & 0xFFFFFF00u) != 0x102A1100u) {
     return "unknown";
@@ -1611,6 +1626,7 @@ bool EmitSemanticShaderIrJson(std::ostream &out,
       out << "\n";
     }
     out << "  ],\n";
+    EmitDisassemblyOperationsJson(out, shader.ucode_disassembly());
     out << "  \"disassembly\": [\n";
     std::istringstream disasm_lines(shader.ucode_disassembly());
     std::string line;
@@ -1694,6 +1710,50 @@ bool WriteSemanticMicrocodeIrArtifact(const std::filesystem::path &path,
     return false;
   }
   return true;
+}
+
+void EmitDisassemblyOperationsJson(std::ostream &out,
+                                   const std::string &disassembly) {
+  out << "  \"operations\": [\n";
+  std::istringstream lines(disassembly);
+  std::string line;
+  bool first = true;
+  while (std::getline(lines, line)) {
+    std::string_view text = TrimView(line);
+    if (text.empty()) {
+      continue;
+    }
+
+    std::string_view address_text;
+    if (text.rfind("/*", 0) == 0) {
+      const std::size_t end = text.find("*/");
+      if (end != std::string_view::npos) {
+        address_text = TrimView(text.substr(2, end - 2));
+        text = TrimView(text.substr(end + 2));
+      }
+    }
+    if (text.empty()) {
+      continue;
+    }
+
+    std::string_view opcode = text;
+    std::string_view operands;
+    const std::size_t opcode_end = text.find_first_of(" \t");
+    if (opcode_end != std::string_view::npos) {
+      opcode = text.substr(0, opcode_end);
+      operands = TrimView(text.substr(opcode_end + 1));
+    }
+
+    if (!first) {
+      out << ",\n";
+    }
+    first = false;
+    out << "    {\"address\": \"" << JsonEscape(address_text)
+        << "\", \"opcode\": \"" << JsonEscape(opcode)
+        << "\", \"operands\": \"" << JsonEscape(operands)
+        << "\", \"text\": \"" << JsonEscape(text) << "\"}";
+  }
+  out << "\n  ],\n";
 }
 
 bool EmitRuntimeSemanticShaderIrJson(std::ostream &out,
@@ -1849,6 +1909,7 @@ bool EmitRuntimeSemanticShaderIrJson(std::ostream &out,
       out << "\n";
     }
     out << "  ],\n";
+    EmitDisassemblyOperationsJson(out, shader.ucode_disassembly());
     out << "  \"disassembly\": [\n";
     std::istringstream disasm_lines(shader.ucode_disassembly());
     std::string line;

@@ -372,6 +372,7 @@ The runtime semantic IR now serializes analyzer-exposed shader interface metadat
 - constant float/bool/loop/vertex-fetch bitmaps and dynamic addressing flags
 - vertex fetch bindings, fetch constants, stride, attribute write masks, Xenos formats, offsets, and signed/integer flags
 - texture fetch bindings, fetch constants, dimension, result write masks, filter override fields, and computed-LOD flags
+- structured operation records split from ReXGlue semantic disassembly into `address`, `opcode`, `operands`, and original `text`
 
 Verified on the current real-resource manual override pair:
 
@@ -384,6 +385,7 @@ Observed metadata:
 
 - VS `0x5D918D91043B3ED0`: `float_count=10`, `vertex_fetch_bitmap[2]=0x80000000`, one vertex binding on fetch constant `95`, stride `8` dwords, with attributes for Xenos formats `38`, `6`, and `37`.
 - PS `0xC4ED2979F29C9139`: `float_count=5`, four `tfetch2D` texture bindings using fetch constants `4`, `3`, `2`, and `1`.
+- The generated `operations` arrays include real opcode records for `vfetch_full`, `vfetch_mini`, `mad`, `dp4`, `tfetch2D`, `mul`, and `dp2add`. Compound scalar disassembly lines are still preserved as text-first records when they are not yet split into full typed operands.
 
 Static extracted `.ucode` files remain unresolved for semantic decode. They still dump raw words and raw IR correctly, but the tested static files begin with extracted metadata/constants rather than the exact runtime shader payload layout expected by `Shader::AnalyzeUcode`. A first auto-offset scan was removed because a wrong static offset can make the analyzer run too long. The next static-file task is to reverse the extracted `.ucode` layout or use the container descriptor fields to pass only the true microcode program range to the analyzer.
 
