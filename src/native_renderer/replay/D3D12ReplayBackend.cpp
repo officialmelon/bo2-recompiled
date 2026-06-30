@@ -912,6 +912,12 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
       return "no captured vertex/fetch state, but render state has no modeled "
              "color/depth/stencil side effects";
     }
+    if (state.vertex_shader.hash == 0xDDED7E538422AE73ull &&
+        TopologyForPrimitive(draw.primitive_type) ==
+            D3D_PRIMITIVE_TOPOLOGY_POINTLIST) {
+      return "DDED7E no-fetch point shader needs Xenos r0/register "
+             "initialization semantics before D3D12 can draw it";
+    }
     return "draw has no captured vertex/fetch state";
   }
   if (topology != D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST &&
