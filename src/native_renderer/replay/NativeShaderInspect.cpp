@@ -1746,8 +1746,36 @@ bool EmitRuntimeSemanticShaderIrJson(std::ostream &out,
     out << "  },\n";
     out << "  \"constants\": {\n";
     out << "    \"float_count\": " << constant_map.float_count << ",\n";
+    out << "    \"float_dynamic_addressing\": "
+        << (constant_map.float_dynamic_addressing ? "true" : "false")
+        << ",\n";
+    out << "    \"float_bitmap\": [";
+    for (std::size_t i = 0; i < std::size(constant_map.float_bitmap); ++i) {
+      if (i) {
+        out << ", ";
+      }
+      out << "\"" << Hex64(constant_map.float_bitmap[i]) << "\"";
+    }
+    out << "],\n";
     out << "    \"loop_bitmap\": \"" << Hex32(constant_map.loop_bitmap)
-        << "\"\n";
+        << "\",\n";
+    out << "    \"bool_bitmap\": [";
+    for (std::size_t i = 0; i < std::size(constant_map.bool_bitmap); ++i) {
+      if (i) {
+        out << ", ";
+      }
+      out << "\"" << Hex32(constant_map.bool_bitmap[i]) << "\"";
+    }
+    out << "],\n";
+    out << "    \"vertex_fetch_bitmap\": [";
+    for (std::size_t i = 0;
+         i < std::size(constant_map.vertex_fetch_bitmap); ++i) {
+      if (i) {
+        out << ", ";
+      }
+      out << "\"" << Hex32(constant_map.vertex_fetch_bitmap[i]) << "\"";
+    }
+    out << "]\n";
     out << "  },\n";
     out << "  \"vertex_fetches\": [\n";
     for (std::size_t i = 0; i < shader.vertex_bindings().size(); ++i) {
@@ -1755,7 +1783,31 @@ bool EmitRuntimeSemanticShaderIrJson(std::ostream &out,
       out << "    {\"binding\": " << binding.binding_index
           << ", \"fetch_constant\": " << binding.fetch_constant
           << ", \"stride_words\": " << binding.stride_words
-          << ", \"attribute_count\": " << binding.attributes.size() << "}";
+          << ", \"attribute_count\": " << binding.attributes.size()
+          << ", \"attributes\": [";
+      for (std::size_t j = 0; j < binding.attributes.size(); ++j) {
+        const auto &attribute = binding.attributes[j].fetch_instr;
+        if (j) {
+          out << ", ";
+        }
+        out << "{\"opcode\":\"" << JsonEscape(attribute.opcode_name)
+            << "\", \"result_target\": "
+            << static_cast<uint32_t>(attribute.result.storage_target)
+            << ", \"result_index\": " << attribute.result.storage_index
+            << ", \"write_mask\": \""
+            << Hex32(attribute.result.original_write_mask)
+            << "\", \"format\": "
+            << static_cast<uint32_t>(attribute.attributes.data_format)
+            << ", \"offset\": " << attribute.attributes.offset
+            << ", \"stride_dwords\": " << attribute.attributes.stride
+            << ", \"prefetch_count\": "
+            << (attribute.attributes.prefetch_count + 1)
+            << ", \"signed\": "
+            << (attribute.attributes.is_signed ? "true" : "false")
+            << ", \"integer\": "
+            << (attribute.attributes.is_integer ? "true" : "false") << "}";
+      }
+      out << "]}";
       if (i + 1 < shader.vertex_bindings().size()) {
         out << ",";
       }
@@ -1766,7 +1818,31 @@ bool EmitRuntimeSemanticShaderIrJson(std::ostream &out,
     for (std::size_t i = 0; i < shader.texture_bindings().size(); ++i) {
       const auto &binding = shader.texture_bindings()[i];
       out << "    {\"binding\": " << binding.binding_index
-          << ", \"fetch_constant\": " << binding.fetch_constant << "}";
+          << ", \"fetch_constant\": " << binding.fetch_constant
+          << ", \"opcode\": \""
+          << JsonEscape(binding.fetch_instr.opcode_name)
+          << "\", \"dimension\": "
+          << static_cast<uint32_t>(binding.fetch_instr.dimension)
+          << ", \"result_target\": "
+          << static_cast<uint32_t>(
+                 binding.fetch_instr.result.storage_target)
+          << ", \"result_index\": "
+          << binding.fetch_instr.result.storage_index
+          << ", \"write_mask\": \""
+          << Hex32(binding.fetch_instr.result.original_write_mask)
+          << "\", \"mag_filter\": "
+          << static_cast<uint32_t>(
+                 binding.fetch_instr.attributes.mag_filter)
+          << ", \"min_filter\": "
+          << static_cast<uint32_t>(
+                 binding.fetch_instr.attributes.min_filter)
+          << ", \"mip_filter\": "
+          << static_cast<uint32_t>(
+                 binding.fetch_instr.attributes.mip_filter)
+          << ", \"computed_lod\": "
+          << (binding.fetch_instr.attributes.use_computed_lod ? "true"
+                                                              : "false")
+          << "}";
       if (i + 1 < shader.texture_bindings().size()) {
         out << ",";
       }

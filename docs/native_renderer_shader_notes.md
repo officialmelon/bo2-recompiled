@@ -367,6 +367,24 @@ Verified outputs:
 
 This path uses `D3DCompile` because that is already used by the current replay backend. It is a compiler/cache proof for generated runtime shader artifacts, not DXC/DXIL and not real Xenos operation lowering.
 
+The runtime semantic IR now serializes analyzer-exposed shader interface metadata in addition to text disassembly:
+
+- constant float/bool/loop/vertex-fetch bitmaps and dynamic addressing flags
+- vertex fetch bindings, fetch constants, stride, attribute write masks, Xenos formats, offsets, and signed/integer flags
+- texture fetch bindings, fetch constants, dimension, result write masks, filter override fields, and computed-LOD flags
+
+Verified on the current real-resource manual override pair:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0x5D918D91043B3ED0 --write-semantic-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\shader_probe_capture_007\events.jsonl --hash 0xC4ED2979F29C9139 --write-semantic-ir C:\Users\braxt\bo2-recompiled\shader_work\cache\ir
+```
+
+Observed metadata:
+
+- VS `0x5D918D91043B3ED0`: `float_count=10`, `vertex_fetch_bitmap[2]=0x80000000`, one vertex binding on fetch constant `95`, stride `8` dwords, with attributes for Xenos formats `38`, `6`, and `37`.
+- PS `0xC4ED2979F29C9139`: `float_count=5`, four `tfetch2D` texture bindings using fetch constants `4`, `3`, `2`, and `1`.
+
 Static extracted `.ucode` files remain unresolved for semantic decode. They still dump raw words and raw IR correctly, but the tested static files begin with extracted metadata/constants rather than the exact runtime shader payload layout expected by `Shader::AnalyzeUcode`. A first auto-offset scan was removed because a wrong static offset can make the analyzer run too long. The next static-file task is to reverse the extracted `.ucode` layout or use the container descriptor fields to pass only the true microcode program range to the analyzer.
 
 ## Native renderer path forward
