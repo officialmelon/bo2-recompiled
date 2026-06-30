@@ -792,7 +792,7 @@ std::vector<PreparedRealDraw> CollectSupportedRealDraws(
     const PreparedRealDraw &first_draw) {
   std::vector<PreparedRealDraw> draws;
   draws.push_back(first_draw);
-  if (options.draw_index || options.d3d12_draw_limit <= 1) {
+  if (options.d3d12_draw_limit <= 1) {
     return draws;
   }
 
