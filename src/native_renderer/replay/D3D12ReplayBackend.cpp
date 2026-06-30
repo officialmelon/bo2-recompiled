@@ -780,6 +780,27 @@ bool SupportsVertexlessDraw(const ReplayDrawState &state) {
          D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
 }
 
+bool IsNoSideEffectNoFetchDraw(const ReplayDrawState &state) {
+  if (SupportsVertexlessDraw(state)) {
+    return false;
+  }
+
+  const PM4DrawRecord &draw = state.draw;
+  if (draw.indexed || !draw.vertex_fetches.empty() ||
+      !draw.texture_fetches.empty()) {
+    return false;
+  }
+  if (!draw.render_state.present) {
+    return false;
+  }
+
+  const RenderStateRecord &render_state = draw.render_state;
+  const bool color_write_disabled = (render_state.rb_color_mask & 0xF) == 0;
+  const bool depth_write_disabled = !render_state.depth_write_enable;
+  const bool stencil_disabled = !render_state.stencil_enable;
+  return color_write_disabled && depth_write_disabled && stencil_disabled;
+}
+
 bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
                             bool allow_non_indexed,
                             PreparedRealDraw &prepared) {
@@ -886,6 +907,10 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
   if (draw.vertex_fetches.empty()) {
     if (SupportsVertexlessDraw(state)) {
       return {};
+    }
+    if (IsNoSideEffectNoFetchDraw(state)) {
+      return "no captured vertex/fetch state, but render state has no modeled "
+             "color/depth/stencil side effects";
     }
     return "draw has no captured vertex/fetch state";
   }
@@ -1102,6 +1127,7 @@ struct FrameRealReplayPlan {
   std::size_t frame_index = 0;
   std::size_t frame_draw_count = 0;
   std::size_t skipped_draw_count = 0;
+  std::size_t elided_noop_draw_count = 0;
   bool used_pre_frame_bucket = false;
   std::vector<PreparedRealDraw> supported_draws;
   std::map<std::string, std::size_t> unsupported_reasons;
@@ -1139,6 +1165,12 @@ bool PrepareFrameRealReplayPlan(const ReplayCapture &capture,
     plan.used_pre_frame_bucket = true;
   }
   for (std::size_t draw_index = begin; draw_index < end; ++draw_index) {
+    const ReplayDrawState &state = capture.draws[draw_index];
+    if (IsNoSideEffectNoFetchDraw(state)) {
+      ++plan.elided_noop_draw_count;
+      continue;
+    }
+
     PreparedRealDraw prepared;
     if (PrepareRealDrawAtIndex(capture, draw_index, true, prepared)) {
       plan.supported_draws.push_back(std::move(prepared));
@@ -1156,7 +1188,6 @@ bool PrepareFrameRealReplayPlan(const ReplayCapture &capture,
     ++plan.skipped_draw_count;
     ++plan.unsupported_reasons[reason];
     if (!options.skip_unsupported) {
-      const ReplayDrawState &state = capture.draws[draw_index];
       error = "D3D12 frame replay strict failure at frame " +
               std::to_string(*options.frame_index) + " draw " +
               std::to_string(draw_index) + " event " +
@@ -3280,6 +3311,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     std::cout << "D3D12 frame replay plan frame=" << frame_plan.frame_index
               << " frame_draws=" << frame_plan.frame_draw_count
               << " geometry_supported=" << frame_plan.supported_draws.size()
+              << " noop_elided=" << frame_plan.elided_noop_draw_count
               << " skipped=" << frame_plan.skipped_draw_count
               << " submitted_supported_draws=" << prepared_draws.size()
               << " skip_unsupported="
