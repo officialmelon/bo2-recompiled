@@ -24,10 +24,11 @@
 
 #include "DebugRenderLog.h"
 #include "RendererBackend.h"
+#include "backend_d3d12/D3D12LiveRendererBackend.h"
 #include "backend_null/NullRendererBackend.h"
 
 REXCVAR_DEFINE_STRING(native_renderer_mode, "emulated", "Renderer",
-                      "Renderer mode: emulated, native, native_null");
+                      "Renderer mode: emulated, native, native_null, native_d3d12");
 REXCVAR_DEFINE_BOOL(native_renderer_verbose, true, "Renderer",
                     "Enable verbose native renderer logging");
 REXCVAR_DEFINE_STRING(native_renderer_shader_record_probe_mode, "off", "Renderer",
@@ -55,6 +56,8 @@ RendererBackendKind BackendForMode(RendererMode mode) {
     case RendererMode::Native:
     case RendererMode::NativeNull:
       return RendererBackendKind::NullDebug;
+    case RendererMode::NativeD3D12:
+      return RendererBackendKind::D3D12Live;
   }
   return RendererBackendKind::None;
 }
@@ -221,6 +224,8 @@ const char* ToString(RendererMode mode) {
       return "native";
     case RendererMode::NativeNull:
       return "native_null";
+    case RendererMode::NativeD3D12:
+      return "native_d3d12";
   }
   return "unknown";
 }
@@ -231,6 +236,8 @@ const char* ToString(RendererBackendKind backend) {
       return "none";
     case RendererBackendKind::NullDebug:
       return "null_debug";
+    case RendererBackendKind::D3D12Live:
+      return "d3d12_live";
   }
   return "unknown";
 }
@@ -239,6 +246,9 @@ RendererMode ParseRendererMode(std::string mode) {
   mode = Normalize(std::move(mode));
   if (mode == "native") {
     return RendererMode::Native;
+  }
+  if (mode == "native_d3d12" || mode == "d3d12") {
+    return RendererMode::NativeD3D12;
   }
   if (mode == "native_null" || mode == "null" || mode == "debug_null") {
     return RendererMode::NativeNull;
@@ -275,7 +285,8 @@ bool NativeRenderer::ShouldInstallHooks() const {
 }
 
 bool NativeRenderer::ShouldSuppressEmulatedPresent() const {
-  return config_.mode == RendererMode::NativeNull;
+  return config_.mode == RendererMode::NativeNull ||
+         config_.mode == RendererMode::NativeD3D12;
 }
 
 void NativeRenderer::OnSystemCommandBufferGpuIdentifierAddress(uint32_t address) {
@@ -510,6 +521,9 @@ bool NativeRenderer::EnsureBackend() {
     return true;
   }
   switch (config_.backend) {
+    case RendererBackendKind::D3D12Live:
+      backend_ = std::make_unique<D3D12LiveRendererBackend>();
+      break;
     case RendererBackendKind::NullDebug:
       backend_ = std::make_unique<NullRendererBackend>();
       break;

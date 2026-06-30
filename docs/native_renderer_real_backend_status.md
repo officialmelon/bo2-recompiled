@@ -10,6 +10,7 @@ The working GPU-output backends are:
 
 - `d3d12-diagnostic`, which renders synthetic debug rectangles from captured BO2 events.
 - `d3d12`, which now renders the first resource-backed captured BO2 indexed draw from replay data using real captured vertex and index buffers with either a matching manual HLSL override pair or the explicitly requested temporary diagnostic shader fallback.
+- `native_renderer_mode=native_d3d12`, which is now a distinct live mode in the game executable. It initializes a project-local D3D12 device/queue backend, suppresses emulated present, captures live PM4 events, and fails closed for live draw submission until the offline D3D12 replay translator is factored into the live path.
 
 Neither path is full BO2 scene rendering yet. The `d3d12` path proves native D3D12 vertex/index buffer binding, manual override shader manifest parsing, compiled shader-cache hits, flattened captured constant root binding, captured format-6 texture SRV binding from inline or sidecar payloads, captured texture-filter/clamp sampler descriptors, first-pass captured PSO-side render-state setup, and `DrawIndexedInstanced` with captured BO2 geometry, but it still lacks automatic translated BO2 shaders, full constant-layout reconstruction, render-target/depth resources, and full-frame state replay. Without a matching cache entry, override, or translated shader, real `d3d12` fails closed.
 

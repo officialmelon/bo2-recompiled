@@ -13,11 +13,13 @@ enum class RendererMode {
   Emulated,
   Native,
   NativeNull,
+  NativeD3D12,
 };
 
 enum class RendererBackendKind {
   None,
   NullDebug,
+  D3D12Live,
 };
 
 struct RendererConfig {

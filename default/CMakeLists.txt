@@ -43,6 +43,7 @@ set(NATIVE_RENDERER_SOURCES
     ../src/native_renderer/BufferManager.cpp
     ../src/native_renderer/HostDetour.cpp
     ../src/native_renderer/backend_null/NullRendererBackend.cpp
+    ../src/native_renderer/backend_d3d12/D3D12LiveRendererBackend.cpp
     ../src/native_renderer/shader_translation/ShaderTranslation.cpp
 )
 
@@ -111,4 +112,5 @@ if(WIN32)
     else()
         target_compile_options(default PRIVATE -include "${REXGLUE_CHRONO_COMPAT_INCLUDE}")
     endif()
+    target_link_libraries(default PRIVATE d3d12)
 endif()
