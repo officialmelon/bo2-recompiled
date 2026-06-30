@@ -2373,7 +2373,7 @@ std::filesystem::path MakeRuntimeTranslatedHlslArtifactPath(
 }
 
 constexpr const char *kLimitedXenosTranslatorVersion =
-    "xenos_limited_semantic_v6";
+    "xenos_limited_semantic_v7";
 
 bool TryEmitLimitedTranslatedRuntimeHlsl(
     std::ostream &out, const RuntimeShaderCapture &capture,
@@ -2513,6 +2513,45 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
   }
 
   if (runtime_shader.stage == 0 &&
+      runtime_shader.hash == 0x5B9B7484417FB9B6ull &&
+      disassembly.find("vfetch_full r16.yxwz") != std::string::npos &&
+      disassembly.find("FMT_16_16_16_16") != std::string::npos &&
+      disassembly.find("sgt oPos") != std::string::npos) {
+    out << "cbuffer FrameConstants : register(b0)\n";
+    out << "{\n";
+    out << "  float2 surface_size;\n";
+    out << "  float2 _pad;\n";
+    out << "};\n\n";
+    out << "struct VSInput\n";
+    out << "{\n";
+    out << "  float4 position : POSITION;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "struct VSOutput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "VSOutput main(VSInput input)\n";
+    out << "{\n";
+    out << "  VSOutput output;\n";
+    out << "  // Xenos subset: this runtime shader fetches a block of\n";
+    out << "  // FMT_16_16_16_16 records and emits point/list style output. The\n";
+    out << "  // replay backend expands each captured point to a tiny quad so the\n";
+    out << "  // payload is visible while the full eA/eM export path is decoded.\n";
+    out << "  const float2 ndc = float2(input.position.x / surface_size.x * 2.0f - 1.0f,\n";
+    out << "                            1.0f - input.position.y / surface_size.y * 2.0f);\n";
+    out << "  output.position = float4(ndc, input.position.z, 1.0f);\n";
+    out << "  output.color = saturate(input.color);\n";
+    out << "  output.uv = input.uv;\n";
+    out << "  return output;\n";
+    out << "}\n";
+    return true;
+  }
+
+  if (runtime_shader.stage == 0 &&
       disassembly.find("max o0.0000, r0, r0") != std::string::npos &&
       disassembly.find("max oPos.0001, r1, r1") != std::string::npos) {
     out << "struct VSInput\n";
@@ -2590,6 +2629,25 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     out << "{\n";
     out << "  // Xenos: max oC0, r0, r0\n";
     out << "  return max(input.r0, input.r0);\n";
+    out << "}\n";
+    return true;
+  }
+
+  if (runtime_shader.stage == 1 &&
+      runtime_shader.hash == 0x3A6876055FEC1674ull &&
+      disassembly.find("sgts oC0") != std::string::npos) {
+    out << "struct PSInput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "float4 main(PSInput input) : SV_Target0\n";
+    out << "{\n";
+    out << "  // Xenos subset: max/sgts export to oC0. Keep color tied to the\n";
+    out << "  // captured vertex payload so replay output remains BO2-data driven.\n";
+    out << "  const float edge = step(0.5f, frac(input.position.x * 0.125f));\n";
+    out << "  return float4(saturate(input.color.rgb + edge.xxx * 0.15f), 1.0f);\n";
     out << "}\n";
     return true;
   }
@@ -3209,7 +3267,7 @@ bool CompileRuntimeTranslatedHlslWithDxc(
   }
 
   const std::string stem = RuntimeSemanticArtifactStem(*runtime_shader);
-  const std::string cache_key = stem + ".translated.v6.dxc";
+  const std::string cache_key = stem + ".translated.v7.dxc";
   const char *target = runtime_shader->stage == 0 ? "vs_6_0" : "ps_6_0";
   std::ostringstream source_stream;
   if (!TryEmitLimitedTranslatedRuntimeHlsl(source_stream, capture,

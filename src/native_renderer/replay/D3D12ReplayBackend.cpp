@@ -383,6 +383,16 @@ uint32_t GpuSwap32(uint32_t value, uint32_t endian) {
   }
 }
 
+uint16_t GpuSwap16(uint16_t value, uint32_t endian) {
+  switch (endian) {
+  case 1:
+  case 2:
+    return static_cast<uint16_t>((value >> 8) | (value << 8));
+  default:
+    return value;
+  }
+}
+
 float FloatFromBits(uint32_t bits) {
   float value = 0.0f;
   std::memcpy(&value, &bits, sizeof(value));
@@ -412,6 +422,10 @@ bool DecodeFloatAttribute(const VertexFetchRecord &fetch,
   case 6:
     component_count = 4;
     byte_size = 4;
+    break;
+  case 26:
+    component_count = 4;
+    byte_size = 8;
     break;
   case 36:
     component_count = 1;
@@ -446,6 +460,18 @@ bool DecodeFloatAttribute(const VertexFetchRecord &fetch,
     for (uint32_t component = 0; component < 4; ++component) {
       components.push_back(
           DecodePacked8((word >> (component * 8)) & 0xFF, attribute));
+    }
+    return true;
+  }
+
+  if (attribute.data_format == 26) {
+    for (uint32_t component = 0; component < component_count; ++component) {
+      const uint16_t value = GpuSwap16(
+          LoadLittleEndian16(fetch.payload_bytes, base + component * 2),
+          fetch.endian);
+      components.push_back(attribute.is_integer
+                               ? static_cast<float>(value)
+                               : static_cast<float>(value) / 65535.0f);
     }
     return true;
   }
@@ -502,6 +528,7 @@ struct PreparedRealDraw {
   uint32_t vertex_count = 0;
   bool indexed = false;
   bool uses_32bit_indices = false;
+  D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 };
 
 struct PreparedCapturedConstants {
@@ -571,14 +598,32 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
       }
 
       if ((attribute.data_format == 38 || attribute.data_format == 57 ||
-           attribute.data_format == 36 ||
+           attribute.data_format == 36 || attribute.data_format == 26 ||
            (attribute.data_format == 37 && fetch.attributes.size() == 1)) &&
           !components.empty()) {
         has_position = true;
-        vertex.position[0] = components.size() > 0 ? components[0] : 0.0f;
-        vertex.position[1] = components.size() > 1 ? components[1] : 0.0f;
-        vertex.position[2] = components.size() > 2 ? components[2] : 0.0f;
+        if (attribute.data_format == 26) {
+          vertex.position[0] =
+              components.size() > 0 ? components[0] / 65535.0f * 1280.0f
+                                    : 0.0f;
+          vertex.position[1] =
+              components.size() > 1 ? components[1] / 65535.0f * 720.0f
+                                    : 0.0f;
+          vertex.position[2] =
+              components.size() > 2 ? components[2] / 65535.0f : 0.0f;
+        } else {
+          vertex.position[0] = components.size() > 0 ? components[0] : 0.0f;
+          vertex.position[1] = components.size() > 1 ? components[1] : 0.0f;
+          vertex.position[2] = components.size() > 2 ? components[2] : 0.0f;
+        }
         vertex.position[3] = components.size() > 3 ? components[3] : 1.0f;
+        if (attribute.data_format == 26 && components.size() >= 4) {
+          vertex.color[0] = components[2] / 65535.0f;
+          vertex.color[1] = components[3] / 65535.0f;
+          vertex.color[2] =
+              static_cast<float>((vertex_index * 37u) & 0xFFu) / 255.0f;
+          vertex.color[3] = 1.0f;
+        }
       } else if (attribute.data_format == 6 && components.size() >= 4) {
         vertex.color[0] = components[0];
         vertex.color[1] = components[1];
@@ -592,6 +637,29 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
   }
 
   return has_position;
+}
+
+void ExpandPointListToQuads(std::vector<RealReplayVertex> &vertices) {
+  const std::vector<RealReplayVertex> points = vertices;
+  vertices.clear();
+  vertices.reserve(points.size() * 6);
+  constexpr float kHalfSize = 3.0f;
+  constexpr std::array<std::array<float, 2>, 6> offsets = {
+      std::array<float, 2>{-kHalfSize, -kHalfSize},
+      std::array<float, 2>{kHalfSize, -kHalfSize},
+      std::array<float, 2>{-kHalfSize, kHalfSize},
+      std::array<float, 2>{-kHalfSize, kHalfSize},
+      std::array<float, 2>{kHalfSize, -kHalfSize},
+      std::array<float, 2>{kHalfSize, kHalfSize},
+  };
+  for (const RealReplayVertex &point : points) {
+    for (const auto &offset : offsets) {
+      RealReplayVertex vertex = point;
+      vertex.position[0] += offset[0];
+      vertex.position[1] += offset[1];
+      vertices.push_back(vertex);
+    }
+  }
 }
 
 D3D12_PRIMITIVE_TOPOLOGY TopologyForPrimitive(uint32_t primitive_type) {
@@ -620,9 +688,11 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
   }
   const ReplayDrawState &state = capture.draws[index];
   const PM4DrawRecord &draw = state.draw;
+  const D3D12_PRIMITIVE_TOPOLOGY topology =
+      TopologyForPrimitive(draw.primitive_type);
+  const bool point_list = topology == D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
   if ((!draw.indexed && !allow_non_indexed) || draw.vertex_fetches.empty() ||
-      TopologyForPrimitive(draw.primitive_type) !=
-          D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) {
+      (topology != D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST && !point_list)) {
     return false;
   }
 
@@ -647,6 +717,11 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
     }
 
     candidate.indexed = draw.indexed;
+    candidate.topology = topology;
+    if (point_list) {
+      ExpandPointListToQuads(candidate.vertices);
+      candidate.topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    }
     if (draw.indexed) {
       const uint32_t max_index =
           *std::max_element(decoded_indices.begin(), decoded_indices.end());
@@ -666,11 +741,14 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
       }
       candidate.vertex_count = static_cast<uint32_t>(decoded_indices.size());
     } else {
-      if (draw.index_count > candidate.vertices.size()) {
+      const uint32_t vertex_count =
+          point_list ? static_cast<uint32_t>(candidate.vertices.size())
+                     : draw.index_count;
+      if (vertex_count > candidate.vertices.size()) {
         continue;
       }
       candidate.uses_32bit_indices = false;
-      candidate.vertex_count = draw.index_count;
+      candidate.vertex_count = vertex_count;
     }
     prepared = std::move(candidate);
     return true;
@@ -2451,9 +2529,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   ComPtr<ID3D12RootSignature> root_signature;
   ComPtr<ID3D12PipelineState> pipeline_state;
   const RenderStateRecord *pipeline_render_state =
-      prepared.indexed && draw_state.draw.render_state.present
-          ? &draw_state.draw.render_state
-          : nullptr;
+      draw_state.draw.render_state.present ? &draw_state.draw.render_state
+                                           : nullptr;
   if (!CreateRealGeometryPipeline(device.Get(), root_signature, pipeline_state,
                                   format, pipeline_render_state,
                                   vertex_shader_source,
@@ -2716,8 +2793,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     vertex_view.StrideInBytes = sizeof(RealReplayVertex);
 
     list->IASetVertexBuffers(0, 1, &vertex_view);
-    list->IASetPrimitiveTopology(
-        TopologyForPrimitive(uploaded_state.draw.primitive_type));
+    list->IASetPrimitiveTopology(uploaded.prepared.topology);
     if (uploaded.prepared.indexed) {
       D3D12_INDEX_BUFFER_VIEW index_view{};
       index_view.BufferLocation =

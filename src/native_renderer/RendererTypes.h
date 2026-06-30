@@ -179,7 +179,6 @@ struct VertexAttributeInfo {
 
 struct VertexFetchInfo {
   static constexpr std::size_t kMaxAttributes = 8;
-  static constexpr std::size_t kMaxPayloadBytes = 512;
 
   uint32_t fetch_constant = 0;
   uint32_t dword_0 = 0;
@@ -193,7 +192,7 @@ struct VertexFetchInfo {
   uint32_t captured_attribute_count = 0;
   std::array<VertexAttributeInfo, kMaxAttributes> attributes{};
   uint32_t payload_byte_count = 0;
-  std::array<uint8_t, kMaxPayloadBytes> payload_bytes{};
+  std::vector<uint8_t> payload_bytes;
   bool payload_truncated = false;
   bool payload_missing = true;
 };

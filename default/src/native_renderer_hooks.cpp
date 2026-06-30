@@ -43,6 +43,7 @@ constexpr uint32_t kMaterialShaderLoad = 0x82598140;
 constexpr uint32_t kCommandBufferGrow = 0x8257AB00;
 constexpr uint32_t kCommandBufferReserve = 0x8257AD38;
 constexpr uint32_t kMaxProjectTexturePayloadBytes = 8 * 1024 * 1024;
+constexpr uint32_t kMaxProjectVertexPayloadBytes = 8 * 1024 * 1024;
 
 PPCFunc *original_draw_autoindex_shader_bootstrap;
 PPCFunc *original_draw_packet_candidate;
@@ -133,6 +134,26 @@ void RecaptureTexturePayloadFromGuest(bo2::native::TextureFetchInfo &target) {
   target.payload_missing = false;
 }
 
+void RecaptureVertexPayloadFromGuest(bo2::native::VertexFetchInfo &target) {
+  const uint64_t byte_count = uint64_t(target.size) << 2;
+  const uint64_t byte_address = uint64_t(target.address) << 2;
+  if (!target.payload_truncated || byte_count == 0 ||
+      byte_count > kMaxProjectVertexPayloadBytes || byte_address == 0 ||
+      target.payload_bytes.size() >= byte_count) {
+    return;
+  }
+
+  target.payload_bytes.resize(static_cast<std::size_t>(byte_count));
+  const uint8_t *source =
+      REX_KERNEL_MEMORY()->TranslatePhysical<const uint8_t *>(
+          static_cast<uint32_t>(byte_address));
+  std::memcpy(target.payload_bytes.data(), source,
+              static_cast<std::size_t>(byte_count));
+  target.payload_byte_count = static_cast<uint32_t>(byte_count);
+  target.payload_truncated = false;
+  target.payload_missing = false;
+}
+
 void OnNativeRendererPM4Packet(
     const rex::graphics::NativeRendererPM4PacketEvent *event, void *) {
   if (!event) {
@@ -217,14 +238,16 @@ void CopyDrawVertexFetchesIfPresent(const DrawEvent *event,
         target_attr.is_integer = source_attr.is_integer;
       }
       target.payload_byte_count = std::min<uint32_t>(
-          source.payload_byte_count, target.payload_bytes.size());
+          source.payload_byte_count, std::size(source.payload_bytes));
+      target.payload_bytes.resize(target.payload_byte_count);
       for (uint32_t j = 0; j < target.payload_byte_count; ++j) {
         target.payload_bytes[j] = source.payload_bytes[j];
       }
       target.payload_truncated = source.payload_truncated ||
                                  source.payload_byte_count >
-                                     target.payload_bytes.size();
+                                     std::size(source.payload_bytes);
       target.payload_missing = source.payload_missing;
+      RecaptureVertexPayloadFromGuest(target);
     }
   } else {
     draw.vertex_fetch_count = 0;
