@@ -107,9 +107,12 @@ struct VertexFetchRecord {
   uint32_t captured_attribute_count = 0;
   std::vector<VertexAttributeRecord> attributes;
   uint32_t payload_byte_count = 0;
+  uint32_t payload_resource_byte_count = 0;
+  std::string payload_resource_path;
   std::vector<uint8_t> payload_bytes;
   bool payload_truncated = false;
   bool payload_missing = true;
+  bool payload_loaded_from_resource = false;
 };
 
 struct TextureFetchRecord {
@@ -536,7 +539,9 @@ struct ReplayLoadOptions {
 struct ReplayCliOptions {
   std::filesystem::path capture_path;
   std::filesystem::path d3d12_output_path;
+  std::filesystem::path d3d12_depth_output_path;
   std::filesystem::path frontbuffer_output_path;
+  std::filesystem::path texture_output_path;
   std::filesystem::path shader_override_root =
       std::filesystem::path("shader_work") / "native_overrides";
   std::filesystem::path shader_cache_root =
@@ -548,17 +553,25 @@ struct ReplayCliOptions {
   bool dump_indices = false;
   bool dump_vertices = false;
   bool dump_frontbuffer = false;
+  bool dump_texture = false;
   bool show_resource_summary = false;
   bool show_shader_usage = false;
   bool show_missing_shaders = false;
   bool show_shader_record_probes = false;
+  bool show_real_backend_gaps = false;
   bool validate_only = false;
   bool allow_diagnostic_shader = false;
   bool strict_frame_replay = false;
   bool skip_unsupported = false;
+#if defined(_WIN32)
+  bool live_submit = false;
+  struct D3D12LiveSubmitBinding *live_binding = nullptr;
+  struct D3D12LiveReplaySession *live_session = nullptr;
+#endif
   std::optional<std::size_t> frame_index;
   std::optional<std::size_t> draw_index;
   std::optional<std::size_t> frontbuffer_index;
+  std::optional<std::size_t> texture_slot;
   std::size_t max_draws = 64;
   std::size_t top_shaders = 20;
   std::size_t d3d12_draw_limit = 4096;
@@ -630,6 +643,11 @@ bool RunD3D12DiagnosticReplayBackend(const ReplayCapture &capture,
 bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
                                const ReplayCliOptions &options,
                                std::string &error);
+bool DumpD3D12DecodedTexturePreview(const ReplayCapture &capture,
+                                    const ReplayCliOptions &options,
+                                    std::string &error);
+void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
+                               const ReplayCliOptions &options);
 
 int RunNativeRenderReplayTool(int argc, char **argv);
 

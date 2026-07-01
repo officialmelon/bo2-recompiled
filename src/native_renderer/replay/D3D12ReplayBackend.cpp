@@ -837,7 +837,9 @@ struct NativeShaderOverridePair {
 };
 
 void AssignTexcoordComponents(RealReplayVertex &vertex,
-                              uint32_t &input_layout_mask, float u, float v);
+                              uint32_t &input_layout_mask,
+                              uint32_t &vertex_texcoord_count, float u,
+                              float v);
 
 uint64_t CapturedInputLayoutSignature(const VertexFetchRecord &fetch,
                                       uint32_t input_layout_mask) {
@@ -881,6 +883,7 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
   for (uint32_t vertex_index = 0; vertex_index < vertex_count; ++vertex_index) {
     RealReplayVertex &vertex = vertices[vertex_index];
     bool vertex_has_position = false;
+    uint32_t vertex_texcoord_count = 0;
     for (const VertexAttributeRecord &attribute : fetch.attributes) {
       std::vector<float> components;
       if (!DecodeFloatAttribute(fetch, attribute, vertex_index, components)) {
@@ -936,7 +939,8 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
           vertex.color[3] = components[3];
           input_layout_mask |= kInputLayoutColor0;
         } else {
-          AssignTexcoordComponents(vertex, input_layout_mask, components[0],
+          AssignTexcoordComponents(vertex, input_layout_mask,
+                                   vertex_texcoord_count, components[0],
                                    components[1]);
         }
       } else if ((attribute.data_format == 25 || attribute.data_format == 31 ||
@@ -951,7 +955,8 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
           vertex.position[2] = 0.0f;
           vertex.position[3] = 1.0f;
         } else {
-          AssignTexcoordComponents(vertex, input_layout_mask, components[0],
+          AssignTexcoordComponents(vertex, input_layout_mask,
+                                   vertex_texcoord_count, components[0],
                                    components[1]);
         }
       } else if (attribute.data_format == 26 && components.size() >= 3 &&
@@ -1063,8 +1068,10 @@ uint32_t EffectiveInputLayoutMask(const ReplayDrawState &state,
 }
 
 void AssignTexcoordComponents(RealReplayVertex &vertex,
-                              uint32_t &input_layout_mask, float u, float v) {
-  if ((input_layout_mask & kInputLayoutTexcoord0) == 0) {
+                              uint32_t &input_layout_mask,
+                              uint32_t &vertex_texcoord_count, float u,
+                              float v) {
+  if (vertex_texcoord_count == 0) {
     vertex.uv[0] = u;
     vertex.uv[1] = v;
     input_layout_mask |= kInputLayoutTexcoord0;
@@ -1073,6 +1080,7 @@ void AssignTexcoordComponents(RealReplayVertex &vertex,
     vertex.uv1[1] = v;
     input_layout_mask |= kInputLayoutTexcoord1;
   }
+  ++vertex_texcoord_count;
 }
 
 bool IsNoSideEffectNoFetchDraw(const ReplayDrawState &state) {
@@ -1829,18 +1837,17 @@ bool DecodeBlockCompressedTextureRgba8(const TextureFetchRecord &fetch,
   const uint32_t pitch_texels =
       fetch.pitch != 0 ? fetch.pitch << 5 : fetch.width;
   const uint32_t pitch_blocks = std::max<uint32_t>(1, (pitch_texels + 3) / 4);
+  const uint32_t bytes_per_block_log2 = dxt1 ? 3u : 4u;
   rgba.assign(static_cast<std::size_t>(fetch.width) * fetch.height * 4, 0);
   bool used_truncated_preview = false;
 
   for (uint32_t by = 0; by < height_blocks; ++by) {
     for (uint32_t bx = 0; bx < width_blocks; ++bx) {
-      // Captured DXT/DXN sidecars are compact block streams in the tested BO2
-      // captures. Applying the uncompressed texel tiled-address formula to
-      // 4x4 block coordinates overestimates the footprint, so decode them as
-      // pitch-linear blocks until the CP-side compressed tiling swizzle is
-      // captured explicitly.
       const std::size_t source_offset =
-          (static_cast<std::size_t>(by) * pitch_blocks + bx) * block_bytes;
+          fetch.tiled
+              ? XenosTiledOffset2D(bx, by, pitch_blocks, bytes_per_block_log2)
+              : (static_cast<std::size_t>(by) * pitch_blocks + bx) *
+                    block_bytes;
       if (source_offset + block_bytes > fetch.payload_bytes.size()) {
         if (!fetch.payload_truncated) {
           reason = "block-compressed texture payload is smaller than the "
@@ -3905,6 +3912,104 @@ bool RunD3D12DiagnosticReplayBackend(const ReplayCapture &capture,
   (void)capture;
   (void)options;
   error = "D3D12 replay backend is only available on Windows";
+  return false;
+#endif
+}
+
+bool DumpD3D12DecodedTexturePreview(const ReplayCapture &capture,
+                                    const ReplayCliOptions &options,
+                                    std::string &error) {
+#if defined(_WIN32)
+  if (!options.draw_index) {
+    error = "--dump-texture requires --draw <index>";
+    return false;
+  }
+  if (*options.draw_index >= capture.draws.size()) {
+    error = "--draw index is out of range";
+    return false;
+  }
+
+  const ReplayDrawState &state = capture.draws[*options.draw_index];
+  const std::size_t slot = options.texture_slot.value_or(0);
+  if (slot >= state.draw.texture_fetches.size()) {
+    error = "texture slot " + std::to_string(slot) +
+            " is not bound for draw " + std::to_string(*options.draw_index);
+    return false;
+  }
+
+  const TextureFetchRecord &fetch = state.draw.texture_fetches[slot];
+  std::vector<uint8_t> rgba;
+  std::string decode_reason;
+  if (!DecodeTextureRgba8(fetch, rgba, decode_reason)) {
+    error = "could not decode draw " + std::to_string(*options.draw_index) +
+            " texture slot " + std::to_string(slot) + " format " +
+            std::to_string(fetch.format) + ": " + decode_reason;
+    return false;
+  }
+  if (rgba.empty() || fetch.width == 0 || fetch.height == 0) {
+    error = "decoded texture preview is empty";
+    return false;
+  }
+
+  std::size_t nonzero_bytes = 0;
+  std::size_t rgb_nonzero_pixels = 0;
+  std::array<uint64_t, 4> sums{};
+  for (std::size_t i = 0; i < rgba.size(); ++i) {
+    if (rgba[i] != 0) {
+      ++nonzero_bytes;
+    }
+    sums[i & 3u] += rgba[i];
+  }
+  for (std::size_t i = 0; i + 3 < rgba.size(); i += 4) {
+    if ((rgba[i] | rgba[i + 1] | rgba[i + 2]) != 0) {
+      ++rgb_nonzero_pixels;
+    }
+  }
+
+  std::filesystem::path output = options.texture_output_path;
+  if (output.empty()) {
+    std::ostringstream name;
+    name << "native-renderer-draw" << *options.draw_index << "-texture"
+         << slot << ".bmp";
+    output = capture.path.parent_path() / name.str();
+  }
+  std::error_code ec;
+  if (!output.parent_path().empty()) {
+    std::filesystem::create_directories(output.parent_path(), ec);
+    if (ec) {
+      error = "could not create texture preview directory: " + ec.message();
+      return false;
+    }
+  }
+  if (!WriteBmp(output, rgba.data(), fetch.width * 4u, fetch.width,
+                fetch.height, error)) {
+    return false;
+  }
+
+  std::cout << "D3D12 decoded texture preview draw=" << *options.draw_index
+            << " slot=" << slot << " binding=" << fetch.binding_index
+            << " fetch=" << fetch.fetch_constant << " format="
+            << fetch.format << " size=" << fetch.width << "x"
+            << fetch.height << " tiled=" << (fetch.tiled ? "yes" : "no")
+            << " endian=" << fetch.endian << " payload="
+            << fetch.payload_bytes.size()
+            << (fetch.payload_truncated ? " truncated" : "")
+            << " nonzero_bytes=" << nonzero_bytes
+            << " rgb_nonzero_pixels=" << rgb_nonzero_pixels << " avg_rgba=("
+            << (sums[0] / std::max<std::size_t>(1, rgba.size() / 4)) << ","
+            << (sums[1] / std::max<std::size_t>(1, rgba.size() / 4)) << ","
+            << (sums[2] / std::max<std::size_t>(1, rgba.size() / 4)) << ","
+            << (sums[3] / std::max<std::size_t>(1, rgba.size() / 4)) << ")"
+            << "\n";
+  if (!decode_reason.empty()) {
+    std::cout << "D3D12 decoded texture note: " << decode_reason << "\n";
+  }
+  std::cout << "D3D12 decoded texture output: " << output.string() << "\n";
+  return true;
+#else
+  (void)capture;
+  (void)options;
+  error = "D3D12 texture preview is only available on Windows";
   return false;
 #endif
 }

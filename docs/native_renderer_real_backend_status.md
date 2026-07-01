@@ -630,3 +630,46 @@ targets are:
    `VS=0xCBC9604F48930B36 / PS=0x7D1EF030F5710BDA`,
    `VS=0x261BDD733FEC1F64 / PS=0xFF01D28E1EF3A880`, and
    `VS=0xEF95534343684F5B / PS=0xDC168FB6031AFC41`.
+
+# MP textured replay visual fix - 2026-07-01
+
+The `3C4F/EDC1` path now produces visible BO2-derived texture output in
+offline D3D12 replay.
+
+Evidence:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --draw 29 --dump-texture --texture-slot 0 --texture-output C:\Users\braxt\bo2-recompiled\native-renderer-mp003-draw029-texture0-tiledbc.bmp --no-summary
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --draw 29 --backend d3d12 --d3d12-draws 1 --shader-cache-root C:\Users\braxt\bo2-recompiled\shader_work\cache_real_uvfix --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp003-draw029-real-uvfix.bmp
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp003-full-real-uvfix-defaultcache.bmp
+```
+
+- Added `--dump-texture`, `--texture-slot`, and `--texture-output` to the
+  replay CLI. The command uses the same D3D12 texture decoder as real replay,
+  so texture preview output validates the renderer path instead of a separate
+  ad hoc parser.
+- Fixed tiled DXT/DXN decode by applying the Xenos tiled address function to
+  compressed block coordinates when the fetch constant is marked tiled. Draw 29
+  texture slot 0 changed from striped/garbled output to a readable
+  `CALL OF DUTY BLACK...` logo texture preview.
+- Fixed canonical vertex UV assignment. The old code used the global input
+  layout mask to choose `uv` versus `uv1`, so after vertex 0 every later vertex
+  wrote its first UV set to `uv1` and left `uv` as zero. That caused textured
+  quads to sample only the top-left texel. The builder now tracks texcoord
+  assignment per vertex.
+- Single draw 29 now renders a visible native D3D12 UI texture rectangle into
+  `native-renderer-mp003-draw029-real-uvfix.bmp`.
+- Full strict replay with the default cache submits `71` real captured draws
+  across two shader pairs, with `46` captured texture SRVs and
+  `diagnostic_pipelines=0`, and produces visible BO2-derived UI/background
+  content in `native-renderer-mp003-full-real-uvfix-defaultcache.bmp`.
+
+Remaining limitations:
+
+- The image is still not a full/correct BO2 scene frame. Some textures are
+  visibly incomplete or incorrectly ordered, and only the current UI/background
+  shader classes are translated/overridden.
+- Live `native_d3d12` still needs to be rerun with these fixes and compared
+  against offline replay.
+- World/scene shader pairs and render/depth state remain the next major
+  coverage gap.

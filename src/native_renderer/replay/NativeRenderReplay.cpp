@@ -638,6 +638,10 @@ std::vector<VertexFetchRecord> ParseVertexFetches(const JsonObject &object) {
           static_cast<uint32_t>(fetch.attributes.size());
     }
     fetch.payload_byte_count = GetU32(fetch_object, "payload_byte_count");
+    fetch.payload_resource_byte_count =
+        GetU32(fetch_object, "payload_resource_byte_count");
+    fetch.payload_resource_path =
+        GetString(fetch_object, "payload_resource_path");
     fetch.payload_bytes = GetU8Array(fetch_object, "payload_bytes");
     if (fetch.payload_byte_count == 0 && !fetch.payload_bytes.empty()) {
       fetch.payload_byte_count =
@@ -646,7 +650,8 @@ std::vector<VertexFetchRecord> ParseVertexFetches(const JsonObject &object) {
     fetch.payload_truncated = GetBool(fetch_object, "payload_truncated");
     fetch.payload_missing =
         GetBool(fetch_object, "payload_missing",
-                !FindValue(fetch_object, "payload_bytes"));
+                !FindValue(fetch_object, "payload_bytes") &&
+                    fetch.payload_resource_path.empty());
     if (!fetch.payload_bytes.empty()) {
       fetch.payload_missing = false;
     }
@@ -1219,6 +1224,61 @@ bool ReadSidecarResource(const std::filesystem::path &path,
     return false;
   }
   return true;
+}
+
+void LoadVertexPayloadSidecars(ReplayCapture &capture,
+                               const ReplayLoadOptions &options) {
+  const std::filesystem::path base_dir = capture.path.parent_path();
+  for (CaptureEvent &event : capture.events) {
+    if (event.type != CaptureEventType::PM4Draw) {
+      continue;
+    }
+
+    for (VertexFetchRecord &fetch : event.draw.vertex_fetches) {
+      if (fetch.payload_resource_path.empty()) {
+        continue;
+      }
+
+      std::filesystem::path resource_path(fetch.payload_resource_path);
+      if (resource_path.is_relative()) {
+        resource_path = base_dir / resource_path;
+      }
+
+      std::vector<uint8_t> bytes;
+      std::string error;
+      if (!ReadSidecarResource(resource_path, bytes, error)) {
+        AddWarning(capture, options,
+                   "vertex payload sidecar load failed for seq " +
+                       std::to_string(event.seq) + ": " + error);
+        continue;
+      }
+
+      if (fetch.payload_resource_byte_count != 0 &&
+          fetch.payload_resource_byte_count != bytes.size()) {
+        AddWarning(capture, options,
+                   "vertex payload sidecar byte count mismatch for seq " +
+                       std::to_string(event.seq) + ": expected " +
+                       std::to_string(fetch.payload_resource_byte_count) +
+                       " got " + std::to_string(bytes.size()));
+      }
+
+      fetch.payload_bytes = std::move(bytes);
+      fetch.payload_loaded_from_resource = true;
+      fetch.payload_missing = false;
+      if (fetch.payload_resource_byte_count == 0) {
+        fetch.payload_resource_byte_count =
+            static_cast<uint32_t>(fetch.payload_bytes.size());
+      }
+      if (fetch.payload_byte_count == 0 ||
+          fetch.payload_byte_count < fetch.payload_bytes.size()) {
+        fetch.payload_byte_count =
+            static_cast<uint32_t>(fetch.payload_bytes.size());
+      }
+      if (fetch.payload_byte_count <= fetch.payload_bytes.size()) {
+        fetch.payload_truncated = false;
+      }
+    }
+  }
 }
 
 void LoadTexturePayloadSidecars(ReplayCapture &capture,
@@ -1874,6 +1934,9 @@ std::string VertexPayloadStatus(const VertexFetchRecord &fetch) {
   }
   os << "payload=" << fetch.payload_bytes.size() << "/" << fetch.size_bytes
      << " bytes";
+  if (fetch.payload_loaded_from_resource) {
+    os << " sidecar";
+  }
   if (fetch.payload_truncated) {
     os << " truncated";
   }
@@ -2501,16 +2564,24 @@ void PrintHelp() {
          "                          Select PM4 swap payload for --dump-frontbuffer\n"
       << "  --frontbuffer-output <path>\n"
          "                          BMP path for --dump-frontbuffer\n"
+      << "  --dump-texture         Export decoded bound texture BMP for --draw\n"
+      << "  --texture-slot <index> Select bound texture slot for --dump-texture\n"
+      << "  --texture-output <path>\n"
+         "                          BMP path for --dump-texture\n"
       << "  --resource-summary     Summarize replay resource snapshot "
          "coverage\n"
       << "  --max-draws <count>    Limit draw dump rows (default 64)\n"
       << "  --shader-usage         Print shader and shader-pair usage\n"
       << "  --top-shaders <count>  Limit shader usage rows (default 20)\n"
       << "  --missing-shaders      Report draws missing runtime shader hashes\n"
+      << "  --real-backend-gaps    Rank blockers for D3D12 real replay\n"
       << "  --shader-record-probes Dump captured XEX shader/material probe events\n"
       << "  --backend <name>       Replay backend selector: "
          "null/d3d12-diagnostic/d3d12/vulkan-diagnostic/vulkan\n"
       << "  --d3d12-output <path>  BMP output for D3D12 replay backends\n"
+      << "  --d3d12-depth-output <path>\n"
+         "                          Depth/stencil preview BMP for D3D12 real "
+         "replay (default: <color-output-stem>-depth.bmp)\n"
       << "  --shader-override-root <path>\n"
          "                          Root containing native shader overrides "
          "(default shader_work/native_overrides)\n"
@@ -2651,6 +2722,7 @@ bool LoadReplayCapture(const std::filesystem::path &path,
     capture.events.push_back(std::move(event));
   }
 
+  LoadVertexPayloadSidecars(capture, options);
   LoadTexturePayloadSidecars(capture, options);
   LoadFrontbufferPayloadSidecars(capture, options);
   LoadRenderTargetPayloadSidecars(capture, options);
@@ -4070,12 +4142,16 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       cli.dump_vertices = true;
     } else if (arg == "--dump-frontbuffer") {
       cli.dump_frontbuffer = true;
+    } else if (arg == "--dump-texture") {
+      cli.dump_texture = true;
     } else if (arg == "--resource-summary") {
       cli.show_resource_summary = true;
     } else if (arg == "--shader-usage") {
       cli.show_shader_usage = true;
     } else if (arg == "--missing-shaders") {
       cli.show_missing_shaders = true;
+    } else if (arg == "--real-backend-gaps") {
+      cli.show_real_backend_gaps = true;
     } else if (arg == "--shader-record-probes") {
       cli.show_shader_record_probes = true;
     } else if (arg == "--validate") {
@@ -4111,6 +4187,15 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       }
       cli.frontbuffer_index = parsed;
       cli.dump_frontbuffer = true;
+    } else if (arg == "--texture-slot") {
+      const char *value = require_value("--texture-slot");
+      std::size_t parsed = 0;
+      if (!value || !ParseSizeArgument(value, parsed)) {
+        std::cerr << "--texture-slot expects an integer\n";
+        return 2;
+      }
+      cli.texture_slot = parsed;
+      cli.dump_texture = true;
     } else if (arg == "--max-draws") {
       const char *value = require_value("--max-draws");
       if (!value || !ParseSizeArgument(value, cli.max_draws)) {
@@ -4136,6 +4221,12 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
         return 2;
       }
       cli.d3d12_output_path = value;
+    } else if (arg == "--d3d12-depth-output") {
+      const char *value = require_value("--d3d12-depth-output");
+      if (!value) {
+        return 2;
+      }
+      cli.d3d12_depth_output_path = value;
     } else if (arg == "--frontbuffer-output") {
       const char *value = require_value("--frontbuffer-output");
       if (!value) {
@@ -4143,6 +4234,13 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       }
       cli.frontbuffer_output_path = value;
       cli.dump_frontbuffer = true;
+    } else if (arg == "--texture-output") {
+      const char *value = require_value("--texture-output");
+      if (!value) {
+        return 2;
+      }
+      cli.texture_output_path = value;
+      cli.dump_texture = true;
     } else if (arg == "--shader-override-root") {
       const char *value = require_value("--shader-override-root");
       if (!value) {
@@ -4277,6 +4375,18 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       return 1;
     }
   }
+  if (cli.dump_texture) {
+    if (!cli.draw_index) {
+      std::cerr << "--dump-texture requires --draw <index>\n";
+      return 2;
+    }
+    std::cout << "\n";
+    std::string texture_error;
+    if (!DumpD3D12DecodedTexturePreview(capture, cli, texture_error)) {
+      std::cerr << "texture preview failed: " << texture_error << "\n";
+      return 1;
+    }
+  }
   if (cli.dump_indices) {
     if (!cli.draw_index) {
       std::cerr << "--dump-indices requires --draw <index>\n";
@@ -4308,6 +4418,10 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
   if (cli.show_missing_shaders) {
     std::cout << "\n";
     PrintMissingShaders(capture);
+  }
+  if (cli.show_real_backend_gaps) {
+    std::cout << "\n";
+    PrintD3D12RealBackendGaps(capture, cli);
   }
   if (cli.show_shader_record_probes) {
     std::cout << "\n";
