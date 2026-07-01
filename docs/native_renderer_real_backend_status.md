@@ -885,3 +885,60 @@ UI/background output. This proves the remaining blocker is real Xenos
 interpolator/register semantics for AB1E texture passes, not missing texture or
 vertex payload capture. The current strict real path keeps these draws skipped
 with an explicit blocker until the real mapping is decoded.
+
+# MP DXT texture recapture fix - 2026-07-02
+
+The MP native capture path now recaptures block-compressed texture payloads
+from guest physical memory instead of accepting the ReXGlue/Xenos 16 KB preview
+as a real resource. The fixed formats are:
+
+- `18` / DXT1-style blocks
+- `19` / DXT2/3-style blocks
+- `20` / DXT4/5-style blocks
+- `49` / DXN-style two-channel blocks
+
+The hook uses a tiled address upper bound for both uncompressed and
+block-compressed resources. This matters because the Xbox tiled address of the
+last logical block is not always the maximum byte touched by the texture.
+
+Validation capture:
+
+```powershell
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_009\events.jsonl --native_renderer_capture_limit 3000 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+The run was watchdog-killed after 30 seconds by design. Live logs show
+`diagnostic_pipelines=0`, `unsupported_texture_attempts=0`, and
+`partial_texture_previews=0`.
+
+Offline gap result for MP009:
+
+```text
+draws=648 geometry_ok=50 shader_ok=50 texture_ok=50 ready=50
+ignored_utility=586
+top blocker: 12 x AB1E texture pass pixel shader reads interpolator r0/r1,
+but the captured AB1E vertex shader writes oPos only
+```
+
+Full real D3D12 replay:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_009\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp009-full-dxt-fixed.bmp --no-summary
+```
+
+Result:
+
+- `50` real supported draws submitted across `4` shader pairs.
+- `24` captured texture SRVs bound.
+- `unsupported_texture_attempts=0`.
+- `partial_texture_previews=0`.
+- `diagnostic_pipelines=0`.
+- `native-renderer-mp009-pair-3c4f-edc1.bmp` correctly shows the BO2 title
+  logo from real captured DXT texture data, replacing the prior green/pink
+  upper-left smear caused by truncated DXT previews.
+
+This is still not complete native rendering. The combined MP009 image has real
+BO2-derived logo/UI texture output, but still has missing layers and a large
+dark diagonal/state artifact. The next blocker remains Xenos
+interpolator/register semantics for AB1E texture passes, followed by remaining
+depth/stencil/fullscreen pass correctness.

@@ -1742,6 +1742,12 @@ bool CheckCapturedTextureSupport(const ReplayDrawState &state,
                             kMaxRealReplayTextureSlots);
   for (std::size_t slot = 0; slot < texture_count; ++slot) {
     const TextureFetchRecord &fetch = state.draw.texture_fetches[slot];
+    if (fetch.payload_truncated) {
+      reason = "captured texture slot " + std::to_string(slot) +
+               " payload is truncated; real replay requires a full "
+               "resource snapshot";
+      return false;
+    }
     std::vector<uint8_t> texture_rgba;
     std::string texture_reason;
     if (DecodeTextureRgba8(fetch, texture_rgba, texture_reason)) {
@@ -2026,8 +2032,9 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
     reason = "texture payload is missing";
     return false;
   }
-  if (DecodeBlockCompressedTextureRgba8(fetch, rgba, reason)) {
-    return true;
+  if (fetch.format == 18 || fetch.format == 19 || fetch.format == 20 ||
+      fetch.format == 49) {
+    return DecodeBlockCompressedTextureRgba8(fetch, rgba, reason);
   }
   if (fetch.format != 6 && fetch.format != 2 && fetch.format != 7 &&
       fetch.format != 23 && fetch.format != 26 && fetch.format != 28 &&
@@ -4691,7 +4698,10 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       const TextureFetchRecord *selected_fetch = nullptr;
       if (slot < uploaded_state.draw.texture_fetches.size()) {
         const TextureFetchRecord &fetch = uploaded_state.draw.texture_fetches[slot];
-        if (DecodeTextureRgba8(fetch, texture_rgba, texture_reason)) {
+        if (fetch.payload_truncated) {
+          ++unsupported_texture_count;
+          texture_reason = "texture payload is truncated";
+        } else if (DecodeTextureRgba8(fetch, texture_rgba, texture_reason)) {
           selected_fetch = &fetch;
         } else {
           ++unsupported_texture_count;

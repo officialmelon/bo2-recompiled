@@ -76,6 +76,30 @@ uint32_t XenosTiledOffset2D(uint32_t x, uint32_t y, uint32_t pitch,
          (((((y & 8) >> 2) + (x >> 3)) & 3) << 6) + (offset & 0x3Fu);
 }
 
+uint32_t XenosTiledAddressUpperBound2D(uint32_t right, uint32_t bottom,
+                                       uint32_t pitch,
+                                       uint32_t bytes_per_block_log2) {
+  if (right == 0 || bottom == 0) {
+    return 0;
+  }
+
+  uint32_t upper_bound = XenosTiledOffset2D((right - 1) & ~31u,
+                                            (bottom - 1) & ~31u, pitch,
+                                            bytes_per_block_log2);
+  switch (bytes_per_block_log2) {
+  case 0:
+    upper_bound += 0xA00;
+    break;
+  case 1:
+    upper_bound += 0xC00;
+    break;
+  default:
+    upper_bound += 0x400u << bytes_per_block_log2;
+    break;
+  }
+  return upper_bound;
+}
+
 bool TextureFormatFootprint(const bo2::native::TextureFetchInfo &fetch,
                             uint32_t &footprint) {
   footprint = 0;
@@ -84,7 +108,9 @@ bool TextureFormatFootprint(const bo2::native::TextureFetchInfo &fetch,
   }
 
   uint32_t bytes_per_texel = 0;
+  uint32_t bytes_per_block = 0;
   uint32_t bytes_per_block_log2 = 0;
+  bool block_compressed = false;
   switch (fetch.format) {
   case 2:
     bytes_per_texel = 1;
@@ -94,17 +120,48 @@ bool TextureFormatFootprint(const bo2::native::TextureFetchInfo &fetch,
     bytes_per_texel = 4;
     bytes_per_block_log2 = 2;
     break;
+  case 18:
+    block_compressed = true;
+    bytes_per_block = 8;
+    bytes_per_block_log2 = 3;
+    break;
+  case 19:
+  case 20:
+  case 49:
+    block_compressed = true;
+    bytes_per_block = 16;
+    bytes_per_block_log2 = 4;
+    break;
   default:
     return false;
   }
 
   const uint32_t pitch_texels =
       fetch.pitch != 0 ? fetch.pitch << 5 : fetch.width;
+  if (block_compressed) {
+    const uint32_t width_blocks = std::max<uint32_t>(1, (fetch.width + 3) / 4);
+    const uint32_t height_blocks =
+        std::max<uint32_t>(1, (fetch.height + 3) / 4);
+    const uint32_t pitch_blocks =
+        std::max<uint32_t>(1, (pitch_texels + 3) / 4);
+    const uint64_t required =
+        fetch.tiled
+            ? XenosTiledAddressUpperBound2D(width_blocks, height_blocks,
+                                            pitch_blocks,
+                                            bytes_per_block_log2)
+            : uint64_t(pitch_blocks) * height_blocks * bytes_per_block;
+    if (required == 0 || required > kMaxProjectTexturePayloadBytes ||
+        required > UINT32_MAX) {
+      return false;
+    }
+    footprint = static_cast<uint32_t>(required);
+    return true;
+  }
+
   const uint64_t required =
       fetch.tiled
-          ? uint64_t(XenosTiledOffset2D(fetch.width - 1, fetch.height - 1,
-                                        pitch_texels, bytes_per_block_log2)) +
-                bytes_per_texel
+          ? XenosTiledAddressUpperBound2D(fetch.width, fetch.height,
+                                          pitch_texels, bytes_per_block_log2)
           : (uint64_t(pitch_texels) * (fetch.height - 1) + fetch.width) *
                 bytes_per_texel;
   if (required == 0 || required > kMaxProjectTexturePayloadBytes ||
@@ -121,6 +178,12 @@ void RecaptureTexturePayloadFromGuest(bo2::native::TextureFetchInfo &target) {
       !TextureFormatFootprint(target, footprint) ||
       target.base_address_bytes == 0 ||
       target.payload_bytes.size() >= footprint) {
+    if (target.payload_truncated && footprint != 0 &&
+        target.payload_bytes.size() >= footprint) {
+      target.payload_byte_count = footprint;
+      target.payload_truncated = false;
+      target.payload_missing = false;
+    }
     return;
   }
 
@@ -128,6 +191,10 @@ void RecaptureTexturePayloadFromGuest(bo2::native::TextureFetchInfo &target) {
   const uint8_t *source =
       REX_KERNEL_MEMORY()->TranslatePhysical<const uint8_t *>(
           target.base_address_bytes);
+  if (!source) {
+    target.payload_bytes.clear();
+    return;
+  }
   std::memcpy(target.payload_bytes.data(), source, footprint);
   target.payload_byte_count = footprint;
   target.payload_truncated = false;

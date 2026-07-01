@@ -456,3 +456,15 @@ It is useful for separating BO2-derived output by shader class; for example,
 MP004 shows `3C4F/EDC1` owns the honeycomb/background plus the corrupt green
 upper-left texture smear, while `261B/FF01` owns the cleaner small
 font/glyph-style marks.
+
+Follow-up MP009 note: the green/pink `3C4F/EDC1` smear was traced to
+block-compressed format `18/19/20` texture payloads that were still using the
+16 KB ReXGlue/Xenos preview as if it were a complete resource. The SP and MP
+hooks now recapture DXT/DXN payloads with a tiled address upper bound, and
+`D3D12ReplayBackend` rejects truncated texture snapshots in real replay. On
+`native_captures\live_d3d12_mp_009\events.jsonl`,
+`--shader-pair 0x3C4F6D40D699817B:0xEDC17DCC3FFDB040` submits all `12/12`
+draws with `unsupported_texture_attempts=0`, `partial_texture_previews=0`, and
+`diagnostic_pipelines=0`; the isolated output
+`native-renderer-mp009-pair-3c4f-edc1.bmp` shows the real BO2 title logo
+instead of the prior smear.
