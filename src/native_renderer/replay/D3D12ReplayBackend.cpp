@@ -819,6 +819,13 @@ struct D3D12ReplayPipeline {
   bool used_diagnostic_shader = false;
 };
 
+struct CapturedColorTargetSeed {
+  const RenderTargetPayloadRecord *payload = nullptr;
+  uint32_t draw_index = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+};
+
 struct NativeShaderOverridePair {
   std::filesystem::path vertex_path;
   std::filesystem::path pixel_path;
@@ -840,6 +847,93 @@ void AssignTexcoordComponents(RealReplayVertex &vertex,
                               uint32_t &input_layout_mask,
                               uint32_t &vertex_texcoord_count, float u,
                               float v);
+
+bool FindCapturedColorTargetSeed(const ReplayCapture &capture,
+                                 const std::vector<UploadedRealDraw> &draws,
+                                 uint32_t replay_width,
+                                 uint32_t replay_height,
+                                 CapturedColorTargetSeed &seed,
+                                 std::string &reason) {
+  std::size_t candidates = 0;
+  std::string first_reject;
+  for (const UploadedRealDraw &uploaded : draws) {
+    if (uploaded.prepared.draw_index >= capture.draws.size()) {
+      continue;
+    }
+    const ReplayDrawState &state = capture.draws[uploaded.prepared.draw_index];
+    const RenderStateRecord &render_state = state.draw.render_state;
+    if (!render_state.present || render_state.surface_pitch == 0) {
+      continue;
+    }
+    for (const RenderTargetPayloadRecord &payload :
+         render_state.color_target_payloads) {
+      if (payload.target != 0) {
+        continue;
+      }
+      ++candidates;
+      auto reject = [&](const std::string &message) {
+        if (first_reject.empty()) {
+          first_reject = message;
+        }
+      };
+      if (payload.payload_missing || payload.payload_bytes.empty()) {
+        reject("target payload is missing");
+        continue;
+      }
+      if (payload.payload_truncated) {
+        reject("target payload is truncated");
+        continue;
+      }
+      if (payload.payload_offset_bytes != 0) {
+        reject("target payload starts at nonzero offset");
+        continue;
+      }
+      const uint64_t required_bytes =
+          payload.payload_requested_byte_count != 0
+              ? payload.payload_requested_byte_count
+              : static_cast<uint64_t>(payload.payload_bytes.size());
+      if (required_bytes != payload.payload_bytes.size()) {
+        reject("target payload sidecar is not the full requested payload");
+        continue;
+      }
+      const uint64_t row_bytes =
+          static_cast<uint64_t>(render_state.surface_pitch) * 4u;
+      if (row_bytes == 0 || required_bytes < row_bytes ||
+          required_bytes % row_bytes != 0) {
+        reject("target payload is not linear RGBA8-sized");
+        continue;
+      }
+      const uint32_t target_width = render_state.surface_pitch;
+      const uint32_t target_height =
+          static_cast<uint32_t>(required_bytes / row_bytes);
+      if (target_width != replay_width || target_height != replay_height) {
+        reject("target payload dimensions " + std::to_string(target_width) +
+               "x" + std::to_string(target_height) +
+               " do not match replay target " + std::to_string(replay_width) +
+               "x" + std::to_string(replay_height));
+        continue;
+      }
+      seed.payload = &payload;
+      seed.draw_index = state.draw_index;
+      seed.width = target_width;
+      seed.height = target_height;
+      reason = "selected draw " + std::to_string(seed.draw_index) +
+               " color target 0 payload";
+      return true;
+    }
+  }
+
+  if (candidates == 0) {
+    reason = "no captured color target 0 payload in submitted draws";
+  } else {
+    reason = "no usable captured color target seed among " +
+             std::to_string(candidates) + " candidate(s)";
+    if (!first_reject.empty()) {
+      reason += ": " + first_reject;
+    }
+  }
+  return false;
+}
 
 uint64_t CapturedInputLayoutSignature(const VertexFetchRecord &fetch,
                                       uint32_t input_layout_mask) {
@@ -2333,6 +2427,105 @@ bool CreateTexture2DRgba8(ID3D12Device *device, ID3D12GraphicsCommandList *list,
   barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
   barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
   list->ResourceBarrier(1, &barrier);
+  return true;
+}
+
+bool UploadLinearRgba8ToTexture(ID3D12Device *device,
+                                ID3D12GraphicsCommandList *list,
+                                ID3D12Resource *texture, const uint8_t *rgba,
+                                uint32_t width, uint32_t height,
+                                D3D12_RESOURCE_STATES state_before,
+                                D3D12_RESOURCE_STATES state_after,
+                                ComPtr<ID3D12Resource> &upload,
+                                std::string &error) {
+  if (!device || !list || !texture || !rgba || width == 0 || height == 0) {
+    error = "UploadLinearRgba8ToTexture called with empty input";
+    return false;
+  }
+
+  const uint32_t row_bytes = width * 4;
+  const uint32_t row_pitch =
+      (row_bytes + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
+      ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+  const uint64_t upload_size = static_cast<uint64_t>(row_pitch) * height;
+
+  D3D12_HEAP_PROPERTIES upload_heap{};
+  upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+  upload_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+  upload_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+  upload_heap.CreationNodeMask = 1;
+  upload_heap.VisibleNodeMask = 1;
+
+  D3D12_RESOURCE_DESC upload_desc{};
+  upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  upload_desc.Width = upload_size;
+  upload_desc.Height = 1;
+  upload_desc.DepthOrArraySize = 1;
+  upload_desc.MipLevels = 1;
+  upload_desc.SampleDesc.Count = 1;
+  upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+  if (!CheckHr(device->CreateCommittedResource(
+                   &upload_heap, D3D12_HEAP_FLAG_NONE, &upload_desc,
+                   D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                   IID_PPV_ARGS(&upload)),
+               "ID3D12Device::CreateCommittedResource(texture seed upload)",
+               error)) {
+    AppendDeviceRemovedReason(device, error);
+    return false;
+  }
+
+  void *mapped = nullptr;
+  D3D12_RANGE read_range{0, 0};
+  if (!CheckHr(upload->Map(0, &read_range, &mapped),
+               "ID3D12Resource::Map(texture seed upload)", error)) {
+    AppendDeviceRemovedReason(device, error);
+    return false;
+  }
+  uint8_t *mapped_bytes = static_cast<uint8_t *>(mapped);
+  for (uint32_t row = 0; row < height; ++row) {
+    std::memcpy(mapped_bytes + static_cast<std::size_t>(row) * row_pitch,
+                rgba + static_cast<std::size_t>(row) * row_bytes, row_bytes);
+  }
+  D3D12_RANGE written_range{0, static_cast<SIZE_T>(upload_size)};
+  upload->Unmap(0, &written_range);
+
+  if (state_before != D3D12_RESOURCE_STATE_COPY_DEST) {
+    D3D12_RESOURCE_BARRIER to_copy{};
+    to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    to_copy.Transition.pResource = texture;
+    to_copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    to_copy.Transition.StateBefore = state_before;
+    to_copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    list->ResourceBarrier(1, &to_copy);
+  }
+
+  D3D12_TEXTURE_COPY_LOCATION src{};
+  src.pResource = upload.Get();
+  src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  src.PlacedFootprint.Footprint.Width = width;
+  src.PlacedFootprint.Footprint.Height = height;
+  src.PlacedFootprint.Footprint.Depth = 1;
+  src.PlacedFootprint.Footprint.RowPitch = row_pitch;
+
+  D3D12_TEXTURE_COPY_LOCATION dst{};
+  dst.pResource = texture;
+  dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  dst.SubresourceIndex = 0;
+  list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+  if (state_after != D3D12_RESOURCE_STATE_COPY_DEST) {
+    D3D12_RESOURCE_BARRIER from_copy{};
+    from_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    from_copy.Transition.pResource = texture;
+    from_copy.Transition.Subresource =
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    from_copy.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    from_copy.Transition.StateAfter = state_after;
+    list->ResourceBarrier(1, &from_copy);
+  }
+
   return true;
 }
 
@@ -4869,7 +5062,40 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         D3D12_RESOURCE_STATE_RENDER_TARGET;
     list->ResourceBarrier(1, &to_render_target);
   }
-  list->ClearRenderTargetView(rtv, clear_value.Color, 0, nullptr);
+  bool seeded_color_target = false;
+  ComPtr<ID3D12Resource> captured_color_target_upload;
+  std::string captured_color_target_reason;
+  if (!live_submit) {
+    CapturedColorTargetSeed seed{};
+    if (FindCapturedColorTargetSeed(capture, uploaded_draws, width, height,
+                                    seed, captured_color_target_reason)) {
+      if (!UploadLinearRgba8ToTexture(
+              device.Get(), list.Get(), target.Get(),
+              seed.payload->payload_bytes.data(), seed.width, seed.height,
+              D3D12_RESOURCE_STATE_RENDER_TARGET,
+              D3D12_RESOURCE_STATE_RENDER_TARGET,
+              captured_color_target_upload, error)) {
+        error = "could not seed D3D12 real replay render target from capture: " +
+                error;
+        return false;
+      }
+      seeded_color_target = true;
+      std::cout << "D3D12 real replay initialized color target from captured "
+                   "payload: "
+                << captured_color_target_reason
+                << " size=" << seed.width << "x" << seed.height
+                << " bytes=" << seed.payload->payload_bytes.size()
+                << (seed.payload->payload_loaded_from_resource ? " sidecar"
+                                                               : "")
+                << "\n";
+    } else {
+      std::cout << "D3D12 real replay color target initialized by clear: "
+                << captured_color_target_reason << "\n";
+    }
+  }
+  if (!seeded_color_target) {
+    list->ClearRenderTargetView(rtv, clear_value.Color, 0, nullptr);
+  }
   ID3D12DescriptorHeap *descriptor_heaps[] = {srv_heap.Get(),
                                               sampler_heap.Get()};
   list->SetDescriptorHeaps(2, descriptor_heaps);

@@ -492,3 +492,20 @@ On the focused full-target MP capture, draw `24` reports
 for target slot `0`. This gives a quick visual check for captured target
 contents before the D3D12 replay path starts initializing native render targets
 from those sidecars.
+
+The D3D12 real replay backend now attempts that initialization automatically
+for offline replay when the submitted draw batch contains a complete color
+target `0` sidecar. It accepts only full raw-linear RGBA8 payloads that match
+the replay target size, logs the accepted draw/size/byte count, and skips the
+initial clear only on success. Current validation:
+
+```text
+live_d3d12_mp_009: 24 submitted real draws, target seed rejected because the
+  submitted draws only have truncated target payloads.
+target_full_mp_001: full target sidecars exist, but the capture has no complete
+  vertex/index snapshot currently supported by the real replay path, so it
+  cannot yet exercise target seeding plus real draws in one run.
+```
+
+Next replay capture target: full-target sidecars and the MP009 supported
+textured draw window in the same bounded capture.

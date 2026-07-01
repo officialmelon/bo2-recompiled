@@ -1057,3 +1057,41 @@ It does not by itself make those passes renderable yet, because the D3D12
 offline replay still needs to initialize/bind captured target/depth payloads as
 real replay resources and still needs correct Xenos export/register semantics
 for the A4/AB1E shader classes.
+
+# D3D12 color-target seeding - 2026-07-02
+
+The offline D3D12 real replay path can now initialize its output render target
+from a captured color target sidecar before it emits native draw calls. This is
+fail-closed: the seed is accepted only when target slot `0` is a complete,
+non-truncated, offset-`0`, raw linear RGBA8 payload whose dimensions match the
+replay output target. Otherwise the backend logs the exact rejection reason and
+keeps the previous clear behavior.
+
+Validation on the current MP009 capture:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_009\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp009-targetseed-regression.bmp --no-summary
+```
+
+Result:
+
+```text
+D3D12 real replay submitted 24 supported draw(s) across 2 shader pair(s)
+D3D12 real replay color target initialized by clear: no usable captured color target seed among 24 candidate(s): target payload is truncated
+D3D12 real replay color readback: bytes=3686400 nonzero=3685797
+```
+
+The output remains the current incomplete BO2-derived title/logo replay. This is
+expected: MP009 has the supported real textured draws, but its target snapshots
+are the older bounded/truncated previews.
+
+Validation on `target_full_mp_001` currently fails before native draw submission:
+
+```text
+D3D12 real replay unavailable: capture has no complete vertex/index snapshot that the current D3D12 real replay path can bind
+```
+
+That capture proves full target sidecars can be collected, but it was stopped
+before the supported textured draw window. The next capture needs
+`BO2_NATIVE_CAPTURE_FULL_TARGETS=1` plus a capture window that reaches the MP009
+textured title/UI draws, while staying bounded enough not to fill the disk.
