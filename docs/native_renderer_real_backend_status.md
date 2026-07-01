@@ -10,7 +10,7 @@ Real native rendering is not complete.
 
 Current best offline real D3D12 replay image:
 
-- `C:\Users\braxt\bo2-recompiled\native-renderer-mp003-full-after-261b-ff01.bmp`
+- `C:\Users\braxt\bo2-recompiled\native-renderer-mp003-full-after-layout8-8645.bmp`
 
 This image is still not a correct BO2 frame. It does, however, contain visible
 BO2-derived output from captured MP replay data: the dark honeycomb/UI
@@ -23,18 +23,18 @@ runtime shader pairs. Diagnostic shader fallback is not used.
 Verification command:
 
 ```powershell
-C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp003-full-after-261b-ff01.bmp
+C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp003-full-after-layout8-8645.bmp
 ```
 
 Result:
 
 - Exit code `0`.
-- `110` supported real D3D12 draws submitted across `4` shader pairs.
+- `120` supported real D3D12 draws submitted across `5` shader pairs.
 - `diagnostic_pipelines=0`.
-- `145` captured texture SRVs and `145` captured samplers were bound.
-- `295` fallback SRVs and `195` fallback samplers were still bound because the
-  current root signature exposes a fixed descriptor table wider than some
-  manually covered shaders actually sample.
+- `195` captured texture SRVs and `195` captured samplers were bound.
+- `765` fallback SRVs and `565` fallback samplers were still bound because the
+  current root signature exposes a fixed layout8 descriptor table wider than
+  some manually covered shaders actually sample.
 - Depth/stencil was not enabled for the submitted draws in this capture.
 - Output RGB sample stats improved from the previous `91`-draw image:
   `max=(255,255,255)`, sampled nonzero pixels `36303/57600`.
@@ -47,6 +47,7 @@ Submitted shader pairs:
 | `0x5B9B7484417FB9B6` | `0x3A6876055FEC1674` | 25 | Existing real-resource coverage. |
 | `0xCBC9604F48930B36` | `0x7D1EF030F5710BDA` | 20 | Resource-backed but visually very dark; needs real PS ALU/constant lowering. |
 | `0x261BDD733FEC1F64` | `0xFF01D28E1EF3A880` | 19 | New glyph/UI coverage; visible in single draw and full replay. |
+| `0xCBC9604F48930B36` | `0x8645E8BA65E424B2` | 10 | Five-texture resource-backed path; visually very dark until real PS ALU/constant lowering. |
 
 Single-draw proof for the new `261B/FF01` pair:
 
@@ -62,26 +63,26 @@ C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\native
 Latest gap report after this checkpoint:
 
 ```text
-draws=1179 geometry_ok=152 shader_ok=129 texture_ok=129 ready=129 scene_candidate_ready=129
+draws=1179 geometry_ok=152 shader_ok=139 texture_ok=139 ready=139 scene_candidate_ready=139
 top remaining blockers:
   942 x geometry: no captured vertex/fetch state, but render state has no modeled color/depth/stencil side effects
   63 x geometry: A4 pass-through color export has no captured color/texture dependency or exports all zero
   22 x geometry: DDED7E no-fetch point shader needs Xenos r0/register initialization semantics
-  10 x shader: no translated/cached/override PS 0x8645E8BA65E424B2 for VS 0xCBC9604F48930B36
   10 x shader: no translated/cached/override VS 0xEF95534343684F5B
   3 x shader: no translated/cached/override PS 0x79E1F538A5074A65
 ```
 
 The same gap report marks `VS=0xAB1E86137A0240E8 /
 PS=0xFF01D28E1EF3A880` as `9` additional ready draws because the `FF01` pixel
-override now exists. Those draws are not listed in the `110` submitted full
+override now exists. Those draws are not listed in the `120` submitted full
 replay summary yet, so the next replay-backend audit should check the
 non-indexed/primitive/submission filters for that pair.
 
 The next correctness target is still automatic shader lowering and live native
 D3D12 integration, not more diagnostic output. The highest-value offline
-targets are `PS=0x8645E8BA65E424B2`, `VS=0xEF95534343684F5B /
-PS=0xDC168FB6031AFC41`, and the no-fetch `DDED7E/A4` register/export semantics.
+targets are `VS=0xEF95534343684F5B / PS=0xDC168FB6031AFC41`,
+`PS=0x79E1F538A5074A65`, and the no-fetch `DDED7E/A4`
+register/export semantics.
 
 ## 2026-07-01 strict live D3D12 path-fix audit
 

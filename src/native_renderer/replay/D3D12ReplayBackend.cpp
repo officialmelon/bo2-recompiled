@@ -39,7 +39,7 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
-constexpr std::size_t kMaxRealReplayTextureSlots = 4;
+constexpr std::size_t kMaxRealReplayTextureSlots = 8;
 constexpr uint32_t kCapturedFloat4ConstantCount = 512;
 constexpr uint32_t kCapturedConstantDwordCount =
     kCapturedFloat4ConstantCount * 4;
@@ -2821,7 +2821,7 @@ bool FindCacheShaderPath(const std::filesystem::path &root,
 std::string MakeOverrideCacheKey(const char *short_stage, uint64_t hash,
                                  const std::string &profile,
                                  const std::string &source) {
-  constexpr const char *kBindingLayoutVersion = "layout4";
+  constexpr const char *kBindingLayoutVersion = "layout8";
   return std::string("manual_") + short_stage + "_" + ShaderHashFileKey(hash) +
          "_" + profile + "_" + kBindingLayoutVersion + "_src" +
          ShaderHashFileKey(Fnv1a64(source));
