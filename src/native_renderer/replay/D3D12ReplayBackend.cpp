@@ -1072,6 +1072,17 @@ bool IsAb1eTextureInterpolatorBlocker(const ReplayDrawState &state) {
   return !state.draw.texture_fetches.empty();
 }
 
+bool MatchesShaderPairFilter(const ReplayDrawState &state,
+                             const ReplayCliOptions &options) {
+  if (!options.shader_pair_vertex_hash && !options.shader_pair_pixel_hash) {
+    return true;
+  }
+  return options.shader_pair_vertex_hash &&
+         options.shader_pair_pixel_hash &&
+         state.vertex_shader.hash == *options.shader_pair_vertex_hash &&
+         state.pixel_shader.hash == *options.shader_pair_pixel_hash;
+}
+
 uint32_t EffectiveInputLayoutMask(const ReplayDrawState &state,
                                   uint32_t decoded_mask) {
   if (SupportsVertexlessDraw(state)) {
@@ -4121,6 +4132,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     for (std::size_t draw_index = 0; draw_index < capture.draws.size();
          ++draw_index) {
       const ReplayDrawState &state = capture.draws[draw_index];
+      if (!MatchesShaderPairFilter(state, options)) {
+        continue;
+      }
       if (IsNoSideEffectNoFetchDraw(state)) {
         ++frame_plan.elided_noop_draw_count;
         continue;
@@ -4153,7 +4167,21 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     if (!PrepareFirstRealDraw(capture, options, prepared, error)) {
       return false;
     }
+    if (!MatchesShaderPairFilter(capture.draws[prepared.draw_index],
+                                 options)) {
+      error = "selected first real draw does not match --shader-pair filter";
+      return false;
+    }
     prepared_draws = CollectSupportedRealDraws(capture, options, prepared);
+    if (options.shader_pair_vertex_hash || options.shader_pair_pixel_hash) {
+      prepared_draws.erase(
+          std::remove_if(prepared_draws.begin(), prepared_draws.end(),
+                         [&](const PreparedRealDraw &draw) {
+                           return !MatchesShaderPairFilter(
+                               capture.draws[draw.draw_index], options);
+                         }),
+          prepared_draws.end());
+    }
   }
 
   const ReplaySurfaceSize size = ChooseSurfaceSize(capture);

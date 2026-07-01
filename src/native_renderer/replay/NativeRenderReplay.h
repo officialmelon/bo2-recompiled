@@ -572,6 +572,8 @@ struct ReplayCliOptions {
   std::optional<std::size_t> draw_index;
   std::optional<std::size_t> frontbuffer_index;
   std::optional<std::size_t> texture_slot;
+  std::optional<uint64_t> shader_pair_vertex_hash;
+  std::optional<uint64_t> shader_pair_pixel_hash;
   std::size_t max_draws = 64;
   std::size_t top_shaders = 20;
   std::size_t d3d12_draw_limit = 4096;

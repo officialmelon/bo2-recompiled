@@ -2515,6 +2515,17 @@ bool ParseSizeArgument(std::string_view text, std::size_t &out) {
   return true;
 }
 
+bool ParseShaderPairArgument(std::string_view text, uint64_t &vs,
+                             uint64_t &ps) {
+  const std::size_t separator = text.find(':');
+  if (separator == std::string_view::npos || separator == 0 ||
+      separator + 1 >= text.size()) {
+    return false;
+  }
+  return ParseIntegerText(text.substr(0, separator), vs) &&
+         ParseIntegerText(text.substr(separator + 1), ps);
+}
+
 enum class ReplayBackendKind {
   Null,
   D3D12Diagnostic,
@@ -2572,6 +2583,8 @@ void PrintHelp() {
          "coverage\n"
       << "  --max-draws <count>    Limit draw dump rows (default 64)\n"
       << "  --shader-usage         Print shader and shader-pair usage\n"
+      << "  --shader-pair <vs:ps>  Filter D3D12 real replay to one runtime "
+         "shader pair\n"
       << "  --top-shaders <count>  Limit shader usage rows (default 20)\n"
       << "  --missing-shaders      Report draws missing runtime shader hashes\n"
       << "  --real-backend-gaps    Rank blockers for D3D12 real replay\n"
@@ -4209,6 +4222,16 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
         return 2;
       }
       cli.show_shader_usage = true;
+    } else if (arg == "--shader-pair") {
+      const char *value = require_value("--shader-pair");
+      uint64_t vs = 0;
+      uint64_t ps = 0;
+      if (!value || !ParseShaderPairArgument(value, vs, ps)) {
+        std::cerr << "--shader-pair expects <vs_hash>:<ps_hash>\n";
+        return 2;
+      }
+      cli.shader_pair_vertex_hash = vs;
+      cli.shader_pair_pixel_hash = ps;
     } else if (arg == "--backend") {
       const char *value = require_value("--backend");
       if (!value) {
