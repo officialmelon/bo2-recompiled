@@ -509,3 +509,20 @@ target_full_mp_001: full target sidecars exist, but the capture has no complete
 
 Next replay capture target: full-target sidecars and the MP009 supported
 textured draw window in the same bounded capture.
+
+## Current Best D3D12 Replay Capture
+
+`native_captures\live_d3d12_mp_010\events.jsonl` is the current best
+resource-backed D3D12 replay capture. It was captured without full target
+sidecars so it could reach the later CBC960 UI/background draws without filling
+the disk.
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_010\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-d3d12.bmp --no-summary
+```
+
+Validated result: `124` real draws submitted across `7` shader pairs, including
+the CBC960 shader classes, `196` captured texture SRVs, `0` unsupported texture
+attempts, and `0` diagnostic pipelines. The image is recognizably BO2-derived
+menu/background/UI output, but still has incorrect color/compositing because
+the A4/AB1E shader semantic blockers remain.

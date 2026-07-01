@@ -1095,3 +1095,49 @@ That capture proves full target sidecars can be collected, but it was stopped
 before the supported textured draw window. The next capture needs
 `BO2_NATIVE_CAPTURE_FULL_TARGETS=1` plus a capture window that reaches the MP009
 textured title/UI draws, while staying bounded enough not to fill the disk.
+
+# Shader cache rebuild and MP010 replay - 2026-07-02
+
+`CompileShaderWithCache` now treats an unreadable or zero-byte compiled shader
+cache entry as rebuildable when HLSL source is available. If source is missing,
+the backend still fails loudly. This fixed a real live-mode blocker where
+`manual_vs_CBC9604F48930B36_vs_5_0_layout8_src2943490793FFE044.dxbc` existed as
+a zero-byte file and prevented the CBC960 UI/background shader pairs from
+creating a PSO.
+
+Validation capture:
+
+```powershell
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_010\events.jsonl --native_renderer_capture_limit 6500 --native_renderer_capture_flush_interval 64 --native_renderer_verbose false --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+Run result: watchdog-killed after 18 seconds by design. Capture size was about
+`110 MB` including sidecars.
+
+Offline D3D12 replay:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_010\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-d3d12.bmp --no-summary
+```
+
+Result:
+
+```text
+D3D12 real replay submitted 124 supported draw(s) across 7 shader pair(s)
+  VS=0x261BDD733FEC1F64 PS=0xFF01D28E1EF3A880 submitted=18
+  VS=0x3C4F6D40D699817B PS=0xEDC17DCC3FFDB040 submitted=47
+  VS=0x5B9B7484417FB9B6 PS=0x3A6876055FEC1674 submitted=15
+  VS=0xCBC9604F48930B36 PS=0x79E1F538A5074A65 submitted=3
+  VS=0xCBC9604F48930B36 PS=0x7D1EF030F5710BDA submitted=18
+  VS=0xCBC9604F48930B36 PS=0x8645E8BA65E424B2 submitted=9
+  VS=0xEF95534343684F5B PS=0xDC168FB6031AFC41 submitted=14
+captured texture SRVs=196
+unsupported_texture_attempts=0
+partial_texture_previews=0
+diagnostic_pipelines=0
+```
+
+The output is now a recognizable BO2 menu/background/UI composition, but it is
+still not correct final rendering. Colors and compositing are wrong, and A4 /
+AB1E passes remain skipped until Xenos register/export/interpolator semantics
+are decoded.

@@ -3411,6 +3411,7 @@ bool CompileShaderWithCache(const char *source, const char *entry,
                             const std::filesystem::path &cache_path,
                             const std::filesystem::path &log_path,
                             ComPtr<ID3DBlob> &blob, std::string &error) {
+  std::string cache_read_error;
   if (!cache_path.empty()) {
     std::error_code ec;
     if (std::filesystem::is_regular_file(cache_path, ec) && !ec &&
@@ -3418,13 +3419,17 @@ bool CompileShaderWithCache(const char *source, const char *entry,
       return true;
     }
     if (!error.empty()) {
-      return false;
+      cache_read_error = error;
+      error.clear();
     }
   }
 
   if (!source || source[0] == '\0') {
-    error = "shader cache miss and no source is available for " +
-            std::string(source_name ? source_name : "<unknown>");
+    error =
+        cache_read_error.empty()
+            ? "shader cache miss and no source is available for " +
+                  std::string(source_name ? source_name : "<unknown>")
+            : cache_read_error + "; no source is available to rebuild it";
     return false;
   }
 
@@ -3447,6 +3452,9 @@ bool CompileShaderWithCache(const char *source, const char *entry,
           << "entry=" << entry << "\n"
           << "target=" << target << "\n"
           << "cache=" << cache_path.string() << "\n";
+      if (!cache_read_error.empty()) {
+        log << "cache_rebuilt_after=" << cache_read_error << "\n";
+      }
       if (!WriteTextFile(log_path, log.str(), error)) {
         return false;
       }
