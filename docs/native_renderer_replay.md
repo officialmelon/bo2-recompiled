@@ -526,3 +526,9 @@ the CBC960 shader classes, `196` captured texture SRVs, `0` unsupported texture
 attempts, and `0` diagnostic pipelines. The image is recognizably BO2-derived
 menu/background/UI output, but still has incorrect color/compositing because
 the A4/AB1E shader semantic blockers remain.
+
+Follow-up: the major MP010 false-color issue was fixed by applying captured
+Xenos endian mode to DXT/BC RGB565 color endpoints. The current best output is
+`C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-bc-endian.bmp`.
+Use `--dump-texture` on draw `774`, texture slot `0`, to inspect the corrected
+grayscale background texture decode.

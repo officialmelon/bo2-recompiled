@@ -1,7 +1,16 @@
 // BO2 native renderer manual D3D12 override for runtime PS 0x8645E8BA65E424B2.
-// The decoded shader has constant-driven coordinate perturbation, one tf2
-// sample, four tf1 samples, and a final color multiply. This override keeps the
-// captured texture dependencies live while full Xenos ALU lowering is built.
+// Semantic Xenos subset from live_d3d12_mp_010:
+//   tfetch2D r4.x from tf2
+//   four tfetch2D scalar channels from tf1
+//   ALU builds r1 and scalar predicate/mask r0
+//   mul o0, r1, r0
+// Keep this scalar/mask based. The older RGB weighted average was useful for
+// bring-up, but it invented the strong green/purple false-color background.
+
+cbuffer CapturedConstants : register(b1)
+{
+  float4 captured_constants[512];
+};
 
 Texture2D native_texture0 : register(t0);
 Texture2D native_texture1 : register(t1);
@@ -24,13 +33,26 @@ struct PSInput
 float4 PSMain(PSInput input) : SV_Target0
 {
   const float2 uv = saturate(input.uv);
-  const float4 tf2 = native_texture0.Sample(native_sampler0, uv);
-  const float4 tf1a = native_texture1.Sample(native_sampler1, uv);
-  const float4 tf1b = native_texture2.Sample(native_sampler2, uv);
-  const float4 tf1c = native_texture3.Sample(native_sampler3, uv);
-  const float4 tf1d = native_texture4.Sample(native_sampler4, uv);
-  const float4 combined =
-      saturate(tf2 * 0.45f + tf1a * 0.25f + tf1b * 0.15f +
-               tf1c * 0.10f + tf1d * 0.05f);
-  return saturate(combined * max(input.color, 0.35f.xxxx));
+  const float2 c232 = captured_constants[232 & 511].xy;
+  const float2 c233 = captured_constants[233 & 511].zw;
+  const float2 c234 = captured_constants[234 & 511].xy;
+  const float2 c235 = captured_constants[235 & 511].zw;
+
+  const float tf2 = native_texture0.Sample(native_sampler0,
+      saturate(uv + c233 * (1.0f / 128.0f))).r;
+  const float tf1a = native_texture1.Sample(native_sampler1,
+      saturate(uv + c232 * (1.0f / 128.0f))).r;
+  const float tf1b = native_texture2.Sample(native_sampler2,
+      saturate(uv + c234 * (1.0f / 128.0f))).r;
+  const float tf1c = native_texture3.Sample(native_sampler3,
+      saturate(uv + c235 * (1.0f / 128.0f))).r;
+  const float tf1d = native_texture4.Sample(native_sampler4, uv).r;
+
+  const float mask = saturate(max(tf2, max(tf1a, tf1b)) +
+                              abs(captured_constants[253 & 511].w) *
+                                  (1.0f / 64.0f));
+  const float3 scalar_color = float3(tf1a, tf1b, max(tf1c, tf1d)) * mask;
+  const float alpha = saturate(mask * max(input.color.a, 0.5f));
+  return float4(saturate(scalar_color * max(input.color.rgb, 0.35f.xxx)),
+                alpha);
 }

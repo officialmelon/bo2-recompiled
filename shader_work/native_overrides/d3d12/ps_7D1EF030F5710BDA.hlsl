@@ -1,7 +1,17 @@
 // BO2 native renderer manual D3D12 override for runtime PS 0x7D1EF030F5710BDA.
-// Decoded Xenos subset includes tfetch2D from tf1/tf2 and final o0 export.
-// This override preserves the captured texture dependency while the complete
-// constant-driven address perturbation and ALU lowering is still being built.
+// Semantic Xenos subset from live_d3d12_mp_010:
+//   tfetch2D r1._x__ from tf1
+//   tfetch2D r1._x__/__y_/___z from tf2
+//   mul r0._yzw, r1.yyzw, r0.xxyz
+//   mad r0.x, abs(r1.x), c235.z, c254.x
+//   mul o0.xyz0, r0.yzww, r0.x
+// Keep the override scalar/mask based. The older broad RGB texture averaging
+// produced the green/purple false-color MP menu image.
+
+cbuffer CapturedConstants : register(b1)
+{
+  float4 captured_constants[512];
+};
 
 Texture2D native_texture0 : register(t0);
 Texture2D native_texture1 : register(t1);
@@ -22,14 +32,19 @@ struct PSInput
 float4 PSMain(PSInput input) : SV_Target0
 {
   const float2 uv = saturate(input.uv);
-  const float4 base = native_texture0.Sample(native_sampler0, uv);
-  const float4 detail0 = native_texture1.Sample(native_sampler1, uv);
-  const float4 detail1 = native_texture2.Sample(native_sampler2, uv);
-  const float4 detail2 = native_texture3.Sample(native_sampler3, uv);
-  const float3 mixed = saturate(base.rgb * 0.50f +
-                                detail0.rgb * 0.25f +
-                                detail1.rgb * 0.15f +
-                                detail2.rgb * 0.10f);
-  return float4(saturate(mixed * max(input.color.rgb, 0.25f.xxx)),
-                saturate(max(base.a, input.color.a)));
+  const float2 wave = captured_constants[2032 & 511].xy;
+  const float2 bias = captured_constants[1952 & 511].zw;
+  const float tf1 = native_texture0.Sample(native_sampler0, uv).r;
+  const float tfa = native_texture1.Sample(native_sampler1, uv).r;
+  const float tfb = native_texture2.Sample(native_sampler2,
+      saturate(uv + wave * (1.0f / 128.0f))).r;
+  const float tfc = native_texture3.Sample(native_sampler3,
+      saturate(uv + bias * (1.0f / 128.0f))).r;
+
+  const float mask = saturate(abs(tf1) * 1.35f +
+                              abs(captured_constants[2032 & 511].z) *
+                                  (1.0f / 64.0f));
+  const float3 scalar_color = float3(tfa, tfb, tfc) * mask;
+  return float4(saturate(scalar_color * max(input.color.rgb, 0.35f.xxx)),
+                0.0f);
 }

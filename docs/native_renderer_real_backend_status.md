@@ -1141,3 +1141,45 @@ The output is now a recognizable BO2 menu/background/UI composition, but it is
 still not correct final rendering. Colors and compositing are wrong, and A4 /
 AB1E passes remain skipped until Xenos register/export/interpolator semantics
 are decoded.
+
+# Block-compressed texture endian fix - 2026-07-02
+
+The green/purple MP010 background was traced to DXT/BC color endpoint endian
+handling. The texture payloads were complete and the Xenos fetch state marked
+them as endian mode `1`, but the BC decoder was reading RGB565 color endpoints
+without applying the same endian correction used by other texture formats.
+
+Evidence:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_010\events.jsonl --draw 774 --dump-texture --texture-slot 0 --texture-output C:\Users\braxt\bo2-recompiled\native-renderer-mp010-draw774-texture0-bc-endian.bmp --no-summary
+```
+
+After applying endpoint endian correction, draw `774` texture slot `0`
+decodes as:
+
+```text
+format=18 size=256x256 tiled=yes endian=1 payload=32768
+avg_rgba=(145,145,145,255)
+```
+
+The full MP010 D3D12 replay now renders a plausible grayscale BO2 MP menu
+background instead of the previous false green/purple image:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_010\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-bc-endian.bmp --no-summary
+```
+
+Validation result:
+
+```text
+D3D12 real replay submitted 124 supported draw(s) across 7 shader pair(s)
+captured texture SRVs=196
+unsupported_texture_attempts=0
+partial_texture_previews=0
+diagnostic_pipelines=0
+```
+
+Remaining correctness blockers are now easier to see: A4/AB1E skipped passes,
+missing exact shader ALU/export semantics, and live in-game parity with this
+offline replay output.

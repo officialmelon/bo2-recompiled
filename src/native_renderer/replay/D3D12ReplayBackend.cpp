@@ -1939,9 +1939,11 @@ void StoreRgba(std::vector<uint8_t> &rgba, uint32_t width, uint32_t height,
 
 void DecodeDxtColorBlock(const std::vector<uint8_t> &bytes,
                          std::size_t offset, bool allow_1bit_alpha,
-                         uint8_t colors[16][4]) {
-  const uint16_t c0 = LoadLittleEndian16(bytes, offset + 0);
-  const uint16_t c1 = LoadLittleEndian16(bytes, offset + 2);
+                         uint32_t endian, uint8_t colors[16][4]) {
+  const uint16_t c0 =
+      GpuSwap16(LoadLittleEndian16(bytes, offset + 0), endian);
+  const uint16_t c1 =
+      GpuSwap16(LoadLittleEndian16(bytes, offset + 2), endian);
   uint8_t palette[4][4]{};
   DecodeRgb565(c0, palette[0]);
   DecodeRgb565(c1, palette[1]);
@@ -2015,10 +2017,11 @@ bool DecodeBlockCompressedTextureRgba8(const TextureFetchRecord &fetch,
 
       uint8_t colors[16][4]{};
       if (dxt1) {
-        DecodeDxtColorBlock(fetch.payload_bytes, source_offset, true, colors);
+        DecodeDxtColorBlock(fetch.payload_bytes, source_offset, true,
+                            fetch.endian, colors);
       } else if (dxt23) {
         DecodeDxtColorBlock(fetch.payload_bytes, source_offset + 8, false,
-                            colors);
+                            fetch.endian, colors);
         for (uint32_t i = 0; i < 16; ++i) {
           const uint8_t alpha_nibble =
               (fetch.payload_bytes[source_offset + (i >> 1)] >>
@@ -2029,7 +2032,7 @@ bool DecodeBlockCompressedTextureRgba8(const TextureFetchRecord &fetch,
         }
       } else if (dxt45) {
         DecodeDxtColorBlock(fetch.payload_bytes, source_offset + 8, false,
-                            colors);
+                            fetch.endian, colors);
         const uint8_t alpha0 = fetch.payload_bytes[source_offset + 0];
         const uint8_t alpha1 = fetch.payload_bytes[source_offset + 1];
         uint8_t alpha_palette[8]{alpha0, alpha1};
@@ -3113,6 +3116,32 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
           std::string &entry, std::string &profile, std::string &cache_key,
           std::filesystem::path &cache_path, std::filesystem::path &log_path,
           std::string &stage_error) -> bool {
+    std::string manifest_error;
+    std::filesystem::path override_path;
+    if (!FindManifestOverridePath(options.shader_override_root, short_stage,
+                                  long_stage, hash, override_path, entry,
+                                  profile, manifest_error)) {
+      if (!manifest_error.empty()) {
+        stage_error = manifest_error;
+        return false;
+      }
+      override_path =
+          FindShaderOverridePath(options.shader_override_root, short_stage,
+                                 long_stage, hash);
+    }
+
+    if (!override_path.empty()) {
+      if (!ReadTextFile(override_path, source, stage_error)) {
+        return false;
+      }
+      source_path = override_path;
+      cache_key = MakeOverrideCacheKey(short_stage, hash, profile, source);
+      cache_path =
+          options.shader_cache_root / "d3d12" / (cache_key + ".dxbc");
+      log_path = options.shader_cache_root / "logs" / (cache_key + ".log");
+      return true;
+    }
+
     std::string cache_error;
     if (FindCacheShaderPath(options.shader_cache_root, short_stage, long_stage,
                             hash, cache_path, source_path, entry, profile,
@@ -3127,6 +3156,17 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
         if (std::filesystem::is_regular_file(source_path, ec) && !ec &&
             !ReadTextFile(source_path, source, stage_error)) {
           return false;
+        }
+        if (!source.empty() && cache_key.rfind("manual_", 0) == 0) {
+          const std::string source_cache_key =
+              MakeOverrideCacheKey(short_stage, hash, profile, source);
+          if (source_cache_key != cache_key) {
+            cache_key = source_cache_key;
+            cache_path = options.shader_cache_root / "d3d12" /
+                         (cache_key + ".dxbc");
+            log_path = options.shader_cache_root / "logs" /
+                       (cache_key + ".log");
+          }
         }
         if (!source.empty() && cache_path.extension() == ".dxil") {
           const std::string d3dcompile_profile =
@@ -3145,37 +3185,10 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
       return false;
     }
 
-    std::string manifest_error;
-    std::filesystem::path override_path;
-    if (!FindManifestOverridePath(options.shader_override_root, short_stage,
-                                  long_stage, hash, override_path, entry,
-                                  profile, manifest_error)) {
-      if (!manifest_error.empty()) {
-        stage_error = manifest_error;
-        return false;
-      }
-      override_path =
-          FindShaderOverridePath(options.shader_override_root, short_stage,
-                                 long_stage, hash);
-    }
-
-    if (override_path.empty()) {
-      stage_error = "no translated, cached, or override shader is available "
-                    "for " +
-                    std::string(long_stage) + " shader " + FormatHex64(hash);
-      return false;
-    }
-
-    if (!ReadTextFile(override_path, source, stage_error)) {
-      return false;
-    }
-
-    source_path = override_path;
-    cache_key = MakeOverrideCacheKey(short_stage, hash, profile, source);
-    cache_path =
-        options.shader_cache_root / "d3d12" / (cache_key + ".dxbc");
-    log_path = options.shader_cache_root / "logs" / (cache_key + ".log");
-    return true;
+    stage_error = "no translated, cached, or override shader is available "
+                  "for " +
+                  std::string(long_stage) + " shader " + FormatHex64(hash);
+    return false;
   };
 
   std::string vertex_error;
