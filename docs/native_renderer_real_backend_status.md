@@ -751,3 +751,34 @@ Remaining limitations:
   against offline replay.
 - World/scene shader pairs and render/depth state remain the next major
   coverage gap.
+
+# MP003 PS 79E1 no-texture bridge - 2026-07-01
+
+Draw `936` was inspected as the representative `PS=0x79E1F538A5074A65`
+blocker. It has real decoded indices `3,0,2,2,0,1`, one vf95 vertex fetch
+with four screen-space vertices covering `y=540..720`, no texture fetches,
+captured vertex color `(1,1,1,0.101961)`, and captured render state. The
+shader payload is `1293` dwords and currently times out in semantic
+disassembly, so `shader_work/native_overrides/d3d12/ps_79E1F538A5074A65.hlsl`
+is a conservative manual override that preserves captured vertex color/alpha
+without adding a synthetic texture or diagnostic color.
+
+Verification:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --draw 936 --backend d3d12 --d3d12-draws 1 --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp003-draw936-79e1.bmp --no-summary
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp003-full-after-79e1.bmp
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --real-backend-gaps --no-summary
+```
+
+- Draw `936` submits `1` real D3D12 draw for
+  `VS=0xCBC9604F48930B36 / PS=0x79E1F538A5074A65` with
+  `diagnostic_pipelines=0`.
+- Full MP003 replay submits `133` supported real-data draws across `7` shader
+  pairs, up from `130` across `6` pairs. The new pair is
+  `CBC9604F48930B36/79E1F538A5074A65`, `3/3` submitted.
+- The gap report now shows `geometry_ok=152 shader_ok=152 texture_ok=152
+  ready=152`, with no remaining shader-only blocker. Remaining blockers are
+  geometry/no-fetch semantics: `942` no-side-effect no-fetch draws, `63`
+  A4 pass-through draws lacking reliable color/texture dependency, and `22`
+  `DDED7E` no-fetch point draws needing Xenos register initialization.

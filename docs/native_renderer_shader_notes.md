@@ -512,6 +512,13 @@ Observed metadata:
 
 Static extracted `.ucode` files remain unresolved for semantic decode. They still dump raw words and raw IR correctly, but the tested static files begin with extracted metadata/constants rather than the exact runtime shader payload layout expected by `Shader::AnalyzeUcode`. A first auto-offset scan was removed because a wrong static offset can make the analyzer run too long. The next static-file task is to reverse the extracted `.ucode` layout or use the container descriptor fields to pass only the true microcode program range to the analyzer.
 
+MP003 `PS=0x79E1F538A5074A65` is now covered by a manual D3D12 override only
+after draw-state inspection. The representative draw has no texture fetches,
+real vf95 quad data, and alpha `0.101961`; the runtime shader payload is
+`1293` dwords and currently stalls semantic disassembly. The override is
+therefore documented as a conservative vertex-color/alpha bridge, not a
+decoded Xenos shader translation.
+
 ## Native renderer path forward
 
 1. Preserve the runtime `(stage, hash, guest_address, dword_count)` stream from replay as the first shader registry key.
