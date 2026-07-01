@@ -133,6 +133,7 @@ overrides while the complete Xenos-to-IR-to-HLSL translator is still incomplete:
 - `VS=0xCBC9604F48930B36 / PS=0x7D1EF030F5710BDA`
 - `VS=0x261BDD733FEC1F64 / PS=0xFF01D28E1EF3A880`
 - `VS=0xCBC9604F48930B36 / PS=0x8645E8BA65E424B2`
+- `VS=0xEF95534343684F5B / PS=0xDC168FB6031AFC41`
 
 Both vertex shaders decode to the same currently modeled replay interface:
 `vf95` supplies `POSITION`, `COLOR0`, and `TEXCOORD0`; the Xenos shader exports
@@ -179,6 +180,13 @@ now submits `120` real D3D12 draws across `5` shader pairs with
 `diagnostic_pipelines=0`. The manual `8645` override remains a conservative
 texture-combine approximation and renders very dark until the real constant and
 ALU behavior is lowered.
+
+`VS=0xEF95534343684F5B / PS=0xDC168FB6031AFC41` is another screen-space
+quad path. The pixel shader performs constant-adjusted one-texture sampling
+and multiplies by vertex color. The manual override samples the captured
+texture with replay UVs. Single-draw replay of draw `28` shows a small colored
+strip from real captured geometry/texture data, and full MP replay now submits
+`130` real D3D12 draws across `6` shader pairs with `diagnostic_pipelines=0`.
 
 The current BO2-local translated-shader path is intentionally narrow. `native_shader_inspect.exe --compile-translated-hlsl-dxc` can lower and cache the `xenos_simple_passthrough_v1` subset seen in runtime VS `0xB6C9863F710683EC` and PS `0xA4A965C189287B99`, but it fails closed for the real-resource VS `0x5D918D91043B3ED0`. The next shader target is expanding semantic lowering for the real-resource shader pair currently covered by manual D3D12 overrides.
 
