@@ -468,3 +468,14 @@ draws with `unsupported_texture_attempts=0`, `partial_texture_previews=0`, and
 `diagnostic_pipelines=0`; the isolated output
 `native-renderer-mp009-pair-3c4f-edc1.bmp` shows the real BO2 title logo
 instead of the prior smear.
+
+Follow-up MP009 A4 note: the dark diagonal in the full D3D12 replay was
+isolated to no-texture `PS=0xA4A965C189287B99` color-export passes:
+`1E6883/A4` and `AB1E/A4`. These are now fail-closed in real replay because the
+current limited translator cannot prove the Xenos `r0` source/export semantics
+for those passes, and rendering them produced false fullscreen triangles. The
+updated full replay output is
+`native-renderer-mp009-a4-failclosed.bmp`; it submits `24` draws across the two
+textured title/UI pairs with no diagnostic pipelines and no partial texture
+previews. `--dump-bound-state` now also prints decoded blend/scissor/raster
+state to make these fullscreen pass decisions auditable from the capture.

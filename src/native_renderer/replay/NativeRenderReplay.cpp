@@ -3243,6 +3243,152 @@ void PrintConstantsDump(const ReplayCapture &capture,
   }
 }
 
+struct DecodedBlendControl {
+  uint32_t src_blend = 0;
+  uint32_t blend_op = 0;
+  uint32_t dest_blend = 0;
+  uint32_t alpha_src_blend = 0;
+  uint32_t alpha_blend_op = 0;
+  uint32_t alpha_dest_blend = 0;
+  bool blend_enable = false;
+};
+
+DecodedBlendControl DecodeBlendControl(uint32_t blend_control) {
+  DecodedBlendControl decoded{};
+  decoded.src_blend = (blend_control >> 0) & 0x1F;
+  decoded.blend_op = (blend_control >> 5) & 0x7;
+  decoded.dest_blend = (blend_control >> 8) & 0x1F;
+  decoded.alpha_src_blend = (blend_control >> 16) & 0x1F;
+  decoded.alpha_blend_op = (blend_control >> 21) & 0x7;
+  decoded.alpha_dest_blend = (blend_control >> 24) & 0x1F;
+  decoded.blend_enable =
+      !(decoded.src_blend == 1 && decoded.dest_blend == 0 &&
+        decoded.blend_op == 0 && decoded.alpha_src_blend == 1 &&
+        decoded.alpha_dest_blend == 0 && decoded.alpha_blend_op == 0);
+  return decoded;
+}
+
+const char *XenosBlendFactorName(uint32_t factor, bool alpha) {
+  switch (factor & 0x1F) {
+  case 0:
+    return "ZERO";
+  case 1:
+    return "ONE";
+  case 4:
+    return alpha ? "SRC_ALPHA" : "SRC_COLOR";
+  case 5:
+    return alpha ? "INV_SRC_ALPHA" : "INV_SRC_COLOR";
+  case 6:
+    return "SRC_ALPHA";
+  case 7:
+    return "INV_SRC_ALPHA";
+  case 8:
+    return alpha ? "DEST_ALPHA" : "DEST_COLOR";
+  case 9:
+    return alpha ? "INV_DEST_ALPHA" : "INV_DEST_COLOR";
+  case 10:
+    return "DEST_ALPHA";
+  case 11:
+    return "INV_DEST_ALPHA";
+  case 12:
+    return "BLEND_FACTOR";
+  case 13:
+    return "INV_BLEND_FACTOR";
+  case 14:
+    return "CONST_ALPHA";
+  case 15:
+    return "INV_CONST_ALPHA";
+  case 16:
+    return "SRC_ALPHA_SAT";
+  default:
+    return "UNKNOWN";
+  }
+}
+
+const char *XenosBlendOpName(uint32_t op) {
+  switch (op & 0x7) {
+  case 0:
+    return "ADD";
+  case 1:
+    return "SUBTRACT";
+  case 2:
+    return "MIN";
+  case 3:
+    return "MAX";
+  case 4:
+    return "REV_SUBTRACT";
+  default:
+    return "UNKNOWN";
+  }
+}
+
+void PrintBlendControlDecode(uint32_t blend_control, const char *indent) {
+  const DecodedBlendControl decoded = DecodeBlendControl(blend_control);
+  std::cout << indent << "rb_blendcontrol[0]="
+            << FormatHex32(blend_control)
+            << " enable=" << (decoded.blend_enable ? "yes" : "no")
+            << " color=(" << XenosBlendFactorName(decoded.src_blend, false)
+            << " " << XenosBlendOpName(decoded.blend_op) << " "
+            << XenosBlendFactorName(decoded.dest_blend, false) << ")"
+            << " alpha=("
+            << XenosBlendFactorName(decoded.alpha_src_blend, true) << " "
+            << XenosBlendOpName(decoded.alpha_blend_op) << " "
+            << XenosBlendFactorName(decoded.alpha_dest_blend, true) << ")"
+            << " raw_fields=" << decoded.src_blend << ","
+            << decoded.blend_op << "," << decoded.dest_blend << ","
+            << decoded.alpha_src_blend << "," << decoded.alpha_blend_op
+            << "," << decoded.alpha_dest_blend << "\n";
+}
+
+void PrintScissorDecode(const RenderStateRecord &rs, const char *indent) {
+  const uint32_t screen_tl_x = rs.pa_sc_screen_scissor_tl & 0x7FFFu;
+  const uint32_t screen_tl_y = (rs.pa_sc_screen_scissor_tl >> 16) & 0x7FFFu;
+  const uint32_t screen_br_x = rs.pa_sc_screen_scissor_br & 0x7FFFu;
+  const uint32_t screen_br_y = (rs.pa_sc_screen_scissor_br >> 16) & 0x7FFFu;
+  const uint32_t window_tl_x = rs.pa_sc_window_scissor_tl & 0x7FFFu;
+  const uint32_t window_tl_y = (rs.pa_sc_window_scissor_tl >> 16) & 0x7FFFu;
+  const uint32_t window_br_x = rs.pa_sc_window_scissor_br & 0x7FFFu;
+  const uint32_t window_br_y = (rs.pa_sc_window_scissor_br >> 16) & 0x7FFFu;
+  std::cout << indent << "screen_scissor=" << screen_tl_x << ","
+            << screen_tl_y << " -> " << screen_br_x << "," << screen_br_y
+            << " raw=(" << FormatHex32(rs.pa_sc_screen_scissor_tl) << ","
+            << FormatHex32(rs.pa_sc_screen_scissor_br) << ")\n";
+  std::cout << indent << "window_scissor=" << window_tl_x << ","
+            << window_tl_y << " -> " << window_br_x << "," << window_br_y
+            << " raw=(" << FormatHex32(rs.pa_sc_window_scissor_tl) << ","
+            << FormatHex32(rs.pa_sc_window_scissor_br)
+            << ") offset=" << FormatHex32(rs.pa_sc_window_offset) << "\n";
+}
+
+void PrintRenderStateDecode(const RenderStateRecord &rs) {
+  std::cout << "    raw_controls rb_colorcontrol="
+            << FormatHex32(rs.rb_colorcontrol)
+            << " rb_modecontrol=" << FormatHex32(rs.rb_modecontrol)
+            << " rb_surface_info=" << FormatHex32(rs.rb_surface_info)
+            << " rb_depthcontrol=" << FormatHex32(rs.rb_depthcontrol)
+            << " rb_alpha_ref=" << FormatHex32(rs.rb_alpha_ref) << "\n";
+  std::cout << "    raster pa_su_sc_mode_cntl="
+            << FormatHex32(rs.pa_su_sc_mode_cntl)
+            << " pa_su_vtx_cntl=" << FormatHex32(rs.pa_su_vtx_cntl)
+            << " pa_cl_clip_cntl=" << FormatHex32(rs.pa_cl_clip_cntl)
+            << " pa_cl_vte_cntl=" << FormatHex32(rs.pa_cl_vte_cntl)
+            << " cull=" << rs.cull_mode << " fill=" << rs.fill_mode
+            << " front_face=" << rs.front_face << "\n";
+  if (!rs.rb_blendcontrol.empty()) {
+    PrintBlendControlDecode(rs.rb_blendcontrol[0], "    ");
+  } else {
+    std::cout << "    rb_blendcontrol[0]: missing\n";
+  }
+  PrintScissorDecode(rs, "    ");
+  if (!rs.viewport_registers.empty()) {
+    std::cout << "    viewport_registers:";
+    for (uint32_t value : rs.viewport_registers) {
+      std::cout << " " << FormatHex32(value);
+    }
+    std::cout << "\n";
+  }
+}
+
 void PrintBoundStateDump(const ReplayCapture &capture, std::size_t draw_index) {
   if (draw_index >= capture.draws.size()) {
     std::cout << "Draw " << draw_index << " does not exist; capture has "
@@ -3320,6 +3466,7 @@ void PrintBoundStateDump(const ReplayCapture &capture, std::size_t draw_index) {
               << " depth_write=" << (rs.depth_write_enable ? "yes" : "no")
               << " stencil=" << (rs.stencil_enable ? "yes" : "no")
               << " cull=" << rs.cull_mode << "\n";
+    PrintRenderStateDecode(rs);
     std::cout << "    color_formats:";
     for (uint32_t format : rs.color_format) {
       std::cout << " " << format;

@@ -1043,21 +1043,13 @@ bool IsKnownZeroColorExportDraw(const ReplayDrawState &state,
       !state.draw.texture_fetches.empty() || vertices.empty()) {
     return false;
   }
-  if (RenderStateUsesDepthTarget(state.draw.render_state.present
-                                     ? &state.draw.render_state
-                                     : nullptr)) {
-    return false;
-  }
-  if (state.vertex_shader.hash == 0xAB1E86137A0240E8ull &&
-      state.draw.texture_fetches.empty()) {
-    return false;
-  }
   // A4 is the tiny max(oC0, r0, r0) pixel shader. Without a texture fetch, the
   // current limited translator can only replay whatever r0 happened to be after
   // our approximate VS export mapping. These screen/depth-style passes have
-  // repeatedly produced full-screen placeholder triangles. Keep pure color-only
-  // passes out of the "real scene" path until Xenos export/register semantics
-  // are modeled.
+  // repeatedly produced full-screen placeholder triangles, including when the
+  // captured render state also writes synthetic replay depth/stencil. Keep pure
+  // color-only passes out of the "real scene" path until Xenos export/register
+  // semantics and real target/depth side effects are modeled.
   return true;
 }
 

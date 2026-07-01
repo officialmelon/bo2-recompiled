@@ -942,3 +942,71 @@ BO2-derived logo/UI texture output, but still has missing layers and a large
 dark diagonal/state artifact. The next blocker remains Xenos
 interpolator/register semantics for AB1E texture passes, followed by remaining
 depth/stencil/fullscreen pass correctness.
+
+# MP A4 color-export fail-closed update - 2026-07-02
+
+The large dark diagonal in `native-renderer-mp009-full-dxt-fixed.bmp` was
+isolated to no-texture `PS=0xA4A965C189287B99` passes, not to the fixed DXT
+title texture pair.
+
+Pair isolation on `native_captures\live_d3d12_mp_009\events.jsonl` showed:
+
+- `VS=0xAB1E86137A0240E8 / PS=0xA4A965C189287B99`: `2` submitted draws
+  reproduced the diagonal.
+- `VS=0x1E6883FCCDE1F688 / PS=0xA4A965C189287B99`: `24` submitted draws
+  also reproduced the diagonal, with captured depth/stencil state enabled.
+- `VS=0x3C4F6D40D699817B / PS=0xEDC17DCC3FFDB040`: `12` submitted draws
+  rendered the BO2 title/logo texture without the diagonal.
+- `VS=0xEF95534343684F5B / PS=0xDC168FB6031AFC41`: `12` submitted draws
+  rendered the companion textured UI/title pass without the diagonal.
+
+The replay state dump now decodes key render-state fields for these draws,
+including `rb_colorcontrol`, `rb_modecontrol`, `rb_blendcontrol[0]` factor/op
+fields, raster flags, screen/window scissor, and viewport registers. The AB1E
+texture draw `30` decodes `rb_blendcontrol[0]=0x010B0706` as
+`SRC_ALPHA ADD INV_SRC_ALPHA` for color and `INV_DEST_ALPHA ADD ONE` for alpha,
+with a `1280x720` window scissor. This proves the draw is a real blended
+fullscreen/UI pass, but not that the current limited shader interface can
+replay its missing interpolators correctly.
+
+The D3D12 real backend now keeps no-texture A4 color-export passes fail-closed.
+These shaders are `max(oC0, r0, r0)` style exports. Without a texture fetch, the
+current translator can only use an approximate source for `r0`, and prior
+attempts have repeatedly produced false fullscreen triangles. This applies even
+when the captured render state has depth/stencil side effects, because offline
+replay is still using synthetic replay depth/target resources rather than the
+real BO2 target contents for those passes.
+
+Updated MP009 full replay:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_009\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp009-a4-failclosed.bmp --no-summary
+```
+
+Result:
+
+- `24` real supported draws submitted across `2` shader pairs.
+- Submitted pairs are the two textured title/UI pairs:
+  `3C4F6D40D699817B/EDC17DCC3FFDB040` and
+  `EF95534343684F5B/DC168FB6031AFC41`.
+- `24` captured texture SRVs bound.
+- `unsupported_texture_attempts=0`.
+- `partial_texture_previews=0`.
+- `diagnostic_pipelines=0`.
+- The output image still is not a complete BO2 frame, but the false dark
+  diagonal is gone and the visible BO2-derived title texture remains.
+
+Updated gap report:
+
+```text
+draws=648 geometry_ok=24 shader_ok=24 texture_ok=24 ready=24
+ignored_utility=586
+top blockers:
+  26 x A4 pass-through color export has no captured color/texture dependency
+  12 x AB1E texture pass needs Xenos interpolator/register semantics
+```
+
+Next renderer work remains the same core issue: decode the Xenos
+export/interpolator/register semantics for A4/AB1E/fullscreen utility passes,
+then replace the synthetic offline target/depth handling with real captured
+render-target/depth state so those passes can be replayed instead of skipped.
