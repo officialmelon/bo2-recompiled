@@ -6,6 +6,212 @@ Last updated: 2026-07-01
 
 Real native rendering is not complete.
 
+## 2026-07-01 strict live D3D12 path-fix audit
+
+The current strict live image is:
+
+- `native_captures\live_d3d12_strict_pathfix_001\desktop-strict-pathfix.png`
+
+This image is not a BO2 scene. It shows a large dark diagonal primitive in the
+owned `BO2 Native D3D12 - default` window. That is still incorrect output, but
+it proves a different state from the older diagnostic screenshots: strict
+`native_d3d12` is now submitting real D3D12 replay work with diagnostic shader
+fallback disabled.
+
+Code change:
+
+- `src\native_renderer\NativeRenderer.cpp` now resolves relative shader cache
+  and override roots against the project tree when the game is launched from
+  the CMake/Ninja build directory.
+- `src\native_renderer\replay\D3D12ReplayBackend.cpp` now resolves relative
+  shader-cache manifest paths such as `shader_work/cache/d3d12/...` against the
+  project root, not only against the process current directory.
+
+Verification:
+
+```powershell
+default.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_strict_pathfix_001\events.jsonl --native_renderer_capture_limit 6500 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false --readback_resolve full
+```
+
+- RelWithDebInfo `default` rebuild after the path fix: exit `0`.
+- RelWithDebInfo `native_render_replay` rebuild after the path fix: exit `0`.
+- Live run was watchdog-stopped after evidence capture, not by a crash.
+- Screenshot SHA-256:
+  `52EE8F311F6B72927EB2258A0C19505F463169EE3D9007BB0A76B52C8DC2A5EC`.
+- `live_d3d12_submit` telemetry reaches frame `30` with `submitted_frames=24`
+  and `failed_frames=5`. The failures are frames with no currently supported
+  complete geometry, not shader/PSO creation failures.
+- D3D12 stdout repeatedly reports real submissions with
+  `diagnostic_pipelines=0`, for example `submitted 8 supported draw(s) across
+  3 shader pair(s)`, `PSO cache: entries=8 misses=0 hits=8
+  diagnostic_pipelines=0`, `bound 8 captured texture SRV(s), 24 fallback
+  texture SRV(s)`, `bound 8 captured sampler descriptor(s)`, and a bound
+  `D24_UNORM_S8_UINT` depth target.
+
+Fresh capture summary:
+
+- `6500` events, `30` frames, `1458` PM4 draws, `310` shader uploads, `34`
+  constant uploads.
+- `114` draws have vertex/fetch snapshots and are ready for the current D3D12
+  real backend.
+- `136` texture fetch records have sidecar payloads totaling `66764800` bytes.
+- Render-state records exist on all `1458` draws; color/depth target sidecars
+  are present but truncated previews (`16384` bytes per target snapshot).
+- Gap report: `draws=1458 geometry_ok=114 shader_ok=114 texture_ok=114
+  ready=114`.
+- Dominant remaining skip: `1344` `VS=0xB6C9863F710683EC /
+  PS=0xA4A965C189287B99` no-fetch point draws classified as no modeled
+  color/depth/stencil side effects.
+
+Immediate blocker from this run:
+
+- The first visible supported draw (`draw[24]`,
+  `VS=0x1E6883FCCDE1F688 / PS=0xA4A965C189287B99`) decodes to screen-space
+  vertices `(-0.5,-0.5)`, `(639.5,-0.5)`, `(639.5,359.5)`.
+- Its pixel shader path currently returns `r0`; the captured color/fetch
+  attribute for that draw is all zeros, while replay applies
+  `rb_color_mask=0x0000FFFF`. The result is a large black primitive overwriting
+  the native window.
+- Therefore the next correctness target is not basic D3D12 initialization. It
+  is Xenos shader/export semantics plus render-state/color-write interpretation
+  for the early screen-space/depth-style passes, followed by broader constant
+  layout reconstruction for later textured scene passes.
+
+Follow-up gate added after this audit:
+
+- The real D3D12 path now fails closed for the no-texture `PS=0xA4A965C189287B99`
+  pass-through class. That shader is just the tiny `max(oC0, r0, r0)` export
+  path; without a texture fetch, the current limited translator can only replay
+  approximate `r0` data and repeatedly produced full-screen placeholder
+  triangles.
+- After this gate, `--real-backend-gaps` on the same capture reports
+  `draws=1458 geometry_ok=26 shader_ok=26 texture_ok=26 ready=26`.
+- The remaining ready draws are genuinely resource-dependent:
+  `81311A/246E` (`8` draws), `AB1E86/246E` (`8` draws), `5D918D/C4ED`
+  (`5` draws), and `AB1E86/C4ED` (`5` draws).
+- Offline D3D12 replay on the gated capture submits `5` draws for
+  `VS=0x5D918D91043B3ED0 / PS=0xC4ED2979F29C9139`, binds `20` captured texture
+  SRVs, binds `20` captured samplers, uses `0` fallback textures, uses
+  `0` diagnostic pipelines, and writes
+  `native_captures\live_d3d12_strict_pathfix_001\d3d12-real-a4-notexture-gated.bmp`
+  (SHA-256 `AF172ED5685D34C32696219E3C9E8630CDB8085341613BEFDBA2E3F85EF86FEB`).
+  The image is a flat blue full-screen textured quad, not a BO2 scene.
+- Strict live `native_d3d12` after this gate writes
+  `native_captures\live_d3d12_a4_notexture_gate_001\desktop-a4-notexture-gate.png`
+  (SHA-256 `A36FFDD0F794F28C64C818BD8157684C3337AB94E102A119BDBF7C7BA52A2383`).
+  Telemetry reaches `submitted_frames=9` by frame `29`, and stdout reports
+  repeated submissions with `diagnostic_pipelines=0` and `bound 8 captured
+  texture SRV(s), 0 fallback`.
+
+## 2026-07-01 live D3D12 audit
+
+The current images are bring-up evidence, not proof of a complete native
+renderer. The latest checked image is:
+
+- `native_captures\live_d3d12_pending_001\d3d12-real-draw1061-textured.bmp`
+
+That image is a flat dark resource-backed output. It is not a BO2 scene.
+
+Code changes made in the project tree:
+
+- `src\native_renderer\backend_d3d12\D3D12LiveFrameBuilder.*` now supports a
+  pending frame builder. BO2 emits most PM4 work before the intercepted
+  `VdSwap` frame boundary; previously the live backend reset its frame builder
+  at `BeginFrame` and discarded those draws before D3D12 submission.
+- `src\native_renderer\backend_d3d12\D3D12LiveRendererBackend.*` now routes
+  shaders, constants, and draws seen outside a live frame into the pending
+  builder, then absorbs them into the next native D3D12 frame.
+- `src\native_renderer\replay\D3D12ReplayBackend.cpp` now transitions the live
+  swapchain back buffer from `PRESENT` to `RENDER_TARGET` before clearing it.
+- `native_renderer_live_allow_diagnostic_shader` was added as an explicit
+  diagnostic-only live toggle. Strict `native_d3d12` still defaults to no
+  diagnostic shader fallback.
+- The live D3D12 backend now creates its own `BO2 Native D3D12` Win32 window
+  instead of trying to attach a second DXGI swapchain to the existing game
+  window. The previous path failed every frame at `CreateSwapChainForHwnd`.
+- Captures now include `live_d3d12_submit` events with pending draw count,
+  frame draw count, submit success/failure, cumulative submitted/failed frame
+  counts, and the exact error string.
+
+Verification:
+
+```powershell
+default.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_pending_001\events.jsonl --native_renderer_capture_limit 5000 --native_renderer_capture_flush_interval 128 --native_renderer_verbose true --readback_resolve full
+```
+
+- The run was watchdog-killed after the capture limit window; it did not crash.
+- The capture has `5000` events, `24` frame boundaries, `1134` PM4 draws,
+  `232` shader payload uploads, `16` constant uploads, `84` vertex-buffer
+  snapshots, `64` texture snapshots, and `1108` depth-target sidecar snapshots.
+- `--real-backend-gaps` reports `geometry_ok=84`, `shader_ok=83`,
+  `texture_ok=83`, `ready=83`.
+- The dominant `VS=0xB6C9863F710683EC` / `PS=0xA4A965C189287B99` pair accounts
+  for `1050` no-fetch/no-modeled-side-effect draws and is not scene output.
+- The strongest textured probe is draw `1061`: indexed draw, six indices, one
+  vertex fetch, six texture fetches, constants, and render state.
+
+Replay probe:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_pending_001\events.jsonl --draw 1061 --backend d3d12 --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_pending_001\d3d12-real-draw1061-textured.bmp --skip-unsupported --allow-diagnostic-shader --shader-cache-root C:\Users\braxt\bo2-recompiled\shader_work\cache --no-summary
+```
+
+- Exit code: `0`.
+- D3D12 submitted `2/2` captured draws for
+  `VS=0x81311AC4B1FBD082` / `PS=0x246E20EF10E0DDC7`.
+- Bound `8` captured texture SRVs and `8` captured sampler descriptors with no
+  fallback SRVs/samplers.
+- The sampled `tf0` sidecar payload for draw `1061` begins with repeated
+  `0x10` bytes and is uniform enough that the current approximate HLSL produces
+  a flat dark image. This is expected for that probe and does not prove
+  scene-correct rendering.
+
+What still needs to be done before calling the renderer real:
+
+- Add live D3D12 submit telemetry to the capture/log stream so a run proves how
+  many pending draws were absorbed and submitted per swapchain present.
+- Capture or select a frame where the top ready textured draws reference
+  non-uniform scene/color target payloads, not a uniform post-process surface.
+- Replace the hand-written/limited `246E`, `C4ED`, `A4`, and related HLSL paths
+  with real Xenos ALU/texture/export lowering driven by the semantic IR.
+- Use captured constant register indices correctly instead of the current
+  flattened `captured_constants[8]` approximation.
+- Make live `native_d3d12` present a visible BO2-derived frame and record exact
+  per-frame submit/failure counts.
+- Keep `emulated` and capture modes working while live D3D12 is repaired.
+
+### Live D3D12 telemetry after owned-window patch
+
+Strict run:
+
+```powershell
+default.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_window_001\events.jsonl --native_renderer_capture_limit 6500 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false --readback_resolve full
+```
+
+- Swapchain creation no longer fails.
+- Pending draw absorption is working: typical frames report `pending_draws` and
+  `frame_draws` in the `40-53` range.
+- Strict live submit still fails because the per-frame batches do not yet have a
+  draw with both supported geometry and a creatable real D3D12 PSO.
+
+Diagnostic live run:
+
+```powershell
+default.exe --native_renderer_mode native_d3d12 --native_renderer_live_allow_diagnostic_shader true --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_diagnostic_window_001\events.jsonl --native_renderer_capture_limit 6500 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false --readback_resolve full
+```
+
+- Frame `2` submitted successfully:
+  `{"type":"live_d3d12_submit","frame":2,"pending_draws":0,"frame_draws":1,"attempted":true,"success":true,"submitted_frames":1,"failed_frames":1}`.
+- That successful frame used diagnostic shader fallback and is not
+  shader-correct BO2 rendering.
+- Later frames fail after the D3D12 device is removed:
+  `ID3D12Device::CreateCommittedResource(upload) failed with HRESULT 0x887A0005`
+  and subsequent PSO creation calls fail with the same device-removed HRESULT.
+- The next live backend target is to instrument `GetDeviceRemovedReason`, isolate
+  the first live diagnostic draw that poisons the device, and either fix the
+  invalid D3D12 state/resource transition or reset/recreate the live backend
+  safely after device removal.
+
 The working GPU-output backends are:
 
 - `d3d12-diagnostic`, which renders synthetic debug rectangles from captured BO2 events.
@@ -13,6 +219,58 @@ The working GPU-output backends are:
 - `native_renderer_mode=native_d3d12`, which is now a distinct live mode in the game executable. It initializes a project-local D3D12 device/queue backend, suppresses emulated present, captures live PM4 events, and fails closed for live draw submission until the offline D3D12 replay translator is factored into the live path.
 
 Neither path is full BO2 scene rendering yet. The `d3d12` path proves native D3D12 vertex/index buffer binding, manual override shader manifest parsing, compiled shader-cache hits, flattened captured constant root binding, captured format-6 texture SRV binding from inline or sidecar payloads, captured texture-filter/clamp sampler descriptors, first-pass captured PSO-side render-state setup, and `DrawIndexedInstanced` with captured BO2 geometry, but it still lacks automatic translated BO2 shaders, full constant-layout reconstruction, render-target/depth resources, and full-frame state replay. Without a matching cache entry, override, or translated shader, real `d3d12` fails closed.
+
+## 2026-07-01 truth audit
+
+`native_render_replay.exe` now has `--real-backend-gaps` to rank the blockers that prevent a capture from becoming real D3D12 scene output. This is intentionally stricter than the older "submitted draw" milestone.
+
+`native_captures\vertex_recapture_001\events.jsonl`:
+
+- `2415` draws total.
+- `260` draws currently pass geometry, shader, and texture checks.
+- `2090` draws are now blocked because the existing `VS=0xB6C9863F710683EC` / `PS=0xA4A965C189287B99` vertexless path initializes `r0` to zero and the pixel shader exports `r0`, so it only produces black placeholder output. This needs real Xenos register initialization semantics before it counts as scene rendering.
+- `62` more no-fetch point draws using `VS=0xDDED7E538422AE73` / `PS=0x3A6876055FEC1674` are blocked for the same unresolved Xenos `r0`/register initialization class.
+- Frame `3` after this gate submits only `2` non-placeholder captured draws and produces `native_captures\vertex_recapture_001\codex-audit-frame3-after-zero-gate-d3d12.bmp`, a large diagonal primitive. This is honest BO2-derived geometry, not a scene.
+
+`native_captures\swap_fetch_capture_001\events.jsonl`:
+
+- `196` draws total.
+- `7` draws currently pass geometry, shader, and texture checks.
+- The old `136` "decoded indices exceed captured vertex payloads" bucket was too vague. The replay gap report now identifies these as truncated vertex snapshots. Example: draw `135` decodes indices `456,457,458,458,459,456`, but its only captured vertex fetch has `payload=512/524288` bytes at `stride=32`, so replay only has `16` vertices for a draw that needs vertex `459`.
+- The highest draw-count shader pairs have no usable geometry yet; the highest geometry-valid missing shader is `VS=0x6FC820AD382E1512` / `PS=0x679E60B50E703902`.
+- `src/native_renderer/NativeRenderCaptureWriter.cpp` now writes large vertex payloads to `resources/vertex_payload_*.bin` sidecars instead of forcing them inline. `native_render_replay.exe` now loads `payload_resource_path` for vertex fetches and reports sidecar-backed vertex payloads in `--dump-vertices`.
+- Existing captures do not magically gain the missing bytes. A new `native_capture` run is required before the top indexed scene draws can be replayed with full vertex buffers.
+
+The next real-renderer work is therefore:
+
+- Produce a fresh capture with vertex sidecars enabled and verify the `BA22484D6724E10F/ACAB60E35B237CD7` and `AC99F18664BC0EC1/604C8A462C3223AB` pairs no longer fail on truncated vertex payloads.
+- Implement Xenos register initialization/export semantics for no-fetch point shaders instead of rendering zeroed `r0`.
+- Expand real shader translation/cache coverage for the top geometry-valid shader pairs.
+- Keep live `native_d3d12` fail-closed until it can submit the same real replay path without crashing or suppressing the emulated presenter into a blank frame.
+
+## 2026-07-01 capture/replay correction
+
+The images produced so far are not evidence of a complete renderer:
+
+- `codex-visible-d3d12-diagnostic.bmp` is diagnostic event visualization, not BO2 scene output.
+- `codex-visible-native-d3d12-replay.bmp` uses the real D3D12 replay path, but only the currently supported captured draws are submitted; missing full vertex payloads and missing shader translations leave it mostly black.
+- `vertex_recapture_001\codex-audit-frame3-after-zero-gate-d3d12.bmp` is BO2-derived geometry, but it is still a partial replay, not a frame-correct scene.
+
+New verification commands:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\swap_fetch_capture_001\events.jsonl --real-backend-gaps --top-shaders 12 --no-summary
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\swap_fetch_capture_001\events.jsonl --draw 135 --dump-bound-state --dump-indices --dump-vertices --no-summary
+```
+
+Results after the replay diagnostic fix:
+
+- `draws=196 geometry_ok=56 shader_ok=7 texture_ok=7 ready=7`.
+- The gap report now emits examples such as `captured vertex payload is truncated; max_index=103 available_vertices=16` instead of lumping these under a generic index-range error.
+- `native_render_replay` rebuilt successfully in `default\out\build\win-msvc-native-renderer-debug`.
+- The installed RexGlue headers were stale relative to `C:\Users\braxt\rexglue-sdk\include`: the source tree has `NativeRenderer*Event` trace structs and `REX_PPC_NOINLINE`, while the installed copy did not. Refreshing `rex/ppc/function.h` and `rex/graphics/command_processor.h` from the source tree moved the game build past compilation.
+- `default\out\build\win-msvc-amd64-relwithdebinfo\default.exe` rebuilt successfully after the header refresh.
+- `default\out\build\win-msvc-native-renderer-debug` still fails at link time: installed `spdlogrd/fmtrd` libraries were built with release CRT settings while the target uses debug CRT, and the installed `rexruntimerd.lib` is stale and does not export `rex::graphics::CommandProcessor::SetNativeRendererTraceCallbacks`. A full RexGlue reinstall was attempted but fails in its current build tree because FFmpeg C files cannot find CRT headers such as `errno.h` and `stdio.h`.
 
 ## Real D3D12 gate
 
@@ -118,3 +376,202 @@ Verified on `native_captures\vertex_recapture_001\events.jsonl`:
 - DSV status: real D3D12 replay now creates, clears, and binds an offscreen `D24_UNORM_S8_UINT` DSV for real draws. Captured depth test/write flags, depth compare, stencil enable, stencil masks, and stencil ref now feed the PSO/stencil state. Verified `--draw 24 --d3d12-draws 128 --backend d3d12` submits `120/120` draws and reports `depth_enabled_draws=82 depth_write_draws=82 stencil_enabled_draws=120`; verified frame skip replay submits `260` supported draws across `7` shader pairs. This is still not captured BO2 depth contents, and stencil ops are currently conservative `KEEP` operations until the Xenos op fields are decoded.
 - Vertexless B6/A4 status: the strict real backend now has a narrow, evidenced path for non-indexed point-list draws with no captured vertex fetches only when the shader pair is `VS=0xB6C9863F710683EC` / `PS=0xA4A965C189287B99`. It uses a no-input `SV_VertexID` VS variant, binds no vertex buffer, and leaves enabled-output no-fetch draws unsupported. On `native_captures\vertex_recapture_001\events.jsonl`, direct draw `0` submits `2090/2090` draws for this pair, and frame skip replay submits `2350` supported draws across `8` shader pairs with `3` no-side-effect draws elided and `62` enabled-color `DDED7E/3A6876` no-fetch point draws still skipped pending Xenos `r0`/register initialization decoding.
 - Capture-boundary note: this capture has `46` frame markers, but every PM4 draw is currently classified before those markers. Frame `0` therefore uses an explicitly logged pre-frame draw bucket fallback for this capture only. The next capture/replay targets are assigning PM4 draws to actual frame ranges and replacing the offscreen placeholder target/depth resources with captured BO2 target/depth resources.
+# Current audit - 2026-07-01
+
+The native renderer is not complete. The current D3D12 output is BO2-derived
+resource replay, not a real BO2 scene and not live native scene rendering.
+
+Latest live capture stability work:
+
+- Fixed an unsafe Windows import-thunk hook in project code. `__imp__VdSwap`
+  and `__imp__VdSetSystemCommandBufferGpuIdentifierAddress` are 6-byte COFF
+  jump thunks in the MSVC build; the previous 12-byte code patch corrupted the
+  adjacent thunk and crashed at `default.exe+0x7F203D2` with `0xC000001D`.
+  `InstallImportThunkDetour` now patches the IAT slot instead.
+- Added a SEH-safe `VdSwap` forward guard. If the native hook sees an invalid
+  command buffer, fetch constant, or scalar pointer, it suppresses RexGlue
+  forwarding for that present call instead of letting `VdSwap_entry` fault
+  while reading the fetch constant.
+- Verified `default` RelWithDebInfo rebuilds after the import-thunk fix.
+
+Fresh capture evidence:
+
+```powershell
+default.exe --native_renderer_mode native --native_renderer_shader_record_probe_mode off --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\iat_vdswap_capture_002\events.jsonl --native_renderer_capture_limit 8000 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false --readback_resolve full
+```
+
+- Run was stopped by watchdog after 75 seconds, not by a crash.
+- Capture validates with `8000` events, `36` frames, `1759` PM4 draws,
+  `394` shader uploads, `51` constant uploads, `19` index-buffer snapshots,
+  `147` vertex-buffer snapshots, `204` texture snapshots, `35` PM4 swap
+  frontbuffer sidecars, and frame markers (`begin_frame`, `vd_swap`,
+  `end_frame`, `present_snapshot`).
+- D3D12 real-backend gap report: `draws=1759 geometry_ok=147 shader_ok=147
+  texture_ok=147 ready=147`.
+- Dominant skip reason after replay reclassification: `1612` draws for
+  `VS=0xB6C9863F710683EC / PS=0xA4A965C189287B99` have no captured
+  vertex/fetch state and, in this capture, no modeled color/depth/stencil side
+  effects. They should not be counted as rendered scene output.
+
+Latest D3D12 replay evidence:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\iat_vdswap_capture_002\events.jsonl --backend d3d12 --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\iat_vdswap_capture_002\d3d12-real-auto.bmp --skip-unsupported --allow-diagnostic-shader --no-summary
+```
+
+- Exit code: `0`.
+- Output: `C:\Users\braxt\bo2-recompiled\native_captures\iat_vdswap_capture_002\d3d12-real-auto.bmp`.
+- Log: submitted `92/92` supported draws for shader pair
+  `VS=0x1E6883FCCDE1F688 / PS=0xA4A965C189287B99`.
+- Log: `0` captured texture SRVs were bound and `368` fallback texture SRVs
+  were used for this selected shader-pair batch.
+- The image is a dark triangle/plane. It proves the D3D12 replay path can
+  consume captured BO2 vertex/render/depth state for supported draws, but it is
+  still not shader-correct or scene-correct BO2 rendering.
+- Direct textured draw check:
+  `native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\iat_vdswap_capture_002\events.jsonl --draw 1117 --backend d3d12 --d3d12-output C:\Users\braxt\bo2-recompiled\native_captures\iat_vdswap_capture_002\d3d12-real-draw1117-textured.bmp --skip-unsupported --allow-diagnostic-shader --no-summary`
+  exits `0`, submits `13/13` draws for
+  `VS=0x81311AC4B1FBD082 / PS=0x246E20EF10E0DDC7`, binds `52` captured
+  texture SRVs, binds `52` captured sampler descriptors, and uses `0` fallback
+  SRVs.
+
+Immediate remaining work:
+
+1. Bind captured textures for the auto-selected supported shader pairs instead
+   of falling back to placeholder SRVs.
+2. Implement Xenos no-fetch point shader register initialization for the
+   dominant `B6C986/A4A965` draw class.
+3. Replace diagnostic/manual shader paths with translated shader IR/HLSL for
+   the runtime-used shader pairs.
+4. Improve frame bucketing so PM4 draws are assigned to the actual `VdSwap`
+   frame ranges instead of living mostly in the pre-frame bucket.
+5. Move the same replay translator into live `native_d3d12`; current live mode
+   still captures/mirrors data and does not render the final BO2 scene
+   natively.
+
+# Current visual audit - 2026-07-01 follow-up
+
+The newest live native D3D12 window is still not real BO2 scene rendering.
+
+Evidence:
+
+- Live native screenshot:
+  `C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_a4_notexture_gate_001\desktop-a4-notexture-gate.png`.
+  The image is a flat blue full-screen triangle/quad in the owned
+  `BO2 Native D3D12 - default` window.
+- The live log reports real native submission, not diagnostic fallback:
+  `D3D12 real frame replay submitted 2 supported draw(s) across 2 shader
+  pair(s)`, `diagnostic_pipelines=0`, `bound 8 captured texture SRV(s), 0
+  fallback texture SRV(s)`.
+- `--real-backend-gaps` on the capture reports `draws=1403 geometry_ok=24
+  shader_ok=24 texture_ok=24 ready=24`, but the ready draws are still
+  full-screen/postprocess-style draw classes:
+  `5D918D/C4ED`, `81311A/246E`, `AB1E86/246E`, and `AB1E86/C4ED`.
+- Direct replay of draw `1112`
+  (`VS=0x81311AC4B1FBD082 / PS=0x246E20EF10E0DDC7`) submits `6/6` real draws,
+  binds `24` captured texture SRVs, binds `24` captured samplers, uses
+  `0` diagnostic pipelines, and writes
+  `C:\Users\braxt\bo2-recompiled\native-renderer-sparse-constants-draw1112-d3d12.bmp`.
+  The image is still a uniform dark red/brown full-screen output, not a scene.
+- Raw texture sidecar
+  `native_captures\live_d3d12_a4_notexture_gate_001\resources\texture_payload_00002208.bin`
+  visualized as `native-renderer-texture2208-gray.bmp` is mostly flat bands,
+  so the currently selected textured pass is not a useful world-color scene
+  input.
+
+Fix applied in this audit:
+
+- `src/native_renderer/replay/D3D12ReplayBackend.cpp` now preserves captured
+  PM4 constants in a sparse Xenos float4 register map instead of only
+  concatenating upload records. This is required because runtime shaders
+  reference registers such as `c233`, `c234`, and `c252..c255`; a flat
+  `captured_constants[0..]` layout makes translated shaders read the wrong
+  constants.
+- `--real-backend-gaps` now separates fullscreen utility/postprocess passes
+  from scene candidates. On
+  `native_captures\live_d3d12_a4_notexture_gate_001\events.jsonl`, the report
+  now prints `ready=24 utility_ready=24 scene_candidate_ready=0`. This means
+  every currently submit-ready draw in this capture is a utility/postprocess
+  fullscreen pass, not a proven BO2 scene/world draw.
+- RelWithDebInfo `default` and `native_render_replay` rebuilt successfully
+  after the sparse constant-map and gap-classifier changes.
+
+Remaining blocker after this audit:
+
+The renderer is still blocked on real shader and scene-pass reconstruction, not
+basic D3D12 binding. The current generated HLSL for
+`PS=0x246E20EF10E0DDC7` is explicitly a limited semantic approximation: it
+samples captured textures and applies a hand-written luma/bias formula rather
+than lowering the actual Xenos ALU, predicate, scalar, and export sequence. The
+IR/disassembly for that shader contains the real operations through final
+`mad oC0.xyz1`, and those operations must be lowered into HLSL/SPIR-V against
+the sparse constant map before this pass can be considered shader-correct.
+
+Immediate next targets:
+
+1. Add replay classification for supported postprocess/utility passes versus
+   scene/world geometry so `--real-backend-gaps` no longer makes a full-screen
+   utility quad look like renderer completion.
+2. Lower the full `246E20EF10E0DDC7` pixel shader operation sequence, including
+   register sources, swizzles, modifiers, predicate flow, scalar ops, and
+   `oC0` export.
+3. Expand capture/replay evidence to find a draw batch with real scene/world
+   geometry and non-flat texture/color inputs. The latest capture does not yet
+   prove that such a scene batch is being rendered natively.
+
+# MP native renderer audit - 2026-07-01
+
+The MP target now builds and runs long enough in both `emulated` and
+`native_d3d12` modes under watchdog control. The original immediate MP crash was
+not a native-renderer crash: the hand-linked executable crashed in `emulated`
+mode at `0xC0000005` because the installed ReXGlue runtime library was stale
+and lacked `CommandProcessor::SetNativeRendererTraceCallbacks`. ReXGlue was
+rebuilt and installed from commit `3b37645` after fixing the VS 18
+`std::chrono::clock_cast` issue in `src/core/threading_win.cpp`.
+
+MP capture evidence:
+
+```powershell
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --native_renderer_capture_limit 6000 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+- Run was stopped by watchdog after 25 seconds, not by a crash.
+- Capture: `C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl`.
+- Summary: `6000` events, `22` frames, `1179` PM4 draws, `439` shader uploads,
+  `110` constant uploads, `108` index snapshots, `215` vertex snapshots,
+  `224` texture snapshots, `1135` color target snapshots, and `1153` depth
+  target snapshots.
+- The MP render-target/depth snapshot counts were fixed by copying
+  `NativeRendererRenderStateEvent` color/depth payload fields in
+  `default_mp/src/native_renderer_hooks.cpp`. Before that fix, MP captures had
+  zero color/depth snapshots even though ReXGlue was capturing them.
+
+D3D12 replay evidence:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp003-auto-skip-d3d12-real-2.bmp
+```
+
+- Exit code: `0`.
+- Output: `C:\Users\braxt\bo2-recompiled\native-renderer-mp003-auto-skip-d3d12-real-2.bmp`.
+- Log: submitted `25` real D3D12 draws across one translated/cached shader
+  pair, `VS=0x5B9B7484417FB9B6 / PS=0x3A6876055FEC1674`.
+- Log: `diagnostic_pipelines=0`; this output is not the diagnostic shader path.
+- The image is sparse colored point/marker output, not a BO2 scene. It proves
+  the MP path can capture and replay real BO2 vertex/constants/render-target
+  state through D3D12, but it does not prove scene-complete native rendering.
+
+Current MP blockers:
+
+1. `--real-backend-gaps` on MP003 reports `ready=25 scene_candidate_ready=25`,
+   but the output is still sparse and likely not a useful world scene pass.
+2. `942` draws are no-fetch/no-side-effect utility draws that still need
+   modeled Xenos export/register semantics or should be filtered as non-scene.
+3. Missing shader translations remain for runtime-used pairs including
+   `VS=0x3C4F6D40D699817B / PS=0xEDC17DCC3FFDB040`,
+   `VS=0xCBC9604F48930B36 / PS=0x7D1EF030F5710BDA`,
+   `VS=0x261BDD733FEC1F64 / PS=0xFF01D28E1EF3A880`, and related variants.
+4. Texture sidecars are captured, but the currently replayed MP ready batch has
+   no texture fetches, so MP has not yet proven textured scene output.
+5. Live `native_d3d12` still needs the same translated-scene draw coverage as
+   offline replay before it can be called a complete native renderer.
