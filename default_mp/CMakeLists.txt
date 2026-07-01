@@ -43,6 +43,10 @@ set(NATIVE_RENDERER_SOURCES
     ../src/native_renderer/BufferManager.cpp
     ../src/native_renderer/HostDetour.cpp
     ../src/native_renderer/backend_null/NullRendererBackend.cpp
+    ../src/native_renderer/backend_d3d12/D3D12LiveRendererBackend.cpp
+    ../src/native_renderer/backend_d3d12/D3D12LiveFrameBuilder.cpp
+    ../src/native_renderer/replay/NativeRenderReplay.cpp
+    ../src/native_renderer/replay/D3D12ReplayBackend.cpp
     ../src/native_renderer/shader_translation/ShaderTranslation.cpp
 )
 
@@ -66,12 +70,22 @@ endif()
 
 rexglue_setup_target(default_mp)
 
+target_include_directories(default_mp PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../src/native_renderer/replay"
+)
+
 if(WIN32)
     set(REXGLUE_CHRONO_COMPAT_INCLUDE "${CMAKE_CURRENT_LIST_DIR}/../src/rexglue_compat/chrono_clock_time_conversion.h")
     target_include_directories(default_mp BEFORE PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src/rexglue_compat")
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
-        target_compile_options(default_mp PRIVATE "/FI${REXGLUE_CHRONO_COMPAT_INCLUDE}" /utf-8)
+        target_compile_options(default_mp PRIVATE
+            "/FI${REXGLUE_CHRONO_COMPAT_INCLUDE}"
+            /utf-8
+            /Zc:preprocessor
+            /Zc:char8_t-
+        )
     else()
         target_compile_options(default_mp PRIVATE -include "${REXGLUE_CHRONO_COMPAT_INCLUDE}")
     endif()
+    target_link_libraries(default_mp PRIVATE d3d12 d3dcompiler dxgi)
 endif()
