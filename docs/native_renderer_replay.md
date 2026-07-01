@@ -479,3 +479,16 @@ updated full replay output is
 textured title/UI pairs with no diagnostic pipelines and no partial texture
 previews. `--dump-bound-state` now also prints decoded blend/scissor/raster
 state to make these fullscreen pass decisions auditable from the capture.
+
+`--dump-render-target` exports a selected draw's captured color target payload
+as a raw linear RGBA8 BMP preview:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\target_full_mp_001\events.jsonl --draw 24 --dump-render-target --render-target-index 0 --render-target-output C:\Users\braxt\bo2-recompiled\native-renderer-target-full-mp001-draw24-rt0.bmp --no-summary
+```
+
+On the focused full-target MP capture, draw `24` reports
+`payload=1843200/1843200 sidecar offset=0` and the BMP/stat dump is all zero
+for target slot `0`. This gives a quick visual check for captured target
+contents before the D3D12 replay path starts initializing native render targets
+from those sidecars.

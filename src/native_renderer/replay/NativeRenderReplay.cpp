@@ -2579,6 +2579,11 @@ void PrintHelp() {
       << "  --texture-slot <index> Select bound texture slot for --dump-texture\n"
       << "  --texture-output <path>\n"
          "                          BMP path for --dump-texture\n"
+      << "  --dump-render-target   Export captured color target BMP for --draw\n"
+      << "  --render-target-index <index>\n"
+         "                          Select color target slot for --dump-render-target\n"
+      << "  --render-target-output <path>\n"
+         "                          BMP path for --dump-render-target\n"
       << "  --resource-summary     Summarize replay resource snapshot "
          "coverage\n"
       << "  --max-draws <count>    Limit draw dump rows (default 64)\n"
@@ -4121,6 +4126,128 @@ bool DumpFrontbufferPreview(const ReplayCapture &capture,
   return true;
 }
 
+bool DumpRenderTargetPreview(const ReplayCapture &capture,
+                             const ReplayCliOptions &options) {
+  if (!options.draw_index) {
+    std::cerr << "--dump-render-target requires --draw <index>\n";
+    return false;
+  }
+  if (*options.draw_index >= capture.draws.size()) {
+    std::cerr << "draw " << *options.draw_index
+              << " does not exist; capture has " << capture.draws.size()
+              << " draws\n";
+    return false;
+  }
+
+  const ReplayDrawState &draw_state = capture.draws[*options.draw_index];
+  const RenderStateRecord &render_state = draw_state.draw.render_state;
+  if (!render_state.present) {
+    std::cerr << "draw " << *options.draw_index
+              << " has no captured render state\n";
+    return false;
+  }
+
+  const std::size_t target_index = options.render_target_index.value_or(0);
+  if (target_index >= render_state.color_target_payloads.size()) {
+    std::cerr << "draw " << *options.draw_index << " has "
+              << render_state.color_target_payloads.size()
+              << " captured color target slots; requested " << target_index
+              << "\n";
+    return false;
+  }
+
+  const RenderTargetPayloadRecord &payload =
+      render_state.color_target_payloads[target_index];
+  if (payload.payload_missing || payload.payload_bytes.empty()) {
+    std::cerr << "draw " << *options.draw_index << " color target "
+              << target_index << " payload is missing\n";
+    return false;
+  }
+  if (payload.payload_truncated) {
+    std::cerr << "draw " << *options.draw_index << " color target "
+              << target_index << " payload is truncated\n";
+    return false;
+  }
+
+  const uint32_t width = render_state.surface_pitch;
+  if (width == 0) {
+    std::cerr << "draw " << *options.draw_index
+              << " has zero surface_pitch; cannot infer target width\n";
+    return false;
+  }
+  const uint64_t required_bytes =
+      payload.payload_requested_byte_count != 0
+          ? payload.payload_requested_byte_count
+          : static_cast<uint64_t>(payload.payload_bytes.size());
+  const uint64_t row_bytes = static_cast<uint64_t>(width) * 4u;
+  if (row_bytes == 0 || required_bytes < row_bytes ||
+      required_bytes % row_bytes != 0) {
+    std::cerr << "draw " << *options.draw_index
+              << " color target payload size cannot be mapped as linear "
+                 "RGBA8: bytes="
+              << required_bytes << " width=" << width << "\n";
+    return false;
+  }
+  const uint32_t height = static_cast<uint32_t>(required_bytes / row_bytes);
+
+  const std::filesystem::path output =
+      options.render_target_output_path.empty()
+          ? capture.path.parent_path() /
+                ("draw-" + std::to_string(*options.draw_index) +
+                 "-rt" + std::to_string(target_index) + ".bmp")
+          : options.render_target_output_path;
+  if (!output.parent_path().empty()) {
+    std::error_code ec;
+    std::filesystem::create_directories(output.parent_path(), ec);
+    if (ec) {
+      std::cerr << "could not create render-target output directory: "
+                << ec.message() << "\n";
+      return false;
+    }
+  }
+
+  std::size_t nonzero_bytes = 0;
+  std::size_t rgb_nonzero_pixels = 0;
+  std::size_t alpha_nonzero_pixels = 0;
+  for (std::size_t i = 0; i < payload.payload_bytes.size(); ++i) {
+    if (payload.payload_bytes[i] != 0) {
+      ++nonzero_bytes;
+    }
+  }
+  for (std::size_t i = 0; i + 3 < payload.payload_bytes.size(); i += 4) {
+    if ((payload.payload_bytes[i] | payload.payload_bytes[i + 1] |
+         payload.payload_bytes[i + 2]) != 0) {
+      ++rgb_nonzero_pixels;
+    }
+    if (payload.payload_bytes[i + 3] != 0) {
+      ++alpha_nonzero_pixels;
+    }
+  }
+
+  std::string error;
+  if (!WriteRawLinearRgbaBmpPreview(output, payload.payload_bytes, width,
+                                    height, error)) {
+    std::cerr << "render-target BMP preview failed: " << error << "\n";
+    return false;
+  }
+
+  std::cout << "Render target dump draw=" << *options.draw_index
+            << " target=" << target_index
+            << " base=" << payload.base
+            << " size=" << width << "x" << height
+            << " payload=" << payload.payload_bytes.size() << "/"
+            << payload.payload_requested_byte_count
+            << (payload.payload_loaded_from_resource ? " sidecar" : "")
+            << " offset=" << payload.payload_offset_bytes
+            << " nonzero_bytes=" << nonzero_bytes
+            << " rgb_nonzero_pixels=" << rgb_nonzero_pixels
+            << " alpha_nonzero_pixels=" << alpha_nonzero_pixels
+            << " decode_mode=raw_linear_rgba8\n";
+  std::cout << "Render target BMP preview: "
+            << std::filesystem::absolute(output).string() << "\n";
+  return true;
+}
+
 void PrintShaderRecordProbes(const ReplayCapture &capture,
                              std::size_t max_count) {
   std::cout << "Shader record probes:\n";
@@ -4304,6 +4431,8 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       cli.dump_frontbuffer = true;
     } else if (arg == "--dump-texture") {
       cli.dump_texture = true;
+    } else if (arg == "--dump-render-target") {
+      cli.dump_render_target = true;
     } else if (arg == "--resource-summary") {
       cli.show_resource_summary = true;
     } else if (arg == "--shader-usage") {
@@ -4356,6 +4485,15 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       }
       cli.texture_slot = parsed;
       cli.dump_texture = true;
+    } else if (arg == "--render-target-index") {
+      const char *value = require_value("--render-target-index");
+      std::size_t parsed = 0;
+      if (!value || !ParseSizeArgument(value, parsed)) {
+        std::cerr << "--render-target-index expects an integer\n";
+        return 2;
+      }
+      cli.render_target_index = parsed;
+      cli.dump_render_target = true;
     } else if (arg == "--max-draws") {
       const char *value = require_value("--max-draws");
       if (!value || !ParseSizeArgument(value, cli.max_draws)) {
@@ -4411,6 +4549,13 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
       }
       cli.texture_output_path = value;
       cli.dump_texture = true;
+    } else if (arg == "--render-target-output") {
+      const char *value = require_value("--render-target-output");
+      if (!value) {
+        return 2;
+      }
+      cli.render_target_output_path = value;
+      cli.dump_render_target = true;
     } else if (arg == "--shader-override-root") {
       const char *value = require_value("--shader-override-root");
       if (!value) {
@@ -4554,6 +4699,12 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
     std::string texture_error;
     if (!DumpD3D12DecodedTexturePreview(capture, cli, texture_error)) {
       std::cerr << "texture preview failed: " << texture_error << "\n";
+      return 1;
+    }
+  }
+  if (cli.dump_render_target) {
+    std::cout << "\n";
+    if (!DumpRenderTargetPreview(capture, cli)) {
       return 1;
     }
   }
