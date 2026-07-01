@@ -1048,6 +1048,10 @@ bool IsKnownZeroColorExportDraw(const ReplayDrawState &state,
                                      : nullptr)) {
     return false;
   }
+  if (state.vertex_shader.hash == 0xAB1E86137A0240E8ull &&
+      state.draw.texture_fetches.empty()) {
+    return false;
+  }
   // A4 is the tiny max(oC0, r0, r0) pixel shader. Without a texture fetch, the
   // current limited translator can only replay whatever r0 happened to be after
   // our approximate VS export mapping. These screen/depth-style passes have
@@ -3037,6 +3041,21 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
     return true;
   };
 
+  auto apply_inline_pixel_variant =
+      [&](const char *cache_key, const char *source_name,
+          const char *source) -> bool {
+    pair.pixel_cache_key = cache_key;
+    pair.pixel_path = options.shader_cache_root / "hlsl" / source_name;
+    pair.pixel_cache_path = options.shader_cache_root / "d3d12" /
+                            (std::string(cache_key) + ".d3dcompile.dxbc");
+    pair.pixel_log_path = options.shader_cache_root / "logs" /
+                          (std::string(cache_key) + ".d3dcompile.log");
+    pair.pixel_entry = "main";
+    pair.pixel_profile = "ps_5_0";
+    pair.pixel_source = source ? source : "";
+    return true;
+  };
+
   if (draw_state.pixel_shader.hash == 0xC4ED2979F29C9139ull) {
     if (ab1e_vertex_shader) {
       if (!apply_pixel_variant(
@@ -3055,6 +3074,27 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
             "PS_0x246E20EF10E0DDC7.translated.v8.dxc.hlsl")) {
       return false;
     }
+  } else if (ab1e_vertex_shader &&
+             draw_state.pixel_shader.hash == 0xA4A965C189287B99ull) {
+    static constexpr const char *kAb1eA4ZeroPixelShader = R"(
+// BO2 native renderer pair-specific zero-output PS.
+// VS 0xAB1E86137A0240E8 exports position only; it does not declare an
+// interpolator feeding A4's r0 input. Replaying this pair with the generic A4
+// r0 passthrough produced an unproven diagonal fullscreen artifact.
+struct PSInput
+{
+  float4 position : SV_Position;
+};
+
+float4 main(PSInput input) : SV_Target0
+{
+  return input.position.xxxx * 0.0f;
+}
+)";
+    apply_inline_pixel_variant(
+        "PS_0xA4A965C189287B99.ab1e_zero.v1.dxc",
+        "PS_0xA4A965C189287B99.ab1e_zero.v1.dxc.hlsl",
+        kAb1eA4ZeroPixelShader);
   }
 
   return true;

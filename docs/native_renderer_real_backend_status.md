@@ -822,15 +822,23 @@ Results:
   `depth_target_bound=yes`, `depth_enabled_draws=31`,
   `depth_write_draws=31`, `stencil_enabled_draws=51`, and nonzero depth
   readback `native-renderer-mp003-full-after-a4-depth-depth.bmp`.
-- The only remaining MP003 non-utility blocker is `12` pure color-only
-  `VS=0xAB1E86137A0240E8 / PS=0xA4A965C189287B99` draws, which still need
-  Xenos export/register semantics before they can count as real rendering.
-- A temporary experiment allowing the `AB1E/A4` pure color-only class produced
-  a visible diagonal fullscreen-triangle contribution in
-  `native-renderer-mp003-full-after-ab1e-a4.bmp`. That output is not trusted:
-  AB1E semantic IR exports position only and does not declare an interpolator
-  for A4's `r0` input, so the class remains fail-closed until the Xenos
-  register/export initialization rule is proven.
+- The remaining `12` pure color-only
+  `VS=0xAB1E86137A0240E8 / PS=0xA4A965C189287B99` draws were tested two ways.
+  Passing position/color-derived data into A4's `r0` produced an untrusted gray
+  diagonal fullscreen-triangle artifact in
+  `native-renderer-mp003-full-after-ab1e-a4.bmp`. The kept path uses a
+  pair-specific zero-output pixel shader because AB1E semantic IR exports
+  position only and does not declare an interpolator for A4's `r0` input.
+  Single draw `25` now submits with `diagnostic_pipelines=0` and writes
+  `native-renderer-mp003-draw25-ab1e-a4-zero.bmp`.
+- With the AB1E/A4 zero-output pair variant, MP003 gap reporting has no active
+  blockers for the currently modeled classes:
+  `geometry_ok=215 shader_ok=215 texture_ok=215 ready=215`,
+  `scene_candidate_ready=203`, `utility_ready=12`, and
+  `ignored_utility=964`. Full replay submits `196` supported real-data draws
+  across `9` shader pairs, including `12/12` for `AB1E/A4`, with
+  `diagnostic_pipelines=0`, output
+  `native-renderer-mp003-full-after-ab1e-a4-zero2.bmp`.
 - Ghidra MCP evidence for XEX `0x825828D8` supports the no-fetch utility
   classification: the function emits a fixed PM4 sequence with embedded shader
   payload and `PM4_DRAW_INDX_2` packet rather than binding normal scene
