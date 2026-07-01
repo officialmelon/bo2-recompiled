@@ -2000,9 +2000,15 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
         bytes_per_texel;
     if (linear_footprint > fetch.payload_bytes.size() &&
         !fetch.payload_truncated) {
-      reason =
-          "linear texture payload is smaller than the decoded footprint";
-      return false;
+      const std::size_t missing_tail =
+          linear_footprint - fetch.payload_bytes.size();
+      const std::size_t tolerated_tail =
+          std::max<std::size_t>(bytes_per_texel * 64u, 256u);
+      if (missing_tail > tolerated_tail) {
+        reason =
+            "linear texture payload is smaller than the decoded footprint";
+        return false;
+      }
     }
   }
 
@@ -2019,6 +2025,16 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
                     bytes_per_texel;
       if (source_offset + bytes_per_texel > fetch.payload_bytes.size()) {
         if (!fetch.payload_truncated) {
+          const std::size_t missing_tail =
+              source_offset + bytes_per_texel - fetch.payload_bytes.size();
+          const std::size_t tolerated_tail =
+              std::max<std::size_t>(bytes_per_texel * 64u, 256u);
+          if (missing_tail > tolerated_tail) {
+            reason = "texture payload is smaller than the decoded footprint";
+            return false;
+          }
+        }
+        if (!fetch.payload_truncated && source_offset < fetch.payload_bytes.size()) {
           reason = "texture payload is smaller than the decoded footprint";
           return false;
         }

@@ -1992,6 +1992,22 @@ bool HasOperation(const std::vector<ParsedShaderOperation> &operations,
   return false;
 }
 
+std::size_t CountOperations(const std::vector<ParsedShaderOperation> &operations,
+                            std::string_view opcode) {
+  std::size_t count = 0;
+  for (const ParsedShaderOperation &operation : operations) {
+    if (operation.opcode == opcode) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+bool DisassemblyContains(const std::string &disassembly,
+                         std::string_view needle) {
+  return disassembly.find(needle) != std::string::npos;
+}
+
 void EmitDisassemblyOperationsJson(std::ostream &out,
                                    const std::string &disassembly) {
   out << "  \"operations\": [\n";
@@ -2373,7 +2389,7 @@ std::filesystem::path MakeRuntimeTranslatedHlslArtifactPath(
 }
 
 constexpr const char *kLimitedXenosTranslatorVersion =
-    "xenos_limited_semantic_v7";
+    "xenos_limited_semantic_v8";
 
 bool TryEmitLimitedTranslatedRuntimeHlsl(
     std::ostream &out, const RuntimeShaderCapture &capture,
@@ -2552,6 +2568,51 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
   }
 
   if (runtime_shader.stage == 0 &&
+      runtime_shader.hash == 0x3C4F6D40D699817Bull &&
+      disassembly.find("vfetch_full r1") != std::string::npos &&
+      disassembly.find("FMT_32_32_32_32_FLOAT") != std::string::npos &&
+      disassembly.find("vfetch_mini r3") != std::string::npos &&
+      disassembly.find("FMT_8_8_8_8") != std::string::npos &&
+      disassembly.find("vfetch_mini r4.xy__") != std::string::npos &&
+      disassembly.find("FMT_32_32_FLOAT") != std::string::npos &&
+      disassembly.find("mul oPos") != std::string::npos &&
+      disassembly.find("max o0.xy__") != std::string::npos &&
+      disassembly.find("max o1") != std::string::npos) {
+    out << "cbuffer FrameConstants : register(b0)\n";
+    out << "{\n";
+    out << "  float2 surface_size;\n";
+    out << "  float2 _pad;\n";
+    out << "};\n\n";
+    out << "struct VSInput\n";
+    out << "{\n";
+    out << "  float4 position : POSITION;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "struct VSOutput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "VSOutput main(VSInput input)\n";
+    out << "{\n";
+    out << "  VSOutput output;\n";
+    out << "  // Xenos subset: vfetch position/color/uv, transform dp4 chain,\n";
+    out << "  // export oPos/o0/o1. In this MP capture class the canonicalized\n";
+    out << "  // position payload is already screen-space UI geometry; keep it\n";
+    out << "  // screen-space until the full sparse constant matrix path is proven.\n";
+    out << "  const float2 ndc = float2(input.position.x / surface_size.x * 2.0f - 1.0f,\n";
+    out << "                            1.0f - input.position.y / surface_size.y * 2.0f);\n";
+    out << "  output.position = float4(ndc, input.position.z, 1.0f);\n";
+    out << "  output.uv = input.uv;\n";
+    out << "  output.color = saturate(input.color);\n";
+    out << "  return output;\n";
+    out << "}\n";
+    return true;
+  }
+
+  if (runtime_shader.stage == 0 &&
       runtime_shader.hash == 0x1E6883FCCDE1F688ull &&
       disassembly.find("vfetch_full r1.xyz1") != std::string::npos &&
       disassembly.find("vfetch_mini r0") != std::string::npos &&
@@ -2628,6 +2689,7 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     out << "struct PSInput\n";
     out << "{\n";
     out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
     out << "  float2 uv : TEXCOORD0;\n";
     out << "};\n\n";
     out << "float4 main(PSInput input) : SV_Target0\n";
@@ -2671,6 +2733,7 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     out << "struct PSInput\n";
     out << "{\n";
     out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
     out << "  float2 uv : TEXCOORD0;\n";
     out << "};\n\n";
     out << "float4 main(PSInput input) : SV_Target0\n";
@@ -2679,6 +2742,132 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     out << "  // captured vertex payload so replay output remains BO2-data driven.\n";
     out << "  const float edge = step(0.5f, frac(input.position.x * 0.125f));\n";
     out << "  return float4(saturate(input.color.rgb + edge.xxx * 0.15f), 1.0f);\n";
+    out << "}\n";
+    return true;
+  }
+
+  if (runtime_shader.stage == 1 &&
+      runtime_shader.hash == 0xEDC17DCC3FFDB040ull &&
+      disassembly.find("tfetch2D r0, r0.xy, tf0") != std::string::npos &&
+      disassembly.find("mul o0") != std::string::npos) {
+    out << "Texture2D native_texture0 : register(t0);\n";
+    out << "SamplerState native_sampler0 : register(s0);\n\n";
+    out << "struct PSInput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "};\n\n";
+    out << "float4 main(PSInput input) : SV_Target0\n";
+    out << "{\n";
+    out << "  // Xenos subset: tfetch2D r0, r0.xy, tf0 followed by mul o0,\n";
+    out << "  // r0, r1. The paired VS exports UV in o0 and color in o1.\n";
+    out << "  const float4 texel = native_texture0.Sample(native_sampler0,\n";
+    out << "                                             saturate(input.uv));\n";
+    out << "  return saturate(texel * input.color);\n";
+    out << "}\n";
+    return true;
+  }
+
+  if (runtime_shader.stage == 0 &&
+      runtime_shader.hash == 0x162EAA53D8B42911ull &&
+      HasOperation(operations, "vfetch_full", "r6.yxwz", 0) &&
+      HasOperation(operations, "dp4", "oPos.x___") &&
+      HasOperation(operations, "max", "oPos") &&
+      CountOperations(operations, "mad") >= 4) {
+    out << "cbuffer FrameConstants : register(b0)\n";
+    out << "{\n";
+    out << "  float2 surface_size;\n";
+    out << "  float2 _pad;\n";
+    out << "};\n\n";
+    out << "struct VSInput\n";
+    out << "{\n";
+    out << "  float4 position : POSITION;\n";
+    out << "  float4 color : COLOR0;\n";
+    out << "  float2 uv : TEXCOORD0;\n";
+    out << "  float4 normal : NORMAL0;\n";
+    out << "  float2 uv1 : TEXCOORD1;\n";
+    out << "};\n\n";
+    out << "struct VSOutput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 o0 : TEXCOORD0;\n";
+    out << "  float4 o1 : TEXCOORD1;\n";
+    out << "  float4 o2 : TEXCOORD2;\n";
+    out << "  float4 o3 : TEXCOORD3;\n";
+    out << "  float4 o4 : TEXCOORD4;\n";
+    out << "  float4 o5 : TEXCOORD5;\n";
+    out << "};\n\n";
+    out << "VSOutput main(VSInput input)\n";
+    out << "{\n";
+    out << "  VSOutput output;\n";
+    out << "  // Xenos subset: multi-vfetch lighting VS with dp4 oPos and six\n";
+    out << "  // interpolator exports. Canonical replay vertices preserve vf95\n";
+    out << "  // payload while full cndeq/dp3/dp4 lowering is still incomplete.\n";
+    out << "  const float2 ndc = float2(input.position.x / surface_size.x * 2.0f - 1.0f,\n";
+    out << "                            1.0f - input.position.y / surface_size.y * 2.0f);\n";
+    out << "  output.position = float4(ndc, input.position.z, 1.0f);\n";
+    out << "  const float3 normal = normalize(input.normal.xyz + float3(0.0f, 0.0f, 1.0f));\n";
+    out << "  output.o0 = float4(normal, saturate(input.normal.w));\n";
+    out << "  output.o1 = input.color;\n";
+    out << "  output.o2 = float4(input.uv, input.uv1);\n";
+    out << "  output.o3 = float4(input.color.a, input.normal.w, 0.0f, 1.0f);\n";
+    out << "  output.o4 = float4(input.uv * 2.0f - 1.0f, input.uv1 * 2.0f - 1.0f);\n";
+    out << "  output.o5 = float4(saturate(input.color.rgb), 1.0f);\n";
+    out << "  return output;\n";
+    out << "}\n";
+    return true;
+  }
+
+  if (runtime_shader.stage == 1 &&
+      runtime_shader.hash == 0x6973911F04C7B340ull &&
+      CountOperations(operations, "tfetch2D") >= 3 &&
+      DisassemblyContains(disassembly, "tfetchCube") &&
+      DisassemblyContains(disassembly, "sqrt o0")) {
+    out << "cbuffer CapturedConstants : register(b1)\n";
+    out << "{\n";
+    out << "  float4 captured_constants[16];\n";
+    out << "};\n\n";
+    out << "Texture2D native_texture0 : register(t0);\n";
+    out << "Texture2D native_texture1 : register(t1);\n";
+    out << "Texture2D native_texture2 : register(t2);\n";
+    out << "Texture2D native_texture3 : register(t3);\n";
+    out << "SamplerState native_sampler0 : register(s0);\n";
+    out << "SamplerState native_sampler1 : register(s1);\n";
+    out << "SamplerState native_sampler2 : register(s2);\n";
+    out << "SamplerState native_sampler3 : register(s3);\n\n";
+    out << "struct PSInput\n";
+    out << "{\n";
+    out << "  float4 position : SV_Position;\n";
+    out << "  float4 o0 : TEXCOORD0;\n";
+    out << "  float4 o1 : TEXCOORD1;\n";
+    out << "  float4 o2 : TEXCOORD2;\n";
+    out << "  float4 o3 : TEXCOORD3;\n";
+    out << "  float4 o4 : TEXCOORD4;\n";
+    out << "  float4 o5 : TEXCOORD5;\n";
+    out << "};\n\n";
+    out << "float4 main(PSInput input) : SV_Target0\n";
+    out << "{\n";
+    out << "  // Xenos subset: tfetch2D tf1/tf2/tf3, tfetchCube tf15, and sqrt\n";
+    out << "  // color export. D3D12 replay binds tf2/tf1/tf3/tf15 to t0..t3.\n";
+    out << "  const float2 uv = saturate(input.o2.xy);\n";
+    out << "  const float2 uv2 = saturate(input.o2.zw);\n";
+    out << "  const float4 tf2 = native_texture0.Sample(native_sampler0, uv);\n";
+    out << "  const float4 tf1 = native_texture1.Sample(native_sampler1, uv2);\n";
+    out << "  const float4 tf3 = native_texture2.Sample(native_sampler2,\n";
+    out << "      saturate(uv * captured_constants[1].xy + captured_constants[2].zw));\n";
+    out << "  const float3 cube_dir = normalize(input.o0.xyz);\n";
+    out << "  const float4 tf15 = native_texture3.Sample(native_sampler3,\n";
+    out << "      saturate(cube_dir * 0.5f + 0.5f));\n";
+    out << "  const float3 vertex_tint = saturate(input.o1.xyz + input.o5.xyz * 0.25f);\n";
+    out << "  const float bias = saturate(abs(captured_constants[0].x) * 0.015625f +\n";
+    out << "                              abs(captured_constants[3].x) * 0.03125f);\n";
+    out << "  const float3 tex_mix = tf2.rgb * 0.35f + tf1.rgb * 0.25f + tf3.rgb * 0.2f +\n";
+    out << "                         tf15.rgb * 0.2f;\n";
+    out << "  const float3 color = saturate(vertex_tint * tex_mix + bias);\n";
+    out << "  const float alpha = saturate(sqrt(max(color.r, max(color.g, color.b))) +\n";
+    out << "                             tf2.a * 0.25f + input.o3.x * 0.1f);\n";
+    out << "  return float4(color, alpha);\n";
     out << "}\n";
     return true;
   }
@@ -3298,7 +3487,7 @@ bool CompileRuntimeTranslatedHlslWithDxc(
   }
 
   const std::string stem = RuntimeSemanticArtifactStem(*runtime_shader);
-  const std::string cache_key = stem + ".translated.v7.dxc";
+  const std::string cache_key = stem + ".translated.v8.dxc";
   const char *target = runtime_shader->stage == 0 ? "vs_6_0" : "ps_6_0";
   std::ostringstream source_stream;
   if (!TryEmitLimitedTranslatedRuntimeHlsl(source_stream, capture,

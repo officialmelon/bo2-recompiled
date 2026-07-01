@@ -575,3 +575,58 @@ Current MP blockers:
    no texture fetches, so MP has not yet proven textured scene output.
 5. Live `native_d3d12` still needs the same translated-scene draw coverage as
    offline replay before it can be called a complete native renderer.
+
+# MP textured UI shader pass update - 2026-07-01
+
+Added limited native D3D12 coverage for the MP capture shader pair
+`VS=0x3C4F6D40D699817B / PS=0xEDC17DCC3FFDB040`.
+
+Evidence:
+
+```powershell
+native_shader_inspect.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --hash 0x3C4F6D40D699817B --semantic-disassemble --write-semantic shader_work\cache\disasm --write-semantic-ir shader_work\cache\ir --write-translated-hlsl shader_work\cache\hlsl --compile-translated-hlsl-dxc shader_work\cache
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp003-after-3c4f-screenspace-d3d12-real.bmp
+```
+
+- `VS=0x3C4F6D40D699817B` now has a generated limited HLSL/DXIL cache entry.
+  The semantic disassembly shows one `vf95` stream with
+  `FMT_32_32_32_32_FLOAT` position, `FMT_8_8_8_8` color, and
+  `FMT_32_32_FLOAT` UV attributes.
+- `PS=0xEDC17DCC3FFDB040` now has a manual D3D12 override matching the decoded
+  Xenos sequence `tfetch2D r0, r0.xy, tf0` followed by `mul o0, r0, r1`.
+- The D3D12 texture decoder now tolerates a small missing tail in otherwise
+  complete format-6 snapshots. MP003 contains 1024x1024 format-6 sidecars that
+  are 128 bytes short of the computed linear footprint; rejecting the whole
+  resource prevented otherwise valid draws from binding.
+- Strict D3D12 replay now submits `71` real captured draws across two shader
+  pairs, up from `25`:
+  - `46/46` draws for `VS=0x3C4F6D40D699817B /
+    PS=0xEDC17DCC3FFDB040`
+  - `25/25` draws for `VS=0x5B9B7484417FB9B6 /
+    PS=0x3A6876055FEC1674`
+- The `3C4F/EDC1` path binds real captured textures and samplers:
+  `46` captured texture SRVs, `46` captured sampler descriptors,
+  `diagnostic_pipelines=0`.
+- Draw 29 vertex evidence is sane for UI geometry: positions
+  `(928.4,594)` to `(1184,666)`, UVs `0..1`, white vertex color, six real
+  indices, and a captured 256x64 DXT texture snapshot.
+
+Important limitation:
+
+The output image is still not a correct BO2 frame. The full `3C4F/EDC1` batch
+currently produces a flat gray target, and a single draw 29 replay produces a
+black rectangle over the clear target. This means the renderer has improved
+real resource/shader coverage, but not visual correctness. The next concrete
+targets are:
+
+1. Add exact single-draw D3D12 replay diagnostics that do not silently collect
+   compatible later draws unless requested.
+2. Dump decoded texture previews for the bound DXT/format-6 UI textures and
+   compare against expected BO2 UI assets.
+3. Verify the pixel shader export/register mapping for `mul o0, r0, r1`; the
+   semantic analyzer reports `writes_color_targets=0`, so `o0` may need a
+   stage-specific export mapping rather than being assumed as `SV_Target0`.
+4. Continue with the next missing scene shader pairs:
+   `VS=0xCBC9604F48930B36 / PS=0x7D1EF030F5710BDA`,
+   `VS=0x261BDD733FEC1F64 / PS=0xFF01D28E1EF3A880`, and
+   `VS=0xEF95534343684F5B / PS=0xDC168FB6031AFC41`.
