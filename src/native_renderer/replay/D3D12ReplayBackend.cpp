@@ -1,5 +1,7 @@
 #include "NativeRenderReplay.h"
 
+#include "D3D12LiveReplaySubmit.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -38,6 +40,11 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 constexpr std::size_t kMaxRealReplayTextureSlots = 4;
+constexpr uint32_t kCapturedFloat4ConstantCount = 512;
+constexpr uint32_t kCapturedConstantDwordCount =
+    kCapturedFloat4ConstantCount * 4;
+constexpr uint32_t kCapturedConstantBufferBytes =
+    kCapturedConstantDwordCount * sizeof(uint32_t);
 constexpr uint32_t kInputLayoutPosition = 1u << 0;
 constexpr uint32_t kInputLayoutColor0 = 1u << 1;
 constexpr uint32_t kInputLayoutTexcoord0 = 1u << 2;
@@ -72,6 +79,17 @@ bool CheckHr(HRESULT hr, const char *what, std::string &error) {
   }
   error = HrError(what, hr);
   return false;
+}
+
+void AppendDeviceRemovedReason(ID3D12Device *device, std::string &error) {
+  if (!device) {
+    return;
+  }
+  const HRESULT reason = device->GetDeviceRemovedReason();
+  if (reason == S_OK) {
+    return;
+  }
+  error += " device_removed_reason=0x" + FormatHex32(reason).substr(2);
 }
 
 void AppendD3D12InfoQueueMessages(ID3D12Device *device, std::string &error) {
@@ -230,6 +248,19 @@ uint32_t StencilRefFromRenderState(const RenderStateRecord *state) {
     return 0;
   }
   return state->rb_stencilrefmask & 0xFF;
+}
+
+bool RenderStateUsesDepthTarget(const RenderStateRecord *state) {
+  if (!state || !state->present) {
+    return false;
+  }
+  return state->depth_test_enable || state->depth_write_enable ||
+         state->stencil_enable;
+}
+
+DXGI_FORMAT DsvFormatForRenderState(const RenderStateRecord *state) {
+  return RenderStateUsesDepthTarget(state) ? kReplayDepthStencilFormat
+                                           : DXGI_FORMAT_UNKNOWN;
 }
 
 D3D12_BLEND D3D12BlendFromXenos(uint32_t factor, bool alpha) {
@@ -484,51 +515,118 @@ float FloatFromBits(uint32_t bits) {
   return value;
 }
 
-float DecodePacked8(uint32_t raw, const VertexAttributeRecord &attribute) {
-  if (attribute.is_signed) {
-    const int32_t value =
-        (raw & 0x80) ? static_cast<int32_t>(raw | 0xFFFFFF00u)
-                     : static_cast<int32_t>(raw);
-    return attribute.is_integer ? static_cast<float>(value)
-                                : static_cast<float>(value) / 127.0f;
+float HalfToFloat(uint16_t value) {
+  const uint32_t sign = (value & 0x8000u) << 16;
+  const uint32_t exponent = (value >> 10) & 0x1Fu;
+  const uint32_t mantissa = value & 0x3FFu;
+  uint32_t out = 0;
+  if (exponent == 0) {
+    if (mantissa == 0) {
+      out = sign;
+    } else {
+      uint32_t mant = mantissa;
+      uint32_t exp = 127 - 15 + 1;
+      while ((mant & 0x0400u) == 0) {
+        mant <<= 1;
+        --exp;
+      }
+      mant &= 0x03FFu;
+      out = sign | (exp << 23) | (mant << 13);
+    }
+  } else if (exponent == 0x1Fu) {
+    out = sign | 0x7F800000u | (mantissa << 13);
+  } else {
+    out = sign | ((exponent + (127 - 15)) << 23) | (mantissa << 13);
   }
-  return attribute.is_integer ? static_cast<float>(raw)
-                              : static_cast<float>(raw) / 255.0f;
+  return FloatFromBits(out);
 }
+
+int32_t SignExtend(uint32_t value, uint32_t bit_count) {
+  const uint32_t shift = 32 - bit_count;
+  return static_cast<int32_t>(value << shift) >> shift;
+}
+
+float ConvertPackedComponent(uint32_t raw, uint32_t width,
+                             const VertexAttributeRecord &attribute) {
+  if (attribute.is_signed) {
+    const int32_t signed_value = SignExtend(raw, width);
+    if (attribute.is_integer) {
+      return static_cast<float>(signed_value);
+    }
+    const float scale =
+        attribute.signed_rf_mode == 1
+            ? (1.0f / (float((uint64_t{1} << (width - 1)) - 1) + 0.5f))
+            : (1.0f / float((uint64_t{1} << (width - 1)) - 1));
+    return static_cast<float>(signed_value) * scale;
+  }
+  if (attribute.is_integer) {
+    return static_cast<float>(raw);
+  }
+  return static_cast<float>(raw) / float((uint64_t{1} << width) - 1);
+}
+
+uint32_t VertexFormatComponentCount(uint32_t format) {
+  switch (format) {
+  case 33:
+  case 36:
+    return 1;
+  case 25:
+  case 31:
+  case 34:
+  case 37:
+    return 2;
+  case 16:
+  case 17:
+  case 57:
+    return 3;
+  case 6:
+  case 7:
+  case 26:
+  case 32:
+  case 35:
+  case 38:
+    return 4;
+  default:
+    return 0;
+  }
+}
+
+uint32_t VertexFormatByteSize(uint32_t format) {
+  switch (format) {
+  case 6:
+  case 7:
+  case 16:
+  case 17:
+  case 25:
+  case 31:
+  case 33:
+  case 36:
+    return 4;
+  case 26:
+  case 32:
+  case 34:
+  case 37:
+    return 8;
+  case 57:
+    return 12;
+  case 35:
+  case 38:
+    return 16;
+  default:
+    return 0;
+  }
+}
+
 
 bool DecodeFloatAttribute(const VertexFetchRecord &fetch,
                           const VertexAttributeRecord &attribute,
                           uint32_t vertex_index,
                           std::vector<float> &components) {
   components.clear();
-  uint32_t component_count = 0;
-  uint32_t byte_size = 0;
-  switch (attribute.data_format) {
-  case 6:
-    component_count = 4;
-    byte_size = 4;
-    break;
-  case 26:
-    component_count = 4;
-    byte_size = 8;
-    break;
-  case 36:
-    component_count = 1;
-    byte_size = 4;
-    break;
-  case 37:
-    component_count = 2;
-    byte_size = 8;
-    break;
-  case 57:
-    component_count = 3;
-    byte_size = 12;
-    break;
-  case 38:
-    component_count = 4;
-    byte_size = 16;
-    break;
-  default:
+  const uint32_t component_count =
+      VertexFormatComponentCount(attribute.data_format);
+  const uint32_t byte_size = VertexFormatByteSize(attribute.data_format);
+  if (component_count == 0 || byte_size == 0) {
     return false;
   }
 
@@ -539,35 +637,100 @@ bool DecodeFloatAttribute(const VertexFetchRecord &fetch,
     return false;
   }
 
-  if (attribute.data_format == 6) {
-    const uint32_t word =
-        GpuSwap32(LoadLittleEndian32(fetch.payload_bytes, base), fetch.endian);
+  auto load_word = [&](uint32_t word_index) {
+    return GpuSwap32(LoadLittleEndian32(fetch.payload_bytes,
+                                        base + word_index * 4),
+                     fetch.endian);
+  };
+
+  switch (attribute.data_format) {
+  case 6: {
+    const uint32_t word = load_word(0);
     for (uint32_t component = 0; component < 4; ++component) {
       components.push_back(
-          DecodePacked8((word >> (component * 8)) & 0xFF, attribute));
+          ConvertPackedComponent((word >> (component * 8)) & 0xFF, 8,
+                                 attribute));
     }
     return true;
   }
-
-  if (attribute.data_format == 26) {
+  case 7: {
+    const uint32_t word = load_word(0);
+    components.push_back(ConvertPackedComponent(word & 0x3FF, 10, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 10) & 0x3FF, 10, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 20) & 0x3FF, 10, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 30) & 0x003, 2, attribute));
+    return true;
+  }
+  case 16: {
+    const uint32_t word = load_word(0);
+    components.push_back(ConvertPackedComponent(word & 0x7FF, 11, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 11) & 0x7FF, 11, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 22) & 0x3FF, 10, attribute));
+    return true;
+  }
+  case 17: {
+    const uint32_t word = load_word(0);
+    components.push_back(ConvertPackedComponent(word & 0x3FF, 10, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 10) & 0x7FF, 11, attribute));
+    components.push_back(
+        ConvertPackedComponent((word >> 21) & 0x7FF, 11, attribute));
+    return true;
+  }
+  case 25:
+  case 26: {
     for (uint32_t component = 0; component < component_count; ++component) {
-      const uint16_t value = GpuSwap16(
-          LoadLittleEndian16(fetch.payload_bytes, base + component * 2),
-          fetch.endian);
-      components.push_back(attribute.is_integer
-                               ? static_cast<float>(value)
-                               : static_cast<float>(value) / 65535.0f);
+      const uint32_t word = load_word(component / 2);
+      const uint32_t raw = (word >> ((component & 1) * 16)) & 0xFFFF;
+      components.push_back(ConvertPackedComponent(raw, 16, attribute));
     }
     return true;
   }
-
-  for (uint32_t component = 0; component < component_count; ++component) {
-    const uint32_t word = GpuSwap32(
-        LoadLittleEndian32(fetch.payload_bytes, base + component * 4),
-        fetch.endian);
-    components.push_back(FloatFromBits(word));
+  case 31:
+  case 32: {
+    for (uint32_t component = 0; component < component_count; ++component) {
+      const uint32_t word = load_word(component / 2);
+      const uint32_t raw = (word >> ((component & 1) * 16)) & 0xFFFF;
+      components.push_back(HalfToFloat(static_cast<uint16_t>(raw)));
+    }
+    return true;
   }
-  return true;
+  case 33:
+  case 34:
+  case 35: {
+    for (uint32_t component = 0; component < component_count; ++component) {
+      const uint32_t word = load_word(component);
+      if (attribute.is_signed) {
+        const int32_t value = static_cast<int32_t>(word);
+        components.push_back(attribute.is_integer
+                                 ? static_cast<float>(value)
+                                 : static_cast<float>(value) *
+                                       (1.0f / 2147483647.0f));
+      } else {
+        components.push_back(attribute.is_integer
+                                 ? static_cast<float>(word)
+                                 : static_cast<float>(word) *
+                                       (1.0f / 4294967295.0f));
+      }
+    }
+    return true;
+  }
+  case 36:
+  case 37:
+  case 38:
+  case 57:
+    for (uint32_t component = 0; component < component_count; ++component) {
+      components.push_back(FloatFromBits(load_word(component)));
+    }
+    return true;
+  default:
+    return false;
+  }
 }
 
 std::vector<uint32_t> DecodeReplayIndices(const PM4DrawRecord &draw) {
@@ -622,13 +785,14 @@ struct PreparedRealDraw {
 };
 
 struct PreparedCapturedConstants {
-  std::array<uint32_t, 32> dwords{};
+  std::array<uint32_t, kCapturedConstantDwordCount> dwords{};
   uint32_t count = 0;
 };
 
 struct UploadedRealDraw {
   PreparedRealDraw prepared;
   PreparedCapturedConstants constants;
+  ComPtr<ID3D12Resource> constant_buffer;
   ComPtr<ID3D12Resource> vertex_buffer;
   ComPtr<ID3D12Resource> index_buffer;
   std::array<ComPtr<ID3D12Resource>, kMaxRealReplayTextureSlots> textures;
@@ -671,6 +835,9 @@ struct NativeShaderOverridePair {
   std::filesystem::path vertex_log_path;
   std::filesystem::path pixel_log_path;
 };
+
+void AssignTexcoordComponents(RealReplayVertex &vertex,
+                              uint32_t &input_layout_mask, float u, float v);
 
 uint64_t CapturedInputLayoutSignature(const VertexFetchRecord &fetch,
                                       uint32_t input_layout_mask) {
@@ -761,17 +928,34 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
         vertex.color[2] = components[2];
         vertex.color[3] = components[3];
         input_layout_mask |= kInputLayoutColor0;
-      } else if (attribute.data_format == 37 && components.size() >= 2) {
-        if ((input_layout_mask & kInputLayoutTexcoord0) == 0) {
-          vertex.uv[0] = components[0];
-          vertex.uv[1] = components[1];
-          input_layout_mask |= kInputLayoutTexcoord0;
+      } else if (attribute.data_format == 7 && components.size() >= 4) {
+        if ((input_layout_mask & kInputLayoutColor0) == 0) {
+          vertex.color[0] = components[0];
+          vertex.color[1] = components[1];
+          vertex.color[2] = components[2];
+          vertex.color[3] = components[3];
+          input_layout_mask |= kInputLayoutColor0;
         } else {
-          vertex.uv1[0] = components[0];
-          vertex.uv1[1] = components[1];
-          input_layout_mask |= kInputLayoutTexcoord1;
+          AssignTexcoordComponents(vertex, input_layout_mask, components[0],
+                                   components[1]);
         }
-      } else if (attribute.data_format == 26 && components.size() >= 3) {
+      } else if ((attribute.data_format == 25 || attribute.data_format == 31 ||
+                  attribute.data_format == 37) &&
+                 components.size() >= 2) {
+        if ((attribute.data_format == 37 && fetch.attributes.size() == 1) &&
+            !vertex_has_position) {
+          vertex_has_position = true;
+          input_layout_mask |= kInputLayoutPosition;
+          vertex.position[0] = components[0];
+          vertex.position[1] = components[1];
+          vertex.position[2] = 0.0f;
+          vertex.position[3] = 1.0f;
+        } else {
+          AssignTexcoordComponents(vertex, input_layout_mask, components[0],
+                                   components[1]);
+        }
+      } else if (attribute.data_format == 26 && components.size() >= 3 &&
+                 vertex_has_position) {
         vertex.normal[0] = components[0];
         vertex.normal[1] = components[1];
         vertex.normal[2] = components[2];
@@ -784,8 +968,6 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
   if ((input_layout_mask & kInputLayoutPosition) == 0) {
     return false;
   }
-  input_layout_mask |=
-      kInputLayoutPosition | kInputLayoutColor0 | kInputLayoutTexcoord0;
   input_layout_signature =
       CapturedInputLayoutSignature(fetch, input_layout_mask);
   return true;
@@ -841,8 +1023,56 @@ bool SupportsVertexlessDraw(const ReplayDrawState &state) {
       state.pixel_shader.hash != 0xA4A965C189287B99ull) {
     return false;
   }
-  return TopologyForPrimitive(draw.primitive_type) ==
-         D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+  // The current generated HLSL for this pair initializes r0 to zero and the
+  // pixel shader exports r0, so submitting it produces black placeholder output.
+  // Keep the path fail-closed until Xenos r0/register initialization semantics
+  // are decoded instead of counting black output as scene rendering.
+  return false;
+}
+
+bool IsKnownZeroColorExportDraw(const ReplayDrawState &state,
+                                const std::vector<RealReplayVertex> &vertices,
+                                uint32_t input_layout_mask) {
+  (void)input_layout_mask;
+  if (state.pixel_shader.hash != 0xA4A965C189287B99ull ||
+      !state.draw.texture_fetches.empty() || vertices.empty()) {
+    return false;
+  }
+  // A4 is the tiny max(oC0, r0, r0) pixel shader. Without a texture fetch, the
+  // current limited translator can only replay whatever r0 happened to be after
+  // our approximate VS export mapping. These screen/depth-style passes have
+  // repeatedly produced full-screen placeholder triangles, so keep them out of
+  // the "real scene" path until Xenos export/register semantics are modeled.
+  return true;
+}
+
+uint32_t EffectiveInputLayoutMask(const ReplayDrawState &state,
+                                  uint32_t decoded_mask) {
+  if (SupportsVertexlessDraw(state)) {
+    return 0;
+  }
+  constexpr uint32_t kBaseInputLayout =
+      kInputLayoutPosition | kInputLayoutColor0 | kInputLayoutTexcoord0;
+  constexpr uint32_t kExtendedInputLayout =
+      kInputLayoutNormal0 | kInputLayoutTexcoord1;
+  if (state.vertex_shader.hash == 0x162EAA53D8B42911ull) {
+    return (decoded_mask & (kBaseInputLayout | kExtendedInputLayout)) |
+           kBaseInputLayout | kExtendedInputLayout;
+  }
+  return (decoded_mask & kBaseInputLayout) | kBaseInputLayout;
+}
+
+void AssignTexcoordComponents(RealReplayVertex &vertex,
+                              uint32_t &input_layout_mask, float u, float v) {
+  if ((input_layout_mask & kInputLayoutTexcoord0) == 0) {
+    vertex.uv[0] = u;
+    vertex.uv[1] = v;
+    input_layout_mask |= kInputLayoutTexcoord0;
+  } else {
+    vertex.uv1[0] = u;
+    vertex.uv1[1] = v;
+    input_layout_mask |= kInputLayoutTexcoord1;
+  }
 }
 
 bool IsNoSideEffectNoFetchDraw(const ReplayDrawState &state) {
@@ -864,6 +1094,46 @@ bool IsNoSideEffectNoFetchDraw(const ReplayDrawState &state) {
   const bool depth_write_disabled = !render_state.depth_write_enable;
   const bool stencil_disabled = !render_state.stencil_enable;
   return color_write_disabled && depth_write_disabled && stencil_disabled;
+}
+
+bool IsLikelyFullscreenUtilityPass(const ReplayDrawState &state,
+                                   const PreparedRealDraw &prepared) {
+  if (prepared.vertices.empty() || prepared.vertexless) {
+    return false;
+  }
+
+  float min_x = prepared.vertices.front().position[0];
+  float max_x = min_x;
+  float min_y = prepared.vertices.front().position[1];
+  float max_y = min_y;
+  for (const RealReplayVertex &vertex : prepared.vertices) {
+    min_x = std::min(min_x, vertex.position[0]);
+    max_x = std::max(max_x, vertex.position[0]);
+    min_y = std::min(min_y, vertex.position[1]);
+    max_y = std::max(max_y, vertex.position[1]);
+  }
+
+  const RenderStateRecord *render_state =
+      state.draw.render_state.present ? &state.draw.render_state : nullptr;
+  const float target_width =
+      render_state && render_state->surface_pitch != 0
+          ? static_cast<float>(render_state->surface_pitch)
+          : 1280.0f;
+  const float target_height = 720.0f;
+  const float width = max_x - min_x;
+  const float height = max_y - min_y;
+  const bool covers_target = min_x <= 1.0f && min_y <= 1.0f &&
+                             width >= target_width * 0.95f &&
+                             height >= target_height * 0.95f;
+  const bool depth_disabled =
+      !render_state ||
+      (!render_state->depth_test_enable && !render_state->depth_write_enable &&
+       !render_state->stencil_enable);
+  const bool known_postprocess_shader =
+      state.pixel_shader.hash == 0x246E20EF10E0DDC7ull ||
+      state.pixel_shader.hash == 0xC4ED2979F29C9139ull ||
+      state.pixel_shader.hash == 0xA4A965C189287B99ull;
+  return covers_target && depth_disabled && known_postprocess_shader;
 }
 
 bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
@@ -914,6 +1184,10 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
     if (!BuildCanonicalVertices(fetch, candidate.vertices,
                                 candidate.input_layout_mask,
                                 candidate.input_layout_signature)) {
+      continue;
+    }
+    if (IsKnownZeroColorExportDraw(state, candidate.vertices,
+                                   candidate.input_layout_mask)) {
       continue;
     }
 
@@ -979,6 +1253,14 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
       return "no captured vertex/fetch state, but render state has no modeled "
              "color/depth/stencil side effects";
     }
+    if (state.vertex_shader.hash == 0xB6C9863F710683ECull &&
+        state.pixel_shader.hash == 0xA4A965C189287B99ull &&
+        TopologyForPrimitive(draw.primitive_type) ==
+            D3D_PRIMITIVE_TOPOLOGY_POINTLIST) {
+      return "B6C986/A4A965 no-fetch point shader currently exports zeroed "
+             "r0; needs Xenos register initialization semantics before it "
+             "counts as real scene rendering";
+    }
     if (state.vertex_shader.hash == 0xDDED7E538422AE73ull &&
         TopologyForPrimitive(draw.primitive_type) ==
             D3D_PRIMITIVE_TOPOLOGY_POINTLIST) {
@@ -1005,7 +1287,18 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
     }
     const uint32_t max_index =
         *std::max_element(decoded_indices.begin(), decoded_indices.end());
+    bool saw_truncated_vertex_payload = false;
+    uint32_t best_available_vertices = 0;
     for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
+      if (fetch.payload_truncated) {
+        saw_truncated_vertex_payload = true;
+      }
+      if (fetch.stride_bytes != 0) {
+        best_available_vertices = std::max<uint32_t>(
+            best_available_vertices,
+            static_cast<uint32_t>(fetch.payload_bytes.size() /
+                                  fetch.stride_bytes));
+      }
       std::vector<RealReplayVertex> vertices;
       uint32_t input_layout_mask = 0;
       uint64_t input_layout_signature = 0;
@@ -1014,6 +1307,12 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
           max_index < vertices.size()) {
         return {};
       }
+    }
+    if (saw_truncated_vertex_payload) {
+      return "captured vertex payload is truncated; max_index=" +
+             std::to_string(max_index) +
+             " available_vertices=" +
+             std::to_string(best_available_vertices);
     }
     return "decoded index range exceeds all captured vertex payloads";
   }
@@ -1028,6 +1327,11 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
     if (!BuildCanonicalVertices(fetch, vertices, input_layout_mask,
                                 input_layout_signature)) {
       continue;
+    }
+    if (IsKnownZeroColorExportDraw(state, vertices, input_layout_mask)) {
+      return "A4 pass-through color export has no captured color/texture "
+             "dependency or exports all zero; needs Xenos export/register "
+             "semantics before it counts as scene rendering";
     }
     const uint32_t needed =
         topology == D3D_PRIMITIVE_TOPOLOGY_POINTLIST
@@ -1051,17 +1355,16 @@ bool PrepareFirstRealDraw(const ReplayCapture &capture,
                          : capture.draws.size();
 
   for (std::size_t i = begin; i < end; ++i) {
-    if (PrepareRealDrawAtIndex(capture, i, options.draw_index.has_value(),
-                               prepared)) {
+    if (PrepareRealDrawAtIndex(capture, i, true, prepared)) {
       return true;
     }
   }
 
   error =
       options.draw_index
-          ? "selected draw has no complete indexed vertex/index snapshot that "
+          ? "selected draw has no complete vertex/index snapshot that "
             "the current D3D12 real replay path can bind"
-          : "capture has no complete indexed vertex/index snapshot that the "
+          : "capture has no complete vertex/index snapshot that the "
             "current D3D12 real replay path can bind";
   return false;
 }
@@ -1272,38 +1575,53 @@ bool PrepareFrameRealReplayPlan(const ReplayCapture &capture,
     error = "frame replay plan requested without --frame";
     return false;
   }
-  if (*options.frame_index >= capture.frames.size()) {
-    error = "selected frame is out of range";
-    return false;
-  }
 
-  const ReplayFrame &frame = capture.frames[*options.frame_index];
-  plan.frame_index = *options.frame_index;
-  plan.frame_draw_count = frame.draw_count;
-  const bool capture_has_frame_draws =
-      std::any_of(capture.frames.begin(), capture.frames.end(),
-                  [](const ReplayFrame &candidate) {
-                    return candidate.draw_count != 0;
-                  });
-  std::size_t begin = frame.first_draw_index;
-  std::size_t end =
-      std::min<std::size_t>(begin + frame.draw_count, capture.draws.size());
-  if (frame.draw_count == 0 && !capture_has_frame_draws) {
-    uint64_t sequence_begin = 0;
-    uint64_t sequence_end = 0;
-    if (FindSequenceFrameDrawRange(capture, *options.frame_index, begin, end,
-                                   sequence_begin, sequence_end)) {
-      plan.frame_draw_count = end - begin;
-      plan.used_sequence_frame_bucket = true;
-      plan.sequence_begin = sequence_begin;
-      plan.sequence_end = sequence_end;
-    } else if (*options.frame_index == 0) {
-      begin = 0;
-      end = capture.draws.size();
-      plan.frame_draw_count = capture.draws.size();
-      plan.used_pre_frame_bucket = true;
+  std::size_t begin = 0;
+  std::size_t end = 0;
+  if (capture.frames.empty()) {
+    if (*options.frame_index != 0) {
+      error = "selected frame is out of range";
+      return false;
+    }
+    plan.frame_index = 0;
+    plan.frame_draw_count = capture.draws.size();
+    plan.used_pre_frame_bucket = true;
+    begin = 0;
+    end = capture.draws.size();
+  } else {
+    if (*options.frame_index >= capture.frames.size()) {
+      error = "selected frame is out of range";
+      return false;
+    }
+
+    const ReplayFrame &frame = capture.frames[*options.frame_index];
+    plan.frame_index = *options.frame_index;
+    plan.frame_draw_count = frame.draw_count;
+    const bool capture_has_frame_draws =
+        std::any_of(capture.frames.begin(), capture.frames.end(),
+                    [](const ReplayFrame &candidate) {
+                      return candidate.draw_count != 0;
+                    });
+    begin = frame.first_draw_index;
+    end = std::min<std::size_t>(begin + frame.draw_count, capture.draws.size());
+    if (frame.draw_count == 0 && !capture_has_frame_draws) {
+      uint64_t sequence_begin = 0;
+      uint64_t sequence_end = 0;
+      if (FindSequenceFrameDrawRange(capture, *options.frame_index, begin, end,
+                                     sequence_begin, sequence_end)) {
+        plan.frame_draw_count = end - begin;
+        plan.used_sequence_frame_bucket = true;
+        plan.sequence_begin = sequence_begin;
+        plan.sequence_end = sequence_end;
+      } else if (*options.frame_index == 0) {
+        begin = 0;
+        end = capture.draws.size();
+        plan.frame_draw_count = capture.draws.size();
+        plan.used_pre_frame_bucket = true;
+      }
     }
   }
+
   for (std::size_t draw_index = begin; draw_index < end; ++draw_index) {
     const ReplayDrawState &state = capture.draws[draw_index];
     if (IsNoSideEffectNoFetchDraw(state)) {
@@ -1398,6 +1716,7 @@ bool CreateUploadBuffer(ID3D12Device *device, const void *data,
                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                    IID_PPV_ARGS(&resource)),
                "ID3D12Device::CreateCommittedResource(upload)", error)) {
+    AppendDeviceRemovedReason(device, error);
     return false;
   }
 
@@ -1405,6 +1724,7 @@ bool CreateUploadBuffer(ID3D12Device *device, const void *data,
   D3D12_RANGE read_range{0, 0};
   if (!CheckHr(resource->Map(0, &read_range, &mapped), "ID3D12Resource::Map",
                error)) {
+    AppendDeviceRemovedReason(device, error);
     return false;
   }
   std::memcpy(mapped, data, static_cast<std::size_t>(byte_size));
@@ -1640,8 +1960,8 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
     return true;
   }
   if (fetch.format != 6 && fetch.format != 2 && fetch.format != 7 &&
-      fetch.format != 23 && fetch.format != 26 && fetch.format != 38 &&
-      fetch.format != 54) {
+      fetch.format != 23 && fetch.format != 26 && fetch.format != 28 &&
+      fetch.format != 38 && fetch.format != 54) {
     reason = "unsupported texture format " + std::to_string(fetch.format);
     return false;
   }
@@ -1661,6 +1981,9 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
     bytes_per_texel = 1;
     bytes_per_block_log2 = 0;
   } else if (fetch.format == 23) {
+    bytes_per_texel = 4;
+    bytes_per_block_log2 = 2;
+  } else if (fetch.format == 28) {
     bytes_per_texel = 4;
     bytes_per_block_log2 = 2;
   } else if (fetch.format == 26) {
@@ -1759,6 +2082,18 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
         rgba[pixel * 4 + 2] = static_cast<uint8_t>((b >> 8) & 0xFF);
         rgba[pixel * 4 + 3] = static_cast<uint8_t>((a >> 8) & 0xFF);
         continue;
+      } else if (fetch.format == 28) {
+        const uint16_t r = GpuSwap16(
+            LoadLittleEndian16(fetch.payload_bytes, source_offset + 0),
+            fetch.endian);
+        const uint16_t g = GpuSwap16(
+            LoadLittleEndian16(fetch.payload_bytes, source_offset + 2),
+            fetch.endian);
+        rgba[pixel * 4 + 0] = static_cast<uint8_t>((r >> 8) & 0xFF);
+        rgba[pixel * 4 + 1] = static_cast<uint8_t>((g >> 8) & 0xFF);
+        rgba[pixel * 4 + 2] = static_cast<uint8_t>((r >> 8) & 0xFF);
+        rgba[pixel * 4 + 3] = 255;
+        continue;
       } else if (fetch.format == 38) {
         const uint32_t raw_r = GpuSwap32(
             LoadLittleEndian32(fetch.payload_bytes, source_offset + 0),
@@ -1840,6 +2175,7 @@ bool CreateTexture2DRgba8(ID3D12Device *device, ID3D12GraphicsCommandList *list,
                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                    IID_PPV_ARGS(&texture)),
                "ID3D12Device::CreateCommittedResource(texture)", error)) {
+    AppendDeviceRemovedReason(device, error);
     return false;
   }
 
@@ -1871,6 +2207,7 @@ bool CreateTexture2DRgba8(ID3D12Device *device, ID3D12GraphicsCommandList *list,
                    IID_PPV_ARGS(&upload)),
                "ID3D12Device::CreateCommittedResource(texture upload)",
                error)) {
+    AppendDeviceRemovedReason(device, error);
     return false;
   }
 
@@ -1878,6 +2215,7 @@ bool CreateTexture2DRgba8(ID3D12Device *device, ID3D12GraphicsCommandList *list,
   D3D12_RANGE read_range{0, 0};
   if (!CheckHr(upload->Map(0, &read_range, &mapped),
                "ID3D12Resource::Map(texture upload)", error)) {
+    AppendDeviceRemovedReason(device, error);
     return false;
   }
   uint8_t *mapped_bytes = static_cast<uint8_t *>(mapped);
@@ -2053,11 +2391,10 @@ bool CreateRealGeometryPipeline(
   root_parameters[0].Constants.ShaderRegister = 0;
   root_parameters[0].Constants.RegisterSpace = 0;
   root_parameters[0].Constants.Num32BitValues = 4;
-  root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
   root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-  root_parameters[1].Constants.ShaderRegister = 1;
-  root_parameters[1].Constants.RegisterSpace = 0;
-  root_parameters[1].Constants.Num32BitValues = 32;
+  root_parameters[1].Descriptor.ShaderRegister = 1;
+  root_parameters[1].Descriptor.RegisterSpace = 0;
   root_parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
   root_parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
   root_parameters[2].DescriptorTable.NumDescriptorRanges = 1;
@@ -2159,7 +2496,7 @@ bool CreateRealGeometryPipeline(
   pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   pso_desc.NumRenderTargets = 1;
   pso_desc.RTVFormats[0] = format;
-  pso_desc.DSVFormat = kReplayDepthStencilFormat;
+  pso_desc.DSVFormat = DsvFormatForRenderState(render_state);
   pso_desc.SampleDesc.Count = 1;
   pso_desc.SampleDesc.Quality = 0;
 
@@ -2169,6 +2506,7 @@ bool CreateRealGeometryPipeline(
     error =
         HrError("ID3D12Device::CreateGraphicsPipelineState(real geometry)",
                 pso_hr);
+    AppendDeviceRemovedReason(device, error);
     AppendD3D12InfoQueueMessages(device, error);
     return false;
   }
@@ -2294,6 +2632,37 @@ std::filesystem::path ResolveOverridePath(const std::filesystem::path &root,
   return path.is_absolute() ? path : root / path;
 }
 
+std::filesystem::path ResolveCacheRecordPath(const std::filesystem::path &root,
+                                             const std::filesystem::path &path) {
+  if (path.empty() || path.is_absolute()) {
+    return path;
+  }
+
+  std::error_code ec;
+  const std::filesystem::path cwd_relative =
+      std::filesystem::absolute(path, ec);
+  if (!ec && std::filesystem::exists(cwd_relative, ec) && !ec) {
+    return cwd_relative;
+  }
+
+  std::filesystem::path project_root;
+  if (root.filename() == "cache" && root.parent_path().filename() == "shader_work") {
+    project_root = root.parent_path().parent_path();
+  }
+  if (!project_root.empty()) {
+    const std::filesystem::path project_relative = project_root / path;
+    if (std::filesystem::exists(project_relative, ec) && !ec) {
+      return project_relative;
+    }
+  }
+
+  const std::filesystem::path root_relative = root / path;
+  if (std::filesystem::exists(root_relative, ec) && !ec) {
+    return root_relative;
+  }
+  return path;
+}
+
 bool FindManifestOverridePath(const std::filesystem::path &root,
                               const char *short_stage,
                               const char *long_stage, uint64_t hash,
@@ -2363,13 +2732,17 @@ bool FindCacheShaderPath(const std::filesystem::path &root,
       if (!format.empty() && format != "dxbc" && format != "dxil") {
         continue;
       }
-      path = record.path;
-      source = record.source;
+      path = ResolveCacheRecordPath(root, record.path);
+      source = ResolveCacheRecordPath(root, record.source);
       if (!record.entry.empty()) {
         entry = record.entry;
       }
       profile = record.profile;
       cache_key = record.cache_key;
+      if (source.filename().string().find(".translated.") != std::string::npos ||
+          source.filename().string().find(".vertexless.") != std::string::npos) {
+        entry = "main";
+      }
       return true;
     }
   }
@@ -2409,6 +2782,10 @@ bool FindCacheShaderPath(const std::filesystem::path &root,
         source.clear();
       }
       profile = std::string(short_stage) + "_5_0";
+      if (stem.find(".translated.") != std::string::npos ||
+          stem.find(".vertexless.") != std::string::npos) {
+        entry = "main";
+      }
       return true;
     }
   }
@@ -2622,15 +2999,9 @@ bool LoadNativeShaderOverridePair(const ReplayDrawState &draw_state,
       return false;
     }
   } else if (draw_state.pixel_shader.hash == 0x246E20EF10E0DDC7ull) {
-    if (ab1e_vertex_shader) {
-      if (!apply_pixel_variant(
-              "PS_0x246E20EF10E0DDC7.translated.v7.dxc",
-              "PS_0x246E20EF10E0DDC7.translated.v7.dxc.hlsl")) {
-        return false;
-      }
-    } else if (!apply_pixel_variant(
-                   "PS_0x246E20EF10E0DDC7.translated.v6.dxc",
-                   "PS_0x246E20EF10E0DDC7.translated.v6.dxc.hlsl")) {
+    if (!apply_pixel_variant(
+            "PS_0x246E20EF10E0DDC7.translated.v8.dxc",
+            "PS_0x246E20EF10E0DDC7.translated.v8.dxc.hlsl")) {
       return false;
     }
   }
@@ -2887,6 +3258,30 @@ PreparedCapturedConstants BuildCapturedConstants(
             });
 
   for (const PM4ConstantRecord *record : records) {
+    // Xenos PM4 constant upload indices are byte-like register offsets in the
+    // captured stream. The high BO2 shaders reference registers such as c252
+    // and c255, so preserve sparse register slots instead of concatenating
+    // uploads and making every translated shader read the wrong constants.
+    if ((record->index & 0x7u) == 0) {
+      const uint32_t first_constant = record->index >> 3;
+      for (uint32_t dword_index = 0; dword_index < record->dwords.size();
+           ++dword_index) {
+        const uint32_t constant_index = first_constant + dword_index / 4;
+        if (constant_index >= kCapturedFloat4ConstantCount) {
+          break;
+        }
+        const uint32_t target_dword = constant_index * 4 + dword_index % 4;
+        prepared.dwords[target_dword] = record->dwords[dword_index];
+      }
+      prepared.count = std::max<uint32_t>(
+          prepared.count,
+          std::min<uint32_t>(
+              kCapturedConstantDwordCount,
+              (first_constant * 4) +
+                  static_cast<uint32_t>(record->dwords.size())));
+      continue;
+    }
+
     for (const uint32_t dword : record->dwords) {
       if (prepared.count >= prepared.dwords.size()) {
         return prepared;
@@ -3076,6 +3471,97 @@ std::filesystem::path OutputPathFor(const ReplayCapture &capture,
   return capture.path.parent_path() / "native-renderer-d3d12-replay.bmp";
 }
 
+std::filesystem::path DepthOutputPathFor(const ReplayCapture &capture,
+                                         const ReplayCliOptions &options) {
+  if (!options.d3d12_depth_output_path.empty()) {
+    return options.d3d12_depth_output_path;
+  }
+  const std::filesystem::path color_output = OutputPathFor(capture, options);
+  return color_output.parent_path() /
+         (color_output.stem().string() + "-depth" + color_output.extension().string());
+}
+
+struct ReadbackSnapshotStats {
+  std::size_t total_bytes = 0;
+  std::size_t nonzero_bytes = 0;
+};
+
+ReadbackSnapshotStats CountNonZeroBytes(const uint8_t *data,
+                                        std::size_t byte_count) {
+  ReadbackSnapshotStats stats{};
+  stats.total_bytes = byte_count;
+  if (!data) {
+    return stats;
+  }
+  for (std::size_t i = 0; i < byte_count; ++i) {
+    if (data[i] != 0) {
+      ++stats.nonzero_bytes;
+    }
+  }
+  return stats;
+}
+
+bool WriteBmp(const std::filesystem::path &path, const uint8_t *mapped,
+              uint32_t row_pitch, uint32_t width, uint32_t height,
+              std::string &error);
+
+bool WriteDepthPreviewBmp(const std::filesystem::path &path,
+                          const uint8_t *mapped, uint32_t row_pitch,
+                          uint32_t width, uint32_t height,
+                          std::string &error) {
+  if (!mapped || width == 0 || height == 0) {
+    error = "WriteDepthPreviewBmp called with empty depth readback";
+    return false;
+  }
+  std::vector<uint8_t> rgba(static_cast<std::size_t>(width) * height * 4, 0);
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint8_t *src_row = mapped + static_cast<std::size_t>(row_pitch) * y;
+    for (uint32_t x = 0; x < width; ++x) {
+      const uint8_t *pixel = src_row + static_cast<std::size_t>(x) * 4;
+      const uint32_t packed = pixel[0] | (static_cast<uint32_t>(pixel[1]) << 8) |
+                              (static_cast<uint32_t>(pixel[2]) << 16) |
+                              (static_cast<uint32_t>(pixel[3]) << 24);
+      const uint32_t depth24 = packed & 0x00FFFFFFu;
+      const uint8_t depth8 =
+          static_cast<uint8_t>((depth24 * 255ull + 0x7FFFFFull) / 0xFFFFFFull);
+      const uint8_t stencil = static_cast<uint8_t>((packed >> 24) & 0xFFu);
+      const std::size_t offset =
+          (static_cast<std::size_t>(y) * width + x) * 4;
+      rgba[offset + 0] = depth8;
+      rgba[offset + 1] = depth8;
+      rgba[offset + 2] = depth8;
+      rgba[offset + 3] = stencil;
+    }
+  }
+  return WriteBmp(path, rgba.data(), width * 4, width, height, error);
+}
+
+bool CreateReadbackBuffer(ID3D12Device *device, uint64_t total_size,
+                          ComPtr<ID3D12Resource> &readback,
+                          std::string &error) {
+  D3D12_HEAP_PROPERTIES readback_heap{};
+  readback_heap.Type = D3D12_HEAP_TYPE_READBACK;
+  readback_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+  readback_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+  readback_heap.CreationNodeMask = 1;
+  readback_heap.VisibleNodeMask = 1;
+
+  D3D12_RESOURCE_DESC buffer_desc{};
+  buffer_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  buffer_desc.Width = total_size;
+  buffer_desc.Height = 1;
+  buffer_desc.DepthOrArraySize = 1;
+  buffer_desc.MipLevels = 1;
+  buffer_desc.SampleDesc.Count = 1;
+  buffer_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+  return CheckHr(device->CreateCommittedResource(
+                     &readback_heap, D3D12_HEAP_FLAG_NONE, &buffer_desc,
+                     D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                     IID_PPV_ARGS(&readback)),
+                 "ID3D12Device::CreateCommittedResource(readback)", error);
+}
+
 void WriteU16(std::ofstream &file, uint16_t value) {
   file.put(static_cast<char>(value & 0xFF));
   file.put(static_cast<char>((value >> 8) & 0xFF));
@@ -3153,6 +3639,19 @@ bool WaitForGpu(ID3D12CommandQueue *queue, ID3D12Fence *fence, HANDLE event,
   WaitForSingleObject(event, INFINITE);
   return true;
 }
+
+struct D3D12LiveReplaySessionStorage {
+  std::map<PipelineKey, D3D12ReplayPipeline> pipelines;
+  std::vector<UploadedRealDraw> retained_draw_resources;
+  ComPtr<ID3D12DescriptorHeap> retained_srv_heap;
+  ComPtr<ID3D12DescriptorHeap> retained_sampler_heap;
+  ComPtr<ID3D12Resource> depth_target;
+  ComPtr<ID3D12DescriptorHeap> dsv_heap;
+  D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
+  uint32_t depth_width = 0;
+  uint32_t depth_height = 0;
+  bool depth_ready = false;
+};
 
 #endif
 
@@ -3409,6 +3908,38 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     }
     prepared = frame_plan.supported_draws.front();
     prepared_draws = frame_plan.supported_draws;
+  } else if (options.skip_unsupported && !options.draw_index) {
+    for (std::size_t draw_index = 0; draw_index < capture.draws.size();
+         ++draw_index) {
+      const ReplayDrawState &state = capture.draws[draw_index];
+      if (IsNoSideEffectNoFetchDraw(state)) {
+        ++frame_plan.elided_noop_draw_count;
+        continue;
+      }
+
+      PreparedRealDraw candidate;
+      if (PrepareRealDrawAtIndex(capture, draw_index, true, candidate)) {
+        prepared_draws.push_back(std::move(candidate));
+        if (prepared_draws.size() >= options.d3d12_draw_limit) {
+          break;
+        }
+        continue;
+      }
+
+      std::string reason =
+          DescribeRealDrawGeometrySupport(capture, draw_index, true);
+      if (reason.empty()) {
+        reason = "draw is unsupported by current D3D12 real replay path";
+      }
+      ++frame_plan.skipped_draw_count;
+      ++frame_plan.unsupported_reasons[reason];
+    }
+    if (prepared_draws.empty()) {
+      error = "capture has no complete vertex/index snapshot that the "
+              "current D3D12 real replay path can bind";
+      return false;
+    }
+    prepared = prepared_draws.front();
   } else {
     if (!PrepareFirstRealDraw(capture, options, prepared, error)) {
       return false;
@@ -3416,130 +3947,198 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     prepared_draws = CollectSupportedRealDraws(capture, options, prepared);
   }
 
-  const ReplayDrawState &draw_state = capture.draws[prepared.draw_index];
   const ReplaySurfaceSize size = ChooseSurfaceSize(capture);
-  const uint32_t width = std::clamp<uint32_t>(size.width, 64, 3840);
-  const uint32_t height = std::clamp<uint32_t>(size.height, 64, 2160);
+  const D3D12LiveSubmitBinding *live_binding =
+      options.live_submit ? options.live_binding : nullptr;
+  const bool live_submit =
+      live_binding && live_binding->device && live_binding->command_list &&
+      live_binding->color_target && live_binding->rtv_heap;
+  D3D12LiveReplaySessionStorage *live_session = nullptr;
+  if (live_submit && options.live_session) {
+    live_session = reinterpret_cast<D3D12LiveReplaySessionStorage *>(
+        options.live_session);
+    live_session->retained_draw_resources.clear();
+    live_session->retained_srv_heap.Reset();
+    live_session->retained_sampler_heap.Reset();
+  }
+  const uint32_t width =
+      live_submit ? std::clamp<uint32_t>(live_binding->width, 64u, 3840u)
+                  : std::clamp<uint32_t>(size.width, 64u, 3840u);
+  const uint32_t height =
+      live_submit ? std::clamp<uint32_t>(live_binding->height, 64u, 2160u)
+                  : std::clamp<uint32_t>(size.height, 64u, 2160u);
   const DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
   ComPtr<ID3D12Device> device;
-  if (!CheckHr(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
-                                 IID_PPV_ARGS(&device)),
-               "D3D12CreateDevice", error)) {
+  if (live_submit) {
+    device = live_binding->device;
+  } else if (!CheckHr(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
+                                        IID_PPV_ARGS(&device)),
+                      "D3D12CreateDevice", error)) {
     return false;
   }
 
-  D3D12_COMMAND_QUEUE_DESC queue_desc{};
-  queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
   ComPtr<ID3D12CommandQueue> queue;
-  if (!CheckHr(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)),
-               "ID3D12Device::CreateCommandQueue", error)) {
-    return false;
-  }
-
   ComPtr<ID3D12CommandAllocator> allocator;
-  if (!CheckHr(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                              IID_PPV_ARGS(&allocator)),
-               "ID3D12Device::CreateCommandAllocator", error)) {
-    return false;
-  }
-
   ComPtr<ID3D12GraphicsCommandList> list;
-  if (!CheckHr(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                         allocator.Get(), nullptr,
-                                         IID_PPV_ARGS(&list)),
-               "ID3D12Device::CreateCommandList", error)) {
-    return false;
+  if (!live_submit) {
+    D3D12_COMMAND_QUEUE_DESC queue_desc{};
+    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    if (!CheckHr(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)),
+                 "ID3D12Device::CreateCommandQueue", error)) {
+      return false;
+    }
+
+    if (!CheckHr(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                IID_PPV_ARGS(&allocator)),
+                 "ID3D12Device::CreateCommandAllocator", error)) {
+      return false;
+    }
+
+    if (!CheckHr(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                           allocator.Get(), nullptr,
+                                           IID_PPV_ARGS(&list)),
+                 "ID3D12Device::CreateCommandList", error)) {
+      return false;
+    }
+  } else {
+    list = live_binding->command_list;
   }
 
-  D3D12_RESOURCE_DESC texture_desc{};
-  texture_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-  texture_desc.Width = width;
-  texture_desc.Height = height;
-  texture_desc.DepthOrArraySize = 1;
-  texture_desc.MipLevels = 1;
-  texture_desc.Format = format;
-  texture_desc.SampleDesc.Count = 1;
-  texture_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-  texture_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-
+  ComPtr<ID3D12Resource> target;
+  ComPtr<ID3D12DescriptorHeap> rtv_heap;
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
   D3D12_CLEAR_VALUE clear_value{};
   clear_value.Format = format;
   clear_value.Color[0] = 0.015f;
   clear_value.Color[1] = 0.018f;
   clear_value.Color[2] = 0.022f;
   clear_value.Color[3] = 1.0f;
+  if (live_submit) {
+    target = live_binding->color_target;
+    rtv_heap = live_binding->rtv_heap;
+    const UINT rtv_descriptor_size =
+        device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    rtv = rtv_heap->GetCPUDescriptorHandleForHeapStart();
+    rtv.ptr += static_cast<SIZE_T>(live_binding->rtv_descriptor_index) *
+               rtv_descriptor_size;
+  } else {
+    D3D12_RESOURCE_DESC texture_desc{};
+    texture_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texture_desc.Width = width;
+    texture_desc.Height = height;
+    texture_desc.DepthOrArraySize = 1;
+    texture_desc.MipLevels = 1;
+    texture_desc.Format = format;
+    texture_desc.SampleDesc.Count = 1;
+    texture_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    texture_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
-  D3D12_HEAP_PROPERTIES default_heap{};
-  default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-  default_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-  default_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-  default_heap.CreationNodeMask = 1;
-  default_heap.VisibleNodeMask = 1;
+    D3D12_HEAP_PROPERTIES default_heap{};
+    default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    default_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    default_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    default_heap.CreationNodeMask = 1;
+    default_heap.VisibleNodeMask = 1;
 
-  ComPtr<ID3D12Resource> target;
-  if (!CheckHr(device->CreateCommittedResource(
-                   &default_heap, D3D12_HEAP_FLAG_NONE, &texture_desc,
-                   D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
-                   IID_PPV_ARGS(&target)),
-               "ID3D12Device::CreateCommittedResource(real render target)",
-               error)) {
-    return false;
+    if (!CheckHr(device->CreateCommittedResource(
+                     &default_heap, D3D12_HEAP_FLAG_NONE, &texture_desc,
+                     D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
+                     IID_PPV_ARGS(&target)),
+                 "ID3D12Device::CreateCommittedResource(real render target)",
+                 error)) {
+      return false;
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc{};
+    rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtv_heap_desc.NumDescriptors = 1;
+    if (!CheckHr(device->CreateDescriptorHeap(&rtv_heap_desc,
+                                              IID_PPV_ARGS(&rtv_heap)),
+                 "ID3D12Device::CreateDescriptorHeap(RTV)", error)) {
+      return false;
+    }
+    rtv = rtv_heap->GetCPUDescriptorHandleForHeapStart();
+    device->CreateRenderTargetView(target.Get(), nullptr, rtv);
   }
 
-  D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc{};
-  rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-  rtv_heap_desc.NumDescriptors = 1;
-  ComPtr<ID3D12DescriptorHeap> rtv_heap;
-  if (!CheckHr(
-          device->CreateDescriptorHeap(&rtv_heap_desc, IID_PPV_ARGS(&rtv_heap)),
-          "ID3D12Device::CreateDescriptorHeap(RTV)", error)) {
-    return false;
+  bool batch_uses_depth = false;
+  for (const PreparedRealDraw &prepared_draw : prepared_draws) {
+    const ReplayDrawState &state = capture.draws[prepared_draw.draw_index];
+    if (state.draw.render_state.present &&
+        RenderStateUsesDepthTarget(&state.draw.render_state)) {
+      batch_uses_depth = true;
+      break;
+    }
   }
-  const D3D12_CPU_DESCRIPTOR_HANDLE rtv =
-      rtv_heap->GetCPUDescriptorHandleForHeapStart();
-  device->CreateRenderTargetView(target.Get(), nullptr, rtv);
-
-  D3D12_RESOURCE_DESC depth_desc{};
-  depth_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-  depth_desc.Width = width;
-  depth_desc.Height = height;
-  depth_desc.DepthOrArraySize = 1;
-  depth_desc.MipLevels = 1;
-  depth_desc.Format = kReplayDepthStencilFormat;
-  depth_desc.SampleDesc.Count = 1;
-  depth_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-  depth_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-
-  D3D12_CLEAR_VALUE depth_clear{};
-  depth_clear.Format = kReplayDepthStencilFormat;
-  depth_clear.DepthStencil.Depth = 1.0f;
-  depth_clear.DepthStencil.Stencil = 0;
 
   ComPtr<ID3D12Resource> depth_target;
-  if (!CheckHr(device->CreateCommittedResource(
-                   &default_heap, D3D12_HEAP_FLAG_NONE, &depth_desc,
-                   D3D12_RESOURCE_STATE_DEPTH_WRITE, &depth_clear,
-                   IID_PPV_ARGS(&depth_target)),
-               "ID3D12Device::CreateCommittedResource(real depth target)",
-               error)) {
-    return false;
-  }
-
-  D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc{};
-  dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-  dsv_heap_desc.NumDescriptors = 1;
   ComPtr<ID3D12DescriptorHeap> dsv_heap;
-  if (!CheckHr(
-          device->CreateDescriptorHeap(&dsv_heap_desc, IID_PPV_ARGS(&dsv_heap)),
-          "ID3D12Device::CreateDescriptorHeap(DSV)", error)) {
-    return false;
-  }
-  const D3D12_CPU_DESCRIPTOR_HANDLE dsv =
-      dsv_heap->GetCPUDescriptorHandleForHeapStart();
-  device->CreateDepthStencilView(depth_target.Get(), nullptr, dsv);
+  D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
+  if (batch_uses_depth) {
+    if (live_session && live_session->depth_ready &&
+        live_session->depth_width == width &&
+        live_session->depth_height == height) {
+      depth_target = live_session->depth_target;
+      dsv_heap = live_session->dsv_heap;
+      dsv = live_session->dsv;
+    } else {
+      D3D12_RESOURCE_DESC depth_desc{};
+      depth_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+      depth_desc.Width = width;
+      depth_desc.Height = height;
+      depth_desc.DepthOrArraySize = 1;
+      depth_desc.MipLevels = 1;
+      depth_desc.Format = kReplayDepthStencilFormat;
+      depth_desc.SampleDesc.Count = 1;
+      depth_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+      depth_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
-  std::map<PipelineKey, D3D12ReplayPipeline> pipelines;
+      D3D12_CLEAR_VALUE depth_clear{};
+      depth_clear.Format = kReplayDepthStencilFormat;
+      depth_clear.DepthStencil.Depth = 1.0f;
+      depth_clear.DepthStencil.Stencil = 0;
+
+      D3D12_HEAP_PROPERTIES default_heap{};
+      default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+      default_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+      default_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+      default_heap.CreationNodeMask = 1;
+      default_heap.VisibleNodeMask = 1;
+
+      if (!CheckHr(device->CreateCommittedResource(
+                       &default_heap, D3D12_HEAP_FLAG_NONE, &depth_desc,
+                       D3D12_RESOURCE_STATE_DEPTH_WRITE, &depth_clear,
+                       IID_PPV_ARGS(&depth_target)),
+                   "ID3D12Device::CreateCommittedResource(real depth target)",
+                   error)) {
+        return false;
+      }
+
+      D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc{};
+      dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+      dsv_heap_desc.NumDescriptors = 1;
+      if (!CheckHr(device->CreateDescriptorHeap(&dsv_heap_desc,
+                                                IID_PPV_ARGS(&dsv_heap)),
+                   "ID3D12Device::CreateDescriptorHeap(DSV)", error)) {
+        return false;
+      }
+      dsv = dsv_heap->GetCPUDescriptorHandleForHeapStart();
+      device->CreateDepthStencilView(depth_target.Get(), nullptr, dsv);
+      if (live_session) {
+        live_session->depth_target = depth_target;
+        live_session->dsv_heap = dsv_heap;
+        live_session->dsv = dsv;
+        live_session->depth_width = width;
+        live_session->depth_height = height;
+        live_session->depth_ready = true;
+      }
+    }
+  }
+
+  std::map<PipelineKey, D3D12ReplayPipeline> local_pipelines;
+  std::map<PipelineKey, D3D12ReplayPipeline> *pipelines =
+      live_session ? &live_session->pipelines : &local_pipelines;
   std::size_t pso_cache_hits = 0;
   std::size_t pso_cache_misses = 0;
   std::size_t diagnostic_pipeline_count = 0;
@@ -3548,8 +4147,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       [&](const ReplayDrawState &state,
           const PreparedRealDraw &prepared_draw) -> D3D12ReplayPipeline * {
     const PipelineKey key = MakePipelineKey(state, prepared_draw, format);
-    auto found = pipelines.find(key);
-    if (found != pipelines.end()) {
+    auto found = pipelines->find(key);
+    if (found != pipelines->end()) {
       ++pso_cache_hits;
       return &found->second;
     }
@@ -3600,7 +4199,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             override_pair.vertex_log_path, pixel_shader_source,
             pixel_shader_name_storage.c_str(), pixel_shader_entry,
             pixel_shader_profile, override_pair.pixel_cache_path,
-            override_pair.pixel_log_path, prepared_draw.input_layout_mask, error)) {
+            override_pair.pixel_log_path,
+            EffectiveInputLayoutMask(state, prepared_draw.input_layout_mask),
+            error)) {
       error = "could not create D3D12 real replay PSO for draw " +
               std::to_string(state.draw_index) + " VS=" +
               FormatHex64(state.vertex_shader.hash) + " PS=" +
@@ -3615,7 +4216,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     if (used_diagnostic_shader) {
       ++diagnostic_pipeline_count;
     }
-    auto [inserted, _] = pipelines.emplace(key, std::move(pipeline));
+    auto [inserted, _] = pipelines->emplace(key, std::move(pipeline));
     return &inserted->second;
   };
 
@@ -3627,7 +4228,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       pipeline_supported_draws.push_back(prepared_draw);
       continue;
     }
-    if (frame_replay && options.skip_unsupported) {
+    if (options.skip_unsupported) {
       std::string reason =
           "D3D12 pipeline creation failed for VS=" +
           FormatHex64(state.vertex_shader.hash) + " PS=" +
@@ -3661,7 +4262,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       texture_supported_draws.push_back(prepared_draw);
       continue;
     }
-    if (frame_replay && options.skip_unsupported) {
+    if (options.skip_unsupported) {
       if (texture_reason.empty()) {
         texture_reason = "unsupported captured texture";
       }
@@ -3716,6 +4317,21 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     uploaded.prepared = prepared_draw;
     uploaded.constants =
         BuildCapturedConstants(capture.draws[prepared_draw.draw_index]);
+    {
+      std::array<uint8_t, kCapturedConstantBufferBytes> constant_bytes{};
+      const std::size_t constant_byte_count =
+          std::min<std::size_t>(uploaded.constants.count * sizeof(uint32_t),
+                                constant_bytes.size());
+      if (constant_byte_count > 0) {
+        std::memcpy(constant_bytes.data(), uploaded.constants.dwords.data(),
+                    constant_byte_count);
+      }
+      if (!CreateUploadBuffer(device.Get(), constant_bytes.data(),
+                              kCapturedConstantBufferBytes,
+                              uploaded.constant_buffer, error)) {
+        return false;
+      }
+    }
     uploaded.vertex_bytes =
         uploaded.prepared.vertices.size() * sizeof(RealReplayVertex);
     if (!uploaded.prepared.vertexless) {
@@ -3899,37 +4515,33 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       }
     }
   }
+  std::map<ShaderPairKey, std::size_t> submitted_pairs;
+  for (const UploadedRealDraw &uploaded : uploaded_draws) {
+    const ReplayDrawState &state = capture.draws[uploaded.prepared.draw_index];
+    ++submitted_pairs[{state.vertex_shader.hash, state.pixel_shader.hash}];
+  }
   if (frame_replay) {
-    std::map<ShaderPairKey, std::size_t> submitted_pairs;
-    for (const UploadedRealDraw &uploaded : uploaded_draws) {
-      const ReplayDrawState &state = capture.draws[uploaded.prepared.draw_index];
-      ++submitted_pairs[{state.vertex_shader.hash, state.pixel_shader.hash}];
-    }
     std::cout << "D3D12 real frame replay submitted " << uploaded_draws.size()
               << " supported draw(s) across " << submitted_pairs.size()
               << " shader pair(s)\n";
-    for (const auto &[key, count] : submitted_pairs) {
-      std::cout << "  pair VS=" << FormatHex64(std::get<0>(key))
-                << " PS=" << FormatHex64(std::get<1>(key))
-                << " submitted=" << count << " captured="
-                << CountDrawsForShaderPair(capture, std::get<0>(key),
-                                           std::get<1>(key))
-                << "\n";
-    }
   } else {
     std::cout << "D3D12 real replay submitted " << uploaded_draws.size()
-              << " supported draw(s) for shader pair VS="
-              << FormatHex64(draw_state.vertex_shader.hash) << " PS="
-              << FormatHex64(draw_state.pixel_shader.hash) << " out of "
-              << CountDrawsForShaderPair(capture, draw_state.vertex_shader.hash,
-                                         draw_state.pixel_shader.hash)
-              << " captured draw(s) with that pair\n";
+              << " supported draw(s) across " << submitted_pairs.size()
+              << " shader pair(s)\n";
+  }
+  for (const auto &[key, count] : submitted_pairs) {
+    std::cout << "  pair VS=" << FormatHex64(std::get<0>(key))
+              << " PS=" << FormatHex64(std::get<1>(key))
+              << " submitted=" << count << " captured="
+              << CountDrawsForShaderPair(capture, std::get<0>(key),
+                                         std::get<1>(key))
+              << "\n";
   }
   std::set<uint64_t> submitted_input_layouts;
   for (const UploadedRealDraw &uploaded : uploaded_draws) {
     submitted_input_layouts.insert(uploaded.prepared.input_layout_signature);
   }
-  std::cout << "D3D12 real replay PSO cache: entries=" << pipelines.size()
+  std::cout << "D3D12 real replay PSO cache: entries=" << pipelines->size()
             << " misses=" << pso_cache_misses << " hits=" << pso_cache_hits
             << " diagnostic_pipelines=" << diagnostic_pipeline_count
             << " cache_index_writes=" << cache_index_write_count
@@ -3967,15 +4579,19 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     }
   }
   std::cout << "D3D12 real replay depth target format=D24_UNORM_S8_UINT"
+            << " depth_target_bound=" << (batch_uses_depth ? "yes" : "no")
             << " depth_enabled_draws=" << depth_enabled_draws
             << " depth_write_draws=" << depth_write_draws
             << " stencil_enabled_draws=" << stencil_enabled_draws << "\n";
+  const ReplayDrawState &first_submitted_state =
+      capture.draws[uploaded_draws.front().prepared.draw_index];
   const RenderStateRecord *first_pipeline_render_state =
-      draw_state.draw.render_state.present ? &draw_state.draw.render_state
-                                           : nullptr;
+      first_submitted_state.draw.render_state.present
+          ? &first_submitted_state.draw.render_state
+          : nullptr;
   if (first_pipeline_render_state) {
     std::cout << "D3D12 real replay applied render state from draw "
-              << prepared.draw_index << ": color_mask="
+              << first_submitted_state.draw_index << ": color_mask="
               << FormatHex32(first_pipeline_render_state->rb_color_mask)
               << " cull=" << first_pipeline_render_state->cull_mode
               << " depth_test="
@@ -3987,7 +4603,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
               << "\n";
   } else {
     std::cout << "D3D12 real replay render state unavailable";
-    if (!prepared.indexed && draw_state.draw.render_state.present) {
+    if (!uploaded_draws.front().prepared.indexed &&
+        first_submitted_state.draw.render_state.present) {
       std::cout << " for non-indexed draw bring-up";
     }
     std::cout << "; using default D3D12 PSO state\n";
@@ -4002,16 +4619,31 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   D3D12_RECT scissor =
       ScissorRectFromRenderState(first_pipeline_render_state, width, height);
 
+  if (live_submit) {
+    D3D12_RESOURCE_BARRIER to_render_target{};
+    to_render_target.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    to_render_target.Transition.pResource = target.Get();
+    to_render_target.Transition.Subresource =
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    to_render_target.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    to_render_target.Transition.StateAfter =
+        D3D12_RESOURCE_STATE_RENDER_TARGET;
+    list->ResourceBarrier(1, &to_render_target);
+  }
   list->ClearRenderTargetView(rtv, clear_value.Color, 0, nullptr);
   ID3D12DescriptorHeap *descriptor_heaps[] = {srv_heap.Get(),
                                               sampler_heap.Get()};
   list->SetDescriptorHeaps(2, descriptor_heaps);
   list->RSSetViewports(1, &viewport);
   list->RSSetScissorRects(1, &scissor);
-  list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-  list->ClearDepthStencilView(
-      dsv, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0,
-      nullptr);
+  if (batch_uses_depth) {
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    list->ClearDepthStencilView(
+        dsv, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0,
+        nullptr);
+  } else {
+    list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+  }
   const float constants[4] = {static_cast<float>(width),
                               static_cast<float>(height), 0.0f, 0.0f};
 
@@ -4028,15 +4660,19 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       list->SetGraphicsRootSignature(pipeline->root_signature.Get());
       list->SetPipelineState(pipeline->pipeline_state.Get());
       list->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
+      const bool draw_uses_depth =
+          batch_uses_depth &&
+          RenderStateUsesDepthTarget(pipeline->render_state);
+      list->OMSetRenderTargets(1, &rtv, FALSE,
+                               draw_uses_depth ? &dsv : nullptr);
       bound_pipeline = pipeline;
     }
     list->OMSetStencilRef(StencilRefFromRenderState(pipeline->render_state));
     const D3D12_RECT draw_scissor =
         ScissorRectFromRenderState(pipeline->render_state, width, height);
     list->RSSetScissorRects(1, &draw_scissor);
-    list->SetGraphicsRoot32BitConstants(
-        1, static_cast<UINT>(uploaded.constants.dwords.size()),
-        uploaded.constants.dwords.data(), 0);
+    list->SetGraphicsRootConstantBufferView(
+        1, uploaded.constant_buffer->GetGPUVirtualAddress());
     D3D12_GPU_DESCRIPTOR_HANDLE texture_srv =
         srv_heap->GetGPUDescriptorHandleForHeapStart();
     texture_srv.ptr += static_cast<UINT64>(uploaded.texture_srv_base_index) *
@@ -4080,56 +4716,100 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     }
   }
 
-  D3D12_RESOURCE_BARRIER barrier{};
-  barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  barrier.Transition.pResource = target.Get();
-  barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-  barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-  list->ResourceBarrier(1, &barrier);
+  if (live_submit) {
+    D3D12_RESOURCE_BARRIER present_barrier{};
+    present_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    present_barrier.Transition.pResource = target.Get();
+    present_barrier.Transition.Subresource =
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    present_barrier.Transition.StateBefore =
+        D3D12_RESOURCE_STATE_RENDER_TARGET;
+    present_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    list->ResourceBarrier(1, &present_barrier);
+    if (live_session) {
+      live_session->retained_draw_resources = std::move(uploaded_draws);
+      live_session->retained_srv_heap = srv_heap;
+      live_session->retained_sampler_heap = sampler_heap;
+    }
+    return true;
+  }
 
-  D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
-  UINT row_count = 0;
-  UINT64 row_size = 0;
-  UINT64 total_size = 0;
-  device->GetCopyableFootprints(&texture_desc, 0, 1, 0, &footprint, &row_count,
-                                &row_size, &total_size);
+  D3D12_RESOURCE_BARRIER barriers[2]{};
+  std::size_t barrier_count = 0;
+  barriers[barrier_count].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  barriers[barrier_count].Transition.pResource = target.Get();
+  barriers[barrier_count].Transition.Subresource =
+      D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  barriers[barrier_count].Transition.StateBefore =
+      D3D12_RESOURCE_STATE_RENDER_TARGET;
+  barriers[barrier_count].Transition.StateAfter =
+      D3D12_RESOURCE_STATE_COPY_SOURCE;
+  ++barrier_count;
+  if (batch_uses_depth && depth_target) {
+    barriers[barrier_count].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barriers[barrier_count].Transition.pResource = depth_target.Get();
+    barriers[barrier_count].Transition.Subresource =
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barriers[barrier_count].Transition.StateBefore =
+        D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    barriers[barrier_count].Transition.StateAfter =
+        D3D12_RESOURCE_STATE_COPY_SOURCE;
+    ++barrier_count;
+  }
+  list->ResourceBarrier(static_cast<UINT>(barrier_count), barriers);
 
-  D3D12_HEAP_PROPERTIES readback_heap{};
-  readback_heap.Type = D3D12_HEAP_TYPE_READBACK;
-  readback_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-  readback_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-  readback_heap.CreationNodeMask = 1;
-  readback_heap.VisibleNodeMask = 1;
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT color_footprint{};
+  UINT color_row_count = 0;
+  UINT64 color_row_size = 0;
+  UINT64 color_total_size = 0;
+  const D3D12_RESOURCE_DESC target_desc = target->GetDesc();
+  device->GetCopyableFootprints(&target_desc, 0, 1, 0, &color_footprint,
+                                &color_row_count, &color_row_size,
+                                &color_total_size);
 
-  D3D12_RESOURCE_DESC buffer_desc{};
-  buffer_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-  buffer_desc.Width = total_size;
-  buffer_desc.Height = 1;
-  buffer_desc.DepthOrArraySize = 1;
-  buffer_desc.MipLevels = 1;
-  buffer_desc.SampleDesc.Count = 1;
-  buffer_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-  ComPtr<ID3D12Resource> readback;
-  if (!CheckHr(device->CreateCommittedResource(
-                   &readback_heap, D3D12_HEAP_FLAG_NONE, &buffer_desc,
-                   D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                   IID_PPV_ARGS(&readback)),
-               "ID3D12Device::CreateCommittedResource(real readback)", error)) {
+  ComPtr<ID3D12Resource> color_readback;
+  if (!CreateReadbackBuffer(device.Get(), color_total_size, color_readback,
+                            error)) {
     return false;
   }
 
-  D3D12_TEXTURE_COPY_LOCATION dst{};
-  dst.pResource = readback.Get();
-  dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-  dst.PlacedFootprint = footprint;
+  D3D12_TEXTURE_COPY_LOCATION color_dst{};
+  color_dst.pResource = color_readback.Get();
+  color_dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  color_dst.PlacedFootprint = color_footprint;
 
-  D3D12_TEXTURE_COPY_LOCATION src{};
-  src.pResource = target.Get();
-  src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-  src.SubresourceIndex = 0;
-  list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+  D3D12_TEXTURE_COPY_LOCATION color_src{};
+  color_src.pResource = target.Get();
+  color_src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  color_src.SubresourceIndex = 0;
+  list->CopyTextureRegion(&color_dst, 0, 0, 0, &color_src, nullptr);
+
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT depth_footprint{};
+  UINT depth_row_count = 0;
+  UINT64 depth_row_size = 0;
+  UINT64 depth_total_size = 0;
+  ComPtr<ID3D12Resource> depth_readback;
+  if (batch_uses_depth && depth_target) {
+    D3D12_RESOURCE_DESC depth_resource_desc = depth_target->GetDesc();
+    device->GetCopyableFootprints(&depth_resource_desc, 0, 1, 0,
+                                  &depth_footprint, &depth_row_count,
+                                  &depth_row_size, &depth_total_size);
+    if (!CreateReadbackBuffer(device.Get(), depth_total_size, depth_readback,
+                              error)) {
+      return false;
+    }
+
+    D3D12_TEXTURE_COPY_LOCATION depth_dst{};
+    depth_dst.pResource = depth_readback.Get();
+    depth_dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    depth_dst.PlacedFootprint = depth_footprint;
+
+    D3D12_TEXTURE_COPY_LOCATION depth_src{};
+    depth_src.pResource = depth_target.Get();
+    depth_src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    depth_src.SubresourceIndex = 0;
+    list->CopyTextureRegion(&depth_dst, 0, 0, 0, &depth_src, nullptr);
+  }
 
   if (!CheckHr(list->Close(), "ID3D12GraphicsCommandList::Close", error)) {
     return false;
@@ -4157,31 +4837,77 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     return false;
   }
 
-  uint8_t *mapped = nullptr;
-  D3D12_RANGE read_range{0, static_cast<SIZE_T>(total_size)};
-  if (!CheckHr(
-          readback->Map(0, &read_range, reinterpret_cast<void **>(&mapped)),
-          "ID3D12Resource::Map", error)) {
+  uint8_t *color_mapped = nullptr;
+  D3D12_RANGE color_read_range{0, static_cast<SIZE_T>(color_total_size)};
+  if (!CheckHr(color_readback->Map(0, &color_read_range,
+                                   reinterpret_cast<void **>(&color_mapped)),
+               "ID3D12Resource::Map(color readback)", error)) {
     return false;
   }
+
+  const ReadbackSnapshotStats color_stats = CountNonZeroBytes(
+      color_mapped + color_footprint.Offset, static_cast<std::size_t>(color_total_size));
 
   const std::filesystem::path output = OutputPathFor(capture, options);
   std::error_code ec;
   if (!output.parent_path().empty()) {
     std::filesystem::create_directories(output.parent_path(), ec);
   }
-  const bool wrote =
-      !ec && WriteBmp(output, mapped + footprint.Offset,
-                      footprint.Footprint.RowPitch, width, height, error);
+  const bool wrote_color =
+      !ec && WriteBmp(output, color_mapped + color_footprint.Offset,
+                      color_footprint.Footprint.RowPitch, width, height, error);
   D3D12_RANGE empty_range{0, 0};
-  readback->Unmap(0, &empty_range);
+  color_readback->Unmap(0, &empty_range);
 
   if (ec) {
     error = "could not create D3D12 output directory: " + ec.message();
     return false;
   }
-  if (!wrote) {
+  if (!wrote_color) {
     return false;
+  }
+
+  ReadbackSnapshotStats depth_stats{};
+  bool wrote_depth = false;
+  const std::filesystem::path depth_output = DepthOutputPathFor(capture, options);
+  if (batch_uses_depth && depth_readback && depth_total_size > 0) {
+    uint8_t *depth_mapped = nullptr;
+    D3D12_RANGE depth_read_range{0, static_cast<SIZE_T>(depth_total_size)};
+    if (!CheckHr(depth_readback->Map(0, &depth_read_range,
+                                     reinterpret_cast<void **>(&depth_mapped)),
+                 "ID3D12Resource::Map(depth readback)", error)) {
+      return false;
+    }
+    depth_stats = CountNonZeroBytes(
+        depth_mapped + depth_footprint.Offset,
+        static_cast<std::size_t>(depth_total_size));
+    if (!depth_output.parent_path().empty()) {
+      std::filesystem::create_directories(depth_output.parent_path(), ec);
+    }
+    wrote_depth =
+        !ec &&
+        WriteDepthPreviewBmp(
+            depth_output, depth_mapped + depth_footprint.Offset,
+            depth_footprint.Footprint.RowPitch, width, height, error);
+    depth_readback->Unmap(0, &empty_range);
+    if (ec) {
+      error = "could not create D3D12 depth output directory: " + ec.message();
+      return false;
+    }
+    if (!wrote_depth) {
+      return false;
+    }
+  }
+
+  std::cout << "D3D12 real replay color readback: bytes=" << color_stats.total_bytes
+            << " nonzero=" << color_stats.nonzero_bytes
+            << " output=" << output.string() << "\n";
+  if (batch_uses_depth) {
+    std::cout << "D3D12 real replay depth readback: bytes=" << depth_stats.total_bytes
+              << " nonzero=" << depth_stats.nonzero_bytes
+              << " output=" << depth_output.string() << "\n";
+  } else {
+    std::cout << "D3D12 real replay depth readback: skipped=no_depth_target_draws\n";
   }
 
   return true;
@@ -4189,6 +4915,194 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   (void)capture;
   (void)options;
   error = "D3D12 replay backend is only available on Windows";
+  return false;
+#endif
+}
+
+void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
+                               const ReplayCliOptions &options) {
+#if !defined(_WIN32)
+  (void)capture;
+  (void)options;
+  std::cout << "D3D12 real backend gap report unavailable on this platform\n";
+#else
+  struct PairStats {
+    std::size_t total = 0;
+    std::size_t geometry_ok = 0;
+    std::size_t shader_ok = 0;
+    std::size_t texture_ok = 0;
+    std::size_t ready = 0;
+    std::size_t utility_ready = 0;
+    std::size_t scene_candidate_ready = 0;
+  };
+
+  std::map<std::string, std::size_t> blocker_counts;
+  std::map<std::string, std::size_t> ready_class_counts;
+  std::map<std::tuple<uint64_t, uint64_t>, PairStats> pair_stats;
+  std::size_t geometry_ok = 0;
+  std::size_t shader_ok = 0;
+  std::size_t texture_ok = 0;
+  std::size_t ready = 0;
+  std::size_t utility_ready = 0;
+  std::size_t scene_candidate_ready = 0;
+
+  for (std::size_t i = 0; i < capture.draws.size(); ++i) {
+    const ReplayDrawState &state = capture.draws[i];
+    auto &stats =
+        pair_stats[{state.vertex_shader.hash, state.pixel_shader.hash}];
+    ++stats.total;
+
+    const std::string geometry_reason =
+        DescribeRealDrawGeometrySupport(capture, i, true);
+    if (!geometry_reason.empty()) {
+      ++blocker_counts["geometry: " + geometry_reason];
+      continue;
+    }
+    PreparedRealDraw prepared;
+    if (!PrepareRealDrawAtIndex(capture, i, true, prepared)) {
+      ++blocker_counts["geometry: draw passed description but failed "
+                       "preparation"];
+      continue;
+    }
+    ++geometry_ok;
+    ++stats.geometry_ok;
+
+    NativeShaderOverridePair shader_pair;
+    std::string shader_error;
+    if (!LoadNativeShaderOverridePair(state, options, shader_pair,
+                                      shader_error)) {
+      const std::size_t detail = shader_error.rfind(": ");
+      ++blocker_counts["shader: " +
+                       (detail == std::string::npos
+                            ? shader_error
+                            : shader_error.substr(detail + 2))];
+      continue;
+    }
+    ++shader_ok;
+    ++stats.shader_ok;
+
+    std::string texture_reason;
+    if (!CheckCapturedTextureSupport(state, texture_reason)) {
+      ++blocker_counts["texture: " +
+                       (texture_reason.empty() ? "unsupported captured texture"
+                                               : texture_reason)];
+      continue;
+    }
+    ++texture_ok;
+    ++stats.texture_ok;
+    ++ready;
+    ++stats.ready;
+    if (IsLikelyFullscreenUtilityPass(state, prepared)) {
+      ++utility_ready;
+      ++stats.utility_ready;
+      ++ready_class_counts["ready utility/postprocess fullscreen pass"];
+    } else {
+      ++scene_candidate_ready;
+      ++stats.scene_candidate_ready;
+      ++ready_class_counts["ready scene-candidate draw"];
+    }
+  }
+
+  std::cout << "D3D12 real backend gap report:\n";
+  std::cout << "  draws=" << capture.draws.size()
+            << " geometry_ok=" << geometry_ok << " shader_ok=" << shader_ok
+            << " texture_ok=" << texture_ok << " ready=" << ready
+            << " utility_ready=" << utility_ready
+            << " scene_candidate_ready=" << scene_candidate_ready << "\n";
+
+  std::vector<std::pair<std::string, std::size_t>> blockers(
+      blocker_counts.begin(), blocker_counts.end());
+  std::sort(blockers.begin(), blockers.end(), [](const auto &a, const auto &b) {
+    if (a.second != b.second) {
+      return a.second > b.second;
+    }
+    return a.first < b.first;
+  });
+  std::cout << "  top blockers:\n";
+  for (std::size_t i = 0; i < std::min<std::size_t>(blockers.size(), 20); ++i) {
+    std::cout << "    " << blockers[i].second << " x " << blockers[i].first
+              << "\n";
+  }
+  if (!ready_class_counts.empty()) {
+    std::vector<std::pair<std::string, std::size_t>> ready_classes(
+        ready_class_counts.begin(), ready_class_counts.end());
+    std::sort(ready_classes.begin(), ready_classes.end(),
+              [](const auto &a, const auto &b) {
+                if (a.second != b.second) {
+                  return a.second > b.second;
+                }
+                return a.first < b.first;
+              });
+    std::cout << "  ready classifications:\n";
+    for (const auto &[label, count] : ready_classes) {
+      std::cout << "    " << count << " x " << label << "\n";
+    }
+  }
+
+  std::vector<std::pair<std::tuple<uint64_t, uint64_t>, PairStats>> pairs(
+      pair_stats.begin(), pair_stats.end());
+  std::sort(pairs.begin(), pairs.end(), [](const auto &a, const auto &b) {
+    if (a.second.total != b.second.total) {
+      return a.second.total > b.second.total;
+    }
+    return a.first < b.first;
+  });
+  std::cout << "  top shader pairs:\n";
+  for (std::size_t i = 0;
+       i < std::min<std::size_t>(pairs.size(), options.top_shaders); ++i) {
+    const auto &[key, stats] = pairs[i];
+    std::cout << "    VS=" << FormatHex64(std::get<0>(key))
+              << " PS=" << FormatHex64(std::get<1>(key))
+              << " draws=" << stats.total
+              << " geometry_ok=" << stats.geometry_ok
+              << " shader_ok=" << stats.shader_ok
+              << " texture_ok=" << stats.texture_ok
+              << " ready=" << stats.ready
+              << " utility_ready=" << stats.utility_ready
+              << " scene_candidate_ready=" << stats.scene_candidate_ready
+              << "\n";
+  }
+#endif
+}
+
+D3D12LiveReplaySession *CreateD3D12LiveReplaySession() {
+#if defined(_WIN32)
+  return reinterpret_cast<D3D12LiveReplaySession *>(
+      new D3D12LiveReplaySessionStorage());
+#else
+  return nullptr;
+#endif
+}
+
+void DestroyD3D12LiveReplaySession(D3D12LiveReplaySession *session) {
+#if defined(_WIN32)
+  delete reinterpret_cast<D3D12LiveReplaySessionStorage *>(session);
+#else
+  (void)session;
+#endif
+}
+
+bool RunD3D12LiveFrameBackend(const ReplayCapture &capture,
+                              const ReplayCliOptions &base_options,
+                              D3D12LiveSubmitBinding &binding,
+                              std::string &error) {
+#if defined(_WIN32)
+  ReplayCliOptions options = base_options;
+  options.live_submit = true;
+  options.live_binding = &binding;
+  options.skip_unsupported = true;
+  options.allow_diagnostic_shader = base_options.allow_diagnostic_shader;
+  options.frame_index = 0;
+  if (!binding.session) {
+    binding.session = CreateD3D12LiveReplaySession();
+  }
+  options.live_session = binding.session;
+  return RunD3D12RealReplayBackend(capture, options, error);
+#else
+  (void)capture;
+  (void)base_options;
+  (void)binding;
+  error = "D3D12 live replay backend is only available on Windows";
   return false;
 #endif
 }
