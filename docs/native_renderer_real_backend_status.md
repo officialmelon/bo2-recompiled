@@ -825,3 +825,9 @@ Results:
 - The only remaining MP003 non-utility blocker is `12` pure color-only
   `VS=0xAB1E86137A0240E8 / PS=0xA4A965C189287B99` draws, which still need
   Xenos export/register semantics before they can count as real rendering.
+- A temporary experiment allowing the `AB1E/A4` pure color-only class produced
+  a visible diagonal fullscreen-triangle contribution in
+  `native-renderer-mp003-full-after-ab1e-a4.bmp`. That output is not trusted:
+  AB1E semantic IR exports position only and does not declare an interpolator
+  for A4's `r0` input, so the class remains fail-closed until the Xenos
+  register/export initialization rule is proven.

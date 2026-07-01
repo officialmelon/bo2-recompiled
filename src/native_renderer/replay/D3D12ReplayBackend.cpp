@@ -1053,7 +1053,7 @@ bool IsKnownZeroColorExportDraw(const ReplayDrawState &state,
   // our approximate VS export mapping. These screen/depth-style passes have
   // repeatedly produced full-screen placeholder triangles. Keep pure color-only
   // passes out of the "real scene" path until Xenos export/register semantics
-  // are modeled, but let captured depth/stencil side-effect passes run.
+  // are modeled.
   return true;
 }
 
