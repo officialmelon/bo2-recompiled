@@ -141,6 +141,27 @@ MCP decompilation rechecked the key PC reference on 2026-06-28: `R_DrawIndexedPr
 - 2026-06-30 Ghidra MCP disassembly of the `0x82597F50` probe callers refines the runtime record offsets. The `LR=0x82598314` call passes `r4=r29+0x28` and `r5=*(r29+0x18)`, matching the PS-side primary name record and secondary constant/program pointer. The `LR=0x82598560` call passes `r4=r30+0x368` and `r5=*(r30+0x20)`, matching the VS-side primary name record and secondary pointer. The same caller later reaches `0x82597DF8`, making that binder the next target for correlating shader names with PM4 shader hashes.
 - `native_shader_inspect.exe` now proves several `0x82597F50` name-record to runtime-PM4-shader correlations by matching the secondary pointer dwords against the first PM4 shader payload dwords for the same stage. On `shader_probe_capture_007`, `pimp_shader_cinematic_519f564_ps_main_ps_3_0_534c8cc25dea1826410cc2974d7e9a80.updb` maps to PS `0xC4ED2979F29C9139`, `pimp_shader_radiant_190f4788_vs_main_vs_3_0_e10bcefc8da60302d0bbf12b675d091c.updb` maps to VS `0x5D918D91043B3ED0`, and `pimp_shader_trivial_63c48fc7_vs_main_vs_3_0_6c5717313f11297d9b331e326b80df12.updb` maps to VS `0x81311AC4B1FBD082`; all three match `16` PM4 payload dwords at secondary offset `16`.
 - The 2026-06-28 bounded capture `native-renderer-capture-limit.jsonl` contains `20000` complete JSONL events, including `4388` draw packets, `1011` shader loads, `170` constant uploads, and `85` swaps. Representative observed shader hashes include `B6C9863F710683EC`, `A4A965C189287B99`, `1E6883FCCDE1F688`, `AB1E86137A0240E8`, `81311AC4B1FBD082`, and `246E20EF10E0DDC7`.
+
+## XEX PM4 Utility Anchors - 2026-07-01
+
+Ghidra MCP against `default.xex` resolves `0x825828D8` as
+`xex_render_draw_autoindex_shader_bootstrap_candidate`. The function writes a
+fixed command-buffer sequence rather than consuming normal scene vertex
+resources:
+
+- obtains/reserves command buffer space through `Function_8257AB00(param_1)`
+  when needed, then updates `param_1 + 0x30` to the emitted tail.
+- emits fixed PM4/control dwords including `0xC0003B00`, shader-load packet
+  `0xC0102B00`, a copied `0x3c`-byte embedded shader payload from
+  `0xffffffff8207d9f4`, and auto-index draw packet `0xC0003600`.
+- writes draw setup dwords including `0x10081`, matching captured
+  `PM4_DRAW_INDX_2` no-fetch point/utility traffic.
+- updates dirty/state bits through repeated writes to `param_1 + 0x10`.
+
+This anchor is evidence that the dominant no-fetch B6/A4 class in MP captures
+is utility/bootstrap PM4 traffic, not missing scene vertex/index buffer capture.
+It should remain separated from scene-candidate draw accounting unless a later
+capture proves visible color output.
 - Observed indexed draw example: `PM4_DRAW_INDX` with `indices=6`, `prim=4`, `src=0`, `indexed=true`, `index_base=0x04fa0770`, `index_len=12`, `index_format=0`, `index_endian=1`, VS `81311AC4B1FBD082`, PS `246E20EF10E0DDC7`.
 - Observed auto-index draw examples: `PM4_DRAW_INDX_2` with `indices=1`, `prim=1`, `src=2` and repeated `PM4_DRAW_INDX_2` with `indices=3`, `prim=8`, `src=2`.
 - Observed constant upload examples: `PM4_LOAD_ALU_CONSTANT` with `address=0x06019BC0`, `offset_type=0x000007F0`, `index=2032`, `dwords=16`; `address=0x06019940`, `offset_type=0x000003F0`, `index=1008`, `dwords=16`; and `address=0x06011400`, `offset_type=0x000007A0`, `index=1952`, `dwords=16`.

@@ -831,3 +831,7 @@ Results:
   AB1E semantic IR exports position only and does not declare an interpolator
   for A4's `r0` input, so the class remains fail-closed until the Xenos
   register/export initialization rule is proven.
+- Ghidra MCP evidence for XEX `0x825828D8` supports the no-fetch utility
+  classification: the function emits a fixed PM4 sequence with embedded shader
+  payload and `PM4_DRAW_INDX_2` packet rather than binding normal scene
+  vertex/index resources.
