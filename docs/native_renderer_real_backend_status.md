@@ -1010,3 +1010,50 @@ Next renderer work remains the same core issue: decode the Xenos
 export/interpolator/register semantics for A4/AB1E/fullscreen utility passes,
 then replace the synthetic offline target/depth handling with real captured
 render-target/depth state so those passes can be replayed instead of skipped.
+
+# Opt-in full render-target snapshots - 2026-07-02
+
+The MP capture hook can now recapture full color/depth target payloads from
+guest physical memory without modifying `rexglue-sdk`. The implementation uses
+the captured Xenos target base as a 4 KB page base (`base << 12`) and writes a
+full sidecar payload with offset `0`.
+
+This is gated behind:
+
+```powershell
+$env:BO2_NATIVE_CAPTURE_FULL_TARGETS='1'
+```
+
+The gate is required because full target snapshots on every draw can consume
+disk very quickly. Normal captures keep the smaller ReXGlue preview payloads.
+
+Focused validation capture:
+
+```powershell
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\target_full_mp_001\events.jsonl --native_renderer_capture_limit 180 --native_renderer_capture_flush_interval 32 --native_renderer_verbose false --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+Run result: watchdog-killed after 12 seconds by design. Capture size was
+approximately `14.2 MB`.
+
+Resource summary:
+
+```text
+color_target_snapshots=4 color_missing=0 color_payload_bytes=11059200
+color_target_payload_truncated=0
+depth_target_snapshots=2 depth_missing=0 depth_payload_bytes=3686400
+depth_target_payload_truncated=0
+```
+
+Draw `24` (`VS=1E6883FCCDE1F688 / PS=A4A965C189287B99`) now reports:
+
+```text
+color_target_payload rt=0 base=1328 offset=0 payload=1843200/1843200 sidecar
+depth_target_payload base=1328 offset=0 payload=1843200/1843200 sidecar
+```
+
+This removes a capture-completeness blocker for early A4 depth/stencil passes.
+It does not by itself make those passes renderable yet, because the D3D12
+offline replay still needs to initialize/bind captured target/depth payloads as
+real replay resources and still needs correct Xenos export/register semantics
+for the A4/AB1E shader classes.
