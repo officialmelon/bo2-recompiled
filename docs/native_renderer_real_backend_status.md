@@ -843,3 +843,45 @@ Results:
   classification: the function emits a fixed PM4 sequence with embedded shader
   payload and `PM4_DRAW_INDX_2` packet rather than binding normal scene
   vertex/index resources.
+
+# MP live AB1E texture interpolator blocker - 2026-07-02
+
+Strict live MP `native_d3d12` was rerun from the rebuilt RelWithDebInfo
+`default_mp.exe`:
+
+```powershell
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_004\events.jsonl --native_renderer_capture_limit 6000 --native_renderer_capture_flush_interval 128 --native_renderer_verbose false --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+Evidence:
+
+- The run was watchdog-limited and killed after 75 seconds by design, not hung.
+- Live `native_d3d12` submitted real D3D12 frames from the MP command stream.
+  Representative live frame logs show `19..25` submitted real-data draws,
+  captured texture/sampler binding, depth target binding, and
+  `diagnostic_pipelines=0`.
+- Offline replay of the new live capture submits `195` real-data draws across
+  `9` shader pairs with nonzero color/depth readback:
+  `native-renderer-mp004-live-replay-d3d12.bmp`.
+- Gap analysis over the same capture still finds `215` modeled ready draws, but
+  the extra `20` are `AB1E/EDC1` and `AB1E/FF01` texture passes.
+
+The `AB1E` texture pairs are now explicitly blocked in real D3D12 replay rather
+than allowed to reach PSO creation:
+
+- `VS=0xAB1E86137A0240E8` semantic disassembly:
+  `vfetch_full r0.xy11`, `alloc interpolators`, `alloc position`,
+  `max oPos, r0, r0`, with `writes_interpolators=0x00000000`.
+- `PS=0xFF01D28E1EF3A880` semantic disassembly:
+  `tfetch2D r1.1w__, r1.xy, tf1`, `mul o0, r1.xxxy, r0`,
+  with `writes_interpolators=0x00000001`.
+- `PS=0xEDC17DCC3FFDB040` semantic disassembly:
+  `tfetch2D r0, r0.xy, tf0`, `mul o0, r0, r1`,
+  with `writes_interpolators=0x00000001`.
+
+A temporary screen-UV bridge was tested and rejected: it made the backend submit
+all `215` modeled draws but produced a large gray diagonal triangle over the MP
+UI/background output. This proves the remaining blocker is real Xenos
+interpolator/register semantics for AB1E texture passes, not missing texture or
+vertex payload capture. The current strict real path keeps these draws skipped
+with an explicit blocker until the real mapping is decoded.

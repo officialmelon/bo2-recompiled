@@ -1061,6 +1061,17 @@ bool IsKnownZeroColorExportDraw(const ReplayDrawState &state,
   return true;
 }
 
+bool IsAb1eTextureInterpolatorBlocker(const ReplayDrawState &state) {
+  if (state.vertex_shader.hash != 0xAB1E86137A0240E8ull) {
+    return false;
+  }
+  if (state.pixel_shader.hash != 0xEDC17DCC3FFDB040ull &&
+      state.pixel_shader.hash != 0xFF01D28E1EF3A880ull) {
+    return false;
+  }
+  return !state.draw.texture_fetches.empty();
+}
+
 uint32_t EffectiveInputLayoutMask(const ReplayDrawState &state,
                                   uint32_t decoded_mask) {
   if (SupportsVertexlessDraw(state)) {
@@ -1204,6 +1215,9 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
       (topology != D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST && !point_list)) {
     return false;
   }
+  if (IsAb1eTextureInterpolatorBlocker(state)) {
+    return false;
+  }
 
   std::vector<uint32_t> decoded_indices;
   if (draw.indexed) {
@@ -1313,6 +1327,12 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
       topology != D3D_PRIMITIVE_TOPOLOGY_POINTLIST) {
     return "unsupported primitive topology " +
            std::to_string(draw.primitive_type);
+  }
+  if (IsAb1eTextureInterpolatorBlocker(state)) {
+    return "AB1E texture pass pixel shader reads interpolator r0/r1, but the "
+           "captured AB1E vertex shader writes oPos only; needs Xenos "
+           "interpolator/register semantics before it counts as scene "
+           "rendering";
   }
   if (draw.indexed) {
     if (draw.index_payload_missing) {
