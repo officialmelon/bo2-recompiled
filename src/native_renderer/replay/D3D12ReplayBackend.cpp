@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -54,6 +55,11 @@ bool CompileShaderWithCache(const char *source, const char *entry,
                             ComPtr<ID3DBlob> &blob, std::string &error);
 bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
                         std::vector<uint8_t> &rgba, std::string &reason);
+
+uint64_t HashCombine64(uint64_t hash, uint64_t value) {
+  hash ^= value + 0x9E3779B97F4A7C15ull + (hash << 6) + (hash >> 2);
+  return hash;
+}
 
 std::string HrError(const char *what, HRESULT hr) {
   return std::string(what) + " failed with HRESULT 0x" +
@@ -608,6 +614,7 @@ struct PreparedRealDraw {
   std::vector<uint32_t> indices32;
   uint32_t vertex_count = 0;
   uint32_t input_layout_mask = 0;
+  uint64_t input_layout_signature = 0;
   bool indexed = false;
   bool vertexless = false;
   bool uses_32bit_indices = false;
@@ -665,9 +672,31 @@ struct NativeShaderOverridePair {
   std::filesystem::path pixel_log_path;
 };
 
+uint64_t CapturedInputLayoutSignature(const VertexFetchRecord &fetch,
+                                      uint32_t input_layout_mask) {
+  uint64_t hash = 0xC0DEC0DE12345678ull;
+  hash = HashCombine64(hash, input_layout_mask);
+  hash = HashCombine64(hash, fetch.stride_bytes);
+  hash = HashCombine64(hash, fetch.endian);
+  hash = HashCombine64(hash, fetch.attributes.size());
+  for (const VertexAttributeRecord &attribute : fetch.attributes) {
+    hash = HashCombine64(hash, attribute.data_format);
+    hash = HashCombine64(hash, static_cast<uint32_t>(attribute.offset));
+    hash = HashCombine64(hash, attribute.offset_bytes);
+    hash = HashCombine64(hash, attribute.stride_bytes);
+    hash = HashCombine64(hash, static_cast<uint32_t>(attribute.exp_adjust));
+    hash = HashCombine64(hash, attribute.signed_rf_mode);
+    hash = HashCombine64(hash, attribute.is_signed ? 1u : 0u);
+    hash = HashCombine64(hash, attribute.is_integer ? 1u : 0u);
+    hash = HashCombine64(hash, attribute.is_index_rounded ? 1u : 0u);
+  }
+  return hash;
+}
+
 bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
                             std::vector<RealReplayVertex> &vertices,
-                            uint32_t &input_layout_mask) {
+                            uint32_t &input_layout_mask,
+                            uint64_t &input_layout_signature) {
   if (fetch.payload_missing || fetch.payload_truncated ||
       fetch.payload_bytes.empty() || fetch.stride_bytes == 0 ||
       fetch.attributes.empty()) {
@@ -757,6 +786,8 @@ bool BuildCanonicalVertices(const VertexFetchRecord &fetch,
   }
   input_layout_mask |=
       kInputLayoutPosition | kInputLayoutColor0 | kInputLayoutTexcoord0;
+  input_layout_signature =
+      CapturedInputLayoutSignature(fetch, input_layout_mask);
   return true;
 }
 
@@ -880,7 +911,9 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
   for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
     PreparedRealDraw candidate;
     candidate.draw_index = index;
-    if (!BuildCanonicalVertices(fetch, candidate.vertices, candidate.input_layout_mask)) {
+    if (!BuildCanonicalVertices(fetch, candidate.vertices,
+                                candidate.input_layout_mask,
+                                candidate.input_layout_signature)) {
       continue;
     }
 
@@ -975,7 +1008,9 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
     for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
       std::vector<RealReplayVertex> vertices;
       uint32_t input_layout_mask = 0;
-      if (BuildCanonicalVertices(fetch, vertices, input_layout_mask) &&
+      uint64_t input_layout_signature = 0;
+      if (BuildCanonicalVertices(fetch, vertices, input_layout_mask,
+                                 input_layout_signature) &&
           max_index < vertices.size()) {
         return {};
       }
@@ -989,7 +1024,9 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
   for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
     std::vector<RealReplayVertex> vertices;
     uint32_t input_layout_mask = 0;
-    if (!BuildCanonicalVertices(fetch, vertices, input_layout_mask)) {
+    uint64_t input_layout_signature = 0;
+    if (!BuildCanonicalVertices(fetch, vertices, input_layout_mask,
+                                input_layout_signature)) {
       continue;
     }
     const uint32_t needed =
@@ -1095,6 +1132,7 @@ struct PipelineKey {
   uint32_t fill_mode = 0;
   uint32_t front_face = 0;
   uint32_t input_layout_mask = 0;
+  uint64_t input_layout_signature = 0;
 
   bool operator<(const PipelineKey &other) const {
     return std::tie(vertex_shader_hash, pixel_shader_hash, topology,
@@ -1104,7 +1142,8 @@ struct PipelineKey {
                     pa_su_sc_mode_cntl, depth_format, color_format0,
                     blendcontrol0, msaa_samples, depth_test_enable,
                     depth_write_enable, stencil_enable, depth_func, cull_mode,
-                    fill_mode, front_face, input_layout_mask) <
+                    fill_mode, front_face, input_layout_mask,
+                    input_layout_signature) <
            std::tie(other.vertex_shader_hash, other.pixel_shader_hash,
                     other.topology, other.render_target_format,
                     other.render_state_present, other.rb_colorcontrol,
@@ -1115,7 +1154,8 @@ struct PipelineKey {
                     other.blendcontrol0, other.msaa_samples,
                     other.depth_test_enable, other.depth_write_enable,
                     other.stencil_enable, other.depth_func, other.cull_mode,
-                    other.fill_mode, other.front_face, other.input_layout_mask);
+                    other.fill_mode, other.front_face, other.input_layout_mask,
+                    other.input_layout_signature);
   }
 };
 
@@ -1136,6 +1176,7 @@ PipelineKey MakePipelineKey(const ReplayDrawState &state,
   key.topology = static_cast<uint32_t>(prepared.topology);
   key.render_target_format = static_cast<uint32_t>(render_target_format);
   key.input_layout_mask = prepared.input_layout_mask;
+  key.input_layout_signature = prepared.input_layout_signature;
   const RenderStateRecord *render_state =
       state.draw.render_state.present ? &state.draw.render_state : nullptr;
   if (!render_state) {
@@ -1598,8 +1639,9 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
   if (DecodeBlockCompressedTextureRgba8(fetch, rgba, reason)) {
     return true;
   }
-  if (fetch.format != 6 && fetch.format != 2 && fetch.format != 26 &&
-      fetch.format != 38) {
+  if (fetch.format != 6 && fetch.format != 2 && fetch.format != 7 &&
+      fetch.format != 23 && fetch.format != 26 && fetch.format != 38 &&
+      fetch.format != 54) {
     reason = "unsupported texture format " + std::to_string(fetch.format);
     return false;
   }
@@ -1618,6 +1660,9 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
   if (fetch.format == 2) {
     bytes_per_texel = 1;
     bytes_per_block_log2 = 0;
+  } else if (fetch.format == 23) {
+    bytes_per_texel = 4;
+    bytes_per_block_log2 = 2;
   } else if (fetch.format == 26) {
     bytes_per_texel = 8;
     bytes_per_block_log2 = 3;
@@ -1668,6 +1713,33 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
         rgba[pixel * 4 + 1] = value;
         rgba[pixel * 4 + 2] = value;
         rgba[pixel * 4 + 3] = 255;
+        continue;
+      } else if (fetch.format == 7 || fetch.format == 54) {
+        const uint32_t word =
+            GpuSwap32(LoadLittleEndian32(fetch.payload_bytes, source_offset),
+                      fetch.endian);
+        const uint32_t r = word & 0x3FFu;
+        const uint32_t g = (word >> 10) & 0x3FFu;
+        const uint32_t b = (word >> 20) & 0x3FFu;
+        const uint32_t a = (word >> 30) & 0x3u;
+        rgba[pixel * 4 + 0] = static_cast<uint8_t>((r * 255u + 511u) / 1023u);
+        rgba[pixel * 4 + 1] = static_cast<uint8_t>((g * 255u + 511u) / 1023u);
+        rgba[pixel * 4 + 2] = static_cast<uint8_t>((b * 255u + 511u) / 1023u);
+        rgba[pixel * 4 + 3] = static_cast<uint8_t>((a * 255u + 1u) / 3u);
+        continue;
+      } else if (fetch.format == 23) {
+        const uint32_t word =
+            GpuSwap32(LoadLittleEndian32(fetch.payload_bytes, source_offset),
+                      fetch.endian);
+        const uint32_t depth24 = word & 0x00FFFFFFu;
+        const uint32_t stencil = (word >> 24) & 0xFFu;
+        const uint8_t depth8 =
+            static_cast<uint8_t>((depth24 * 255ull + 0x7FFFFFull) /
+                                 0xFFFFFFull);
+        rgba[pixel * 4 + 0] = depth8;
+        rgba[pixel * 4 + 1] = depth8;
+        rgba[pixel * 4 + 2] = depth8;
+        rgba[pixel * 4 + 3] = static_cast<uint8_t>(stencil);
         continue;
       } else if (fetch.format == 26) {
         const uint16_t r = GpuSwap16(
@@ -1727,7 +1799,11 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
       used_truncated_preview
           ? "decoded partial/truncated format-" + std::to_string(fetch.format) +
                 " texture preview"
-          : "";
+          : (fetch.format == 23
+                 ? "decoded format-23 depth/stencil texture as RGBA8 preview"
+                 : (fetch.format == 54
+                        ? "decoded format-54 2_10_10_10 texture as RGBA8 preview"
+                        : ""));
   return true;
 }
 
@@ -3849,10 +3925,16 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
                                          draw_state.pixel_shader.hash)
               << " captured draw(s) with that pair\n";
   }
+  std::set<uint64_t> submitted_input_layouts;
+  for (const UploadedRealDraw &uploaded : uploaded_draws) {
+    submitted_input_layouts.insert(uploaded.prepared.input_layout_signature);
+  }
   std::cout << "D3D12 real replay PSO cache: entries=" << pipelines.size()
             << " misses=" << pso_cache_misses << " hits=" << pso_cache_hits
             << " diagnostic_pipelines=" << diagnostic_pipeline_count
-            << " cache_index_writes=" << cache_index_write_count << "\n";
+            << " cache_index_writes=" << cache_index_write_count
+            << " input_layout_variants=" << submitted_input_layouts.size()
+            << "\n";
   std::cout << "D3D12 real replay bound " << captured_texture_count
             << " captured texture SRV(s), " << fallback_texture_count
             << " fallback texture SRV(s), unsupported_texture_attempts="
