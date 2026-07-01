@@ -125,6 +125,50 @@ The existing cache script writes `.xsh` files with:
 
 Full automatic native shader replacement is not implemented yet. The extracted microcode is structurally valid, but native pipeline variants require live render state. Existing `SHADERS.md` notes that directly seeding all extracted shaders into ReXGlue is unsafe and has hit unsupported Xenos operations such as export register `48`.
 
+## MP replay shader overrides added 2026-07-01
+
+Two additional MP runtime shader pairs are now covered by manual D3D12
+overrides while the complete Xenos-to-IR-to-HLSL translator is still incomplete:
+
+- `VS=0xCBC9604F48930B36 / PS=0x7D1EF030F5710BDA`
+- `VS=0x261BDD733FEC1F64 / PS=0xFF01D28E1EF3A880`
+
+Both vertex shaders decode to the same currently modeled replay interface:
+`vf95` supplies `POSITION`, `COLOR0`, and `TEXCOORD0`; the Xenos shader exports
+position, one UV interpolator, and one color interpolator. The D3D12 override
+uses the already decoded screen-space replay vertices rather than the original
+constant-driven matrix path.
+
+`PS=0x7D1EF030F5710BDA` is only a conservative resource-backed approximation.
+The semantic disassembly contains constant-driven address math and multiple
+texture fetches:
+
+```text
+tfetch2D r1._x__, r1.xz, tf1
+tfetch2D r1._x__, r2.xy, tf2
+tfetch2D r1.__y_, r2.wy, tf2
+tfetch2D r1.___z, r2.zy, tf2
+mul o0.xyz0, r0.yzww, r0.xxxx
+```
+
+The override samples the captured textures but does not yet reproduce the full
+ALU/constant behavior. It increases resource-backed D3D12 coverage but renders
+very dark in the representative single-draw test.
+
+`PS=0xFF01D28E1EF3A880` is a small glyph/UI shader and is a better manual
+coverage win. Its semantic disassembly is:
+
+```text
+tfetch2D r1.1w__, r1.xy, tf1
+mul o0, r1.xxxy, r0
+```
+
+The manual D3D12 override samples the captured texture with the interpolated UV
+and modulates by vertex color. Single-draw replay of draw `566` renders visible
+white glyph segments from real captured geometry/texture data, and full MP
+replay increases real D3D12 submission to `110` draws across `4` shader pairs
+with `diagnostic_pipelines=0`.
+
 The current BO2-local translated-shader path is intentionally narrow. `native_shader_inspect.exe --compile-translated-hlsl-dxc` can lower and cache the `xenos_simple_passthrough_v1` subset seen in runtime VS `0xB6C9863F710683EC` and PS `0xA4A965C189287B99`, but it fails closed for the real-resource VS `0x5D918D91043B3ED0`. The next shader target is expanding semantic lowering for the real-resource shader pair currently covered by manual D3D12 overrides.
 
 Latest real-resource semantic check on `shader_probe_capture_007`:
