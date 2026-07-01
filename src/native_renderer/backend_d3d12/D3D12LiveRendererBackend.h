@@ -52,6 +52,9 @@ class D3D12LiveRendererBackend final : public RendererBackend {
 
   void SetUnsupportedLiveRenderErrorOnce();
   FrameStats& ActiveStats();
+  bool BeginCommandFrame(uint64_t frame_index);
+  void EndCommandFrame(uint64_t frame_index);
+  bool WaitForGpu();
 
   bool verbose_ = true;
   std::string app_name_;
@@ -65,6 +68,12 @@ class D3D12LiveRendererBackend final : public RendererBackend {
 #if defined(_WIN32)
   Microsoft::WRL::ComPtr<ID3D12Device> device_;
   Microsoft::WRL::ComPtr<ID3D12CommandQueue> command_queue_;
+  Microsoft::WRL::ComPtr<ID3D12CommandAllocator> command_allocator_;
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> command_list_;
+  Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
+  HANDLE fence_event_ = nullptr;
+  uint64_t fence_value_ = 0;
+  bool command_frame_open_ = false;
 #endif
 };
 
