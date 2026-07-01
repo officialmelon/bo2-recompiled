@@ -782,3 +782,46 @@ native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures
   geometry/no-fetch semantics: `942` no-side-effect no-fetch draws, `63`
   A4 pass-through draws lacking reliable color/texture dependency, and `22`
   `DDED7E` no-fetch point draws needing Xenos register initialization.
+
+# MP003 no-fetch utility and A4 depth/stencil accounting - 2026-07-01
+
+The D3D12 real-backend gap report now separates no-raster/no-side-effect
+utility traffic from scene-candidate blockers instead of counting it as missing
+rendering. This does not submit synthetic geometry; it only changes analysis
+classification.
+
+Rules added:
+
+- No-fetch draws with color writes disabled and depth/stencil disabled are
+  reported as `ignored utility/no-raster no-fetch draw`.
+- The exact decoded `VS=0xDDED7E538422AE73` no-fetch point class is also
+  ignored as no-raster utility evidence. Its semantic IR has no constants, no
+  vertex fetches, no texture fetches, and exports position through
+  `sqrt oPos, -r_abs[0].x` after `setp_clr`.
+- `PS=0xA4A965C189287B99` zero-color/pass-through draws remain blocked for
+  pure color-only passes, but are now allowed when captured render state uses
+  depth or stencil. Those passes have real side effects even if the color
+  export is zero.
+
+Verification:
+
+```powershell
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --real-backend-gaps --no-summary
+native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_003\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-mp003-full-after-a4-depth.bmp
+```
+
+Results:
+
+- Gap report: `geometry_ok=203 shader_ok=203 texture_ok=203 ready=203`,
+  `ignored_utility=964`.
+- Full MP003 D3D12 replay submits `184` supported real-data draws across `8`
+  shader pairs with `diagnostic_pipelines=0`.
+- The newly admitted pair is `VS=0x1E6883FCCDE1F688 /
+  PS=0xA4A965C189287B99`, `51/51` submitted.
+- Depth/stencil evidence is now visible in backend output:
+  `depth_target_bound=yes`, `depth_enabled_draws=31`,
+  `depth_write_draws=31`, `stencil_enabled_draws=51`, and nonzero depth
+  readback `native-renderer-mp003-full-after-a4-depth-depth.bmp`.
+- The only remaining MP003 non-utility blocker is `12` pure color-only
+  `VS=0xAB1E86137A0240E8 / PS=0xA4A965C189287B99` draws, which still need
+  Xenos export/register semantics before they can count as real rendering.

@@ -1043,11 +1043,17 @@ bool IsKnownZeroColorExportDraw(const ReplayDrawState &state,
       !state.draw.texture_fetches.empty() || vertices.empty()) {
     return false;
   }
+  if (RenderStateUsesDepthTarget(state.draw.render_state.present
+                                     ? &state.draw.render_state
+                                     : nullptr)) {
+    return false;
+  }
   // A4 is the tiny max(oC0, r0, r0) pixel shader. Without a texture fetch, the
   // current limited translator can only replay whatever r0 happened to be after
   // our approximate VS export mapping. These screen/depth-style passes have
-  // repeatedly produced full-screen placeholder triangles, so keep them out of
-  // the "real scene" path until Xenos export/register semantics are modeled.
+  // repeatedly produced full-screen placeholder triangles. Keep pure color-only
+  // passes out of the "real scene" path until Xenos export/register semantics
+  // are modeled, but let captured depth/stencil side-effect passes run.
   return true;
 }
 
@@ -1102,6 +1108,28 @@ bool IsNoSideEffectNoFetchDraw(const ReplayDrawState &state) {
   const bool depth_write_disabled = !render_state.depth_write_enable;
   const bool stencil_disabled = !render_state.stencil_enable;
   return color_write_disabled && depth_write_disabled && stencil_disabled;
+}
+
+bool IsKnownNoRasterNoFetchDraw(const ReplayDrawState &state) {
+  if (IsNoSideEffectNoFetchDraw(state)) {
+    return true;
+  }
+
+  const PM4DrawRecord &draw = state.draw;
+  if (draw.indexed || !draw.vertex_fetches.empty() ||
+      !draw.texture_fetches.empty()) {
+    return false;
+  }
+  if (TopologyForPrimitive(draw.primitive_type) !=
+      D3D_PRIMITIVE_TOPOLOGY_POINTLIST) {
+    return false;
+  }
+
+  // Semantic IR for this MP class has no constants, no vertex fetches, and
+  // exports position through `sqrt oPos, -r_abs[0].x` after `setp_clr`.
+  // Treat it as an intentional no-raster point until a capture proves visible
+  // output; do not synthesize substitute point geometry.
+  return state.vertex_shader.hash == 0xDDED7E538422AE73ull;
 }
 
 bool IsLikelyFullscreenUtilityPass(const ReplayDrawState &state,
@@ -5055,6 +5083,7 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
     std::size_t ready = 0;
     std::size_t utility_ready = 0;
     std::size_t scene_candidate_ready = 0;
+    std::size_t ignored_utility = 0;
   };
 
   std::map<std::string, std::size_t> blocker_counts;
@@ -5066,6 +5095,7 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
   std::size_t ready = 0;
   std::size_t utility_ready = 0;
   std::size_t scene_candidate_ready = 0;
+  std::size_t ignored_utility = 0;
 
   for (std::size_t i = 0; i < capture.draws.size(); ++i) {
     const ReplayDrawState &state = capture.draws[i];
@@ -5076,6 +5106,12 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
     const std::string geometry_reason =
         DescribeRealDrawGeometrySupport(capture, i, true);
     if (!geometry_reason.empty()) {
+      if (IsKnownNoRasterNoFetchDraw(state)) {
+        ++ignored_utility;
+        ++stats.ignored_utility;
+        ++ready_class_counts["ignored utility/no-raster no-fetch draw"];
+        continue;
+      }
       ++blocker_counts["geometry: " + geometry_reason];
       continue;
     }
@@ -5129,7 +5165,8 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
             << " geometry_ok=" << geometry_ok << " shader_ok=" << shader_ok
             << " texture_ok=" << texture_ok << " ready=" << ready
             << " utility_ready=" << utility_ready
-            << " scene_candidate_ready=" << scene_candidate_ready << "\n";
+            << " scene_candidate_ready=" << scene_candidate_ready
+            << " ignored_utility=" << ignored_utility << "\n";
 
   std::vector<std::pair<std::string, std::size_t>> blockers(
       blocker_counts.begin(), blocker_counts.end());
@@ -5181,6 +5218,7 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
               << " ready=" << stats.ready
               << " utility_ready=" << stats.utility_ready
               << " scene_candidate_ready=" << stats.scene_candidate_ready
+              << " ignored_utility=" << stats.ignored_utility
               << "\n";
   }
 #endif
