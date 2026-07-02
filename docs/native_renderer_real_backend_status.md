@@ -1299,3 +1299,38 @@ This is a correctness improvement for the real backend state path, not a claim
 that A4 color semantics are solved. The remaining high-priority shader work is
 still Xenos register/export/interpolator lowering for AB1E and the remaining
 no-texture A4 draws.
+
+# Offline D3D12 render-target cache - 2026-07-02
+
+The offline D3D12 real replay path no longer collapses every captured guest
+color base into one host render target. It now creates a replay-local render
+target cache keyed by the captured guest color base and binds the matching RTV
+per submitted draw. The final BMP readback uses the selected presented guest
+base instead of whichever target happened to be bound last.
+
+Validation command:
+
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_010\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-rtcache.bmp --no-summary
+```
+
+Result:
+
+```text
+D3D12 real replay submitted 180 supported draw(s) across 8 shader pair(s)
+D3D12 real replay PSO cache: entries=10 misses=10 hits=170 diagnostic_pipelines=0 cache_index_writes=10 input_layout_variants=3
+D3D12 real replay bound 196 captured texture SRV(s), 1244 fallback texture SRV(s), unsupported_texture_attempts=0, partial_texture_previews=0
+D3D12 real replay bound 196 captured sampler descriptor(s), 652 fallback sampler descriptor(s), exact_clamp_modes=196, clamp_addressing_fallbacks=652
+D3D12 real replay offline render targets: count=3 presented_guest_color_base=0x530
+D3D12 real replay color readback: bytes=3686400 nonzero=3685950 output=C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-rtcache.bmp
+```
+
+Output SHA-256:
+`4D11C18AFD29F24DFF62FBA97EB5FC07BD64ABAFF56FD41016EE8BEEFAE25BF6`.
+
+This does not complete render-target emulation. It is an offline replay
+correctness fix for captures that use multiple guest color bases. Remaining RT
+work: prove the presented guest base from swap/resolve metadata instead of the
+current last-submitted-color-base heuristic, support multiple MRT slots, carry
+real depth target contents instead of a synthetic replay DSV, and factor the
+same target selection into live `native_d3d12`.

@@ -821,12 +821,47 @@ struct D3D12ReplayPipeline {
   bool forced_depth_only_color_mask = false;
 };
 
+struct D3D12ReplayRenderTarget {
+  uint32_t guest_base = 0;
+  ComPtr<ID3D12Resource> resource;
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+  bool initialized = false;
+};
+
+struct D3D12ReplayRenderTargetCache {
+  ComPtr<ID3D12DescriptorHeap> rtv_heap;
+  std::map<uint32_t, D3D12ReplayRenderTarget> targets;
+  uint32_t next_descriptor = 0;
+};
+
 struct CapturedColorTargetSeed {
   const RenderTargetPayloadRecord *payload = nullptr;
   uint32_t draw_index = 0;
   uint32_t width = 0;
   uint32_t height = 0;
 };
+
+uint32_t GuestColorBaseForDraw(const ReplayDrawState &state) {
+  if (!state.draw.render_state.present ||
+      state.draw.render_state.color_base.empty()) {
+    return 0;
+  }
+  return state.draw.render_state.color_base[0];
+}
+
+uint32_t ChoosePresentedGuestColorBase(
+    const std::vector<PreparedRealDraw> &draws, const ReplayCapture &capture) {
+  for (auto it = draws.rbegin(); it != draws.rend(); ++it) {
+    if (it->draw_index >= capture.draws.size()) {
+      continue;
+    }
+    const uint32_t base = GuestColorBaseForDraw(capture.draws[it->draw_index]);
+    if (base != 0) {
+      return base;
+    }
+  }
+  return 0;
+}
 
 struct NativeShaderOverridePair {
   std::filesystem::path vertex_path;
@@ -4038,6 +4073,74 @@ bool CreateReadbackBuffer(ID3D12Device *device, uint64_t total_size,
                  "ID3D12Device::CreateCommittedResource(readback)", error);
 }
 
+bool CreateReplayRenderTarget(
+    ID3D12Device *device, D3D12ReplayRenderTargetCache &cache,
+    uint32_t guest_base, uint32_t width, uint32_t height, DXGI_FORMAT format,
+    const D3D12_CLEAR_VALUE &clear_value, D3D12ReplayRenderTarget *&target,
+    std::string &error) {
+  auto existing = cache.targets.find(guest_base);
+  if (existing != cache.targets.end()) {
+    target = &existing->second;
+    return true;
+  }
+  if (!cache.rtv_heap) {
+    D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc{};
+    rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtv_heap_desc.NumDescriptors = 16;
+    if (!CheckHr(device->CreateDescriptorHeap(&rtv_heap_desc,
+                                              IID_PPV_ARGS(&cache.rtv_heap)),
+                 "ID3D12Device::CreateDescriptorHeap(real RTV cache)", error)) {
+      return false;
+    }
+  }
+  if (cache.next_descriptor >= 16) {
+    error = "D3D12 real replay exceeded offline render target cache capacity";
+    return false;
+  }
+
+  D3D12_RESOURCE_DESC texture_desc{};
+  texture_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  texture_desc.Width = width;
+  texture_desc.Height = height;
+  texture_desc.DepthOrArraySize = 1;
+  texture_desc.MipLevels = 1;
+  texture_desc.Format = format;
+  texture_desc.SampleDesc.Count = 1;
+  texture_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+  texture_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+  D3D12_HEAP_PROPERTIES default_heap{};
+  default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+  default_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+  default_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+  default_heap.CreationNodeMask = 1;
+  default_heap.VisibleNodeMask = 1;
+
+  D3D12ReplayRenderTarget created{};
+  created.guest_base = guest_base;
+  if (!CheckHr(device->CreateCommittedResource(
+                   &default_heap, D3D12_HEAP_FLAG_NONE, &texture_desc,
+                   D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
+                   IID_PPV_ARGS(&created.resource)),
+               "ID3D12Device::CreateCommittedResource(real cached render "
+               "target)",
+               error)) {
+    return false;
+  }
+
+  const UINT rtv_descriptor_size =
+      device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+  created.rtv = cache.rtv_heap->GetCPUDescriptorHandleForHeapStart();
+  created.rtv.ptr +=
+      static_cast<SIZE_T>(cache.next_descriptor) * rtv_descriptor_size;
+  ++cache.next_descriptor;
+  device->CreateRenderTargetView(created.resource.Get(), nullptr, created.rtv);
+  auto [it, inserted] = cache.targets.emplace(guest_base, std::move(created));
+  (void)inserted;
+  target = &it->second;
+  return true;
+}
+
 void WriteU16(std::ofstream &file, uint16_t value) {
   file.put(static_cast<char>(value & 0xFF));
   file.put(static_cast<char>((value >> 8) & 0xFF));
@@ -4599,6 +4702,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   ComPtr<ID3D12Resource> target;
   ComPtr<ID3D12DescriptorHeap> rtv_heap;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+  D3D12ReplayRenderTargetCache offline_render_targets;
+  const uint32_t presented_guest_color_base =
+      ChoosePresentedGuestColorBase(prepared_draws, capture);
   D3D12_CLEAR_VALUE clear_value{};
   clear_value.Format = format;
   clear_value.Color[0] = 0.015f;
@@ -4614,43 +4720,16 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     rtv.ptr += static_cast<SIZE_T>(live_binding->rtv_descriptor_index) *
                rtv_descriptor_size;
   } else {
-    D3D12_RESOURCE_DESC texture_desc{};
-    texture_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texture_desc.Width = width;
-    texture_desc.Height = height;
-    texture_desc.DepthOrArraySize = 1;
-    texture_desc.MipLevels = 1;
-    texture_desc.Format = format;
-    texture_desc.SampleDesc.Count = 1;
-    texture_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    texture_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-
-    D3D12_HEAP_PROPERTIES default_heap{};
-    default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    default_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    default_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    default_heap.CreationNodeMask = 1;
-    default_heap.VisibleNodeMask = 1;
-
-    if (!CheckHr(device->CreateCommittedResource(
-                     &default_heap, D3D12_HEAP_FLAG_NONE, &texture_desc,
-                     D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
-                     IID_PPV_ARGS(&target)),
-                 "ID3D12Device::CreateCommittedResource(real render target)",
-                 error)) {
+    D3D12ReplayRenderTarget *presented_target = nullptr;
+    if (!CreateReplayRenderTarget(device.Get(), offline_render_targets,
+                                  presented_guest_color_base, width, height,
+                                  format, clear_value, presented_target,
+                                  error)) {
       return false;
     }
-
-    D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc{};
-    rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    rtv_heap_desc.NumDescriptors = 1;
-    if (!CheckHr(device->CreateDescriptorHeap(&rtv_heap_desc,
-                                              IID_PPV_ARGS(&rtv_heap)),
-                 "ID3D12Device::CreateDescriptorHeap(RTV)", error)) {
-      return false;
-    }
-    rtv = rtv_heap->GetCPUDescriptorHandleForHeapStart();
-    device->CreateRenderTargetView(target.Get(), nullptr, rtv);
+    target = presented_target->resource;
+    rtv_heap = offline_render_targets.rtv_heap;
+    rtv = presented_target->rtv;
   }
 
   bool batch_uses_depth = false;
@@ -5266,6 +5345,17 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   if (!seeded_color_target) {
     list->ClearRenderTargetView(rtv, clear_value.Color, 0, nullptr);
   }
+  if (!live_submit) {
+    for (auto &entry : offline_render_targets.targets) {
+      if (entry.first == presented_guest_color_base) {
+        entry.second.initialized = true;
+        continue;
+      }
+      list->ClearRenderTargetView(entry.second.rtv, clear_value.Color, 0,
+                                  nullptr);
+      entry.second.initialized = true;
+    }
+  }
   ID3D12DescriptorHeap *descriptor_heaps[] = {srv_heap.Get(),
                                               sampler_heap.Get()};
   list->SetDescriptorHeaps(2, descriptor_heaps);
@@ -5295,13 +5385,29 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       list->SetGraphicsRootSignature(pipeline->root_signature.Get());
       list->SetPipelineState(pipeline->pipeline_state.Get());
       list->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
-      const bool draw_uses_depth =
-          batch_uses_depth &&
-          RenderStateUsesDepthTarget(pipeline->render_state);
-      list->OMSetRenderTargets(1, &rtv, FALSE,
-                               draw_uses_depth ? &dsv : nullptr);
       bound_pipeline = pipeline;
     }
+    D3D12_CPU_DESCRIPTOR_HANDLE draw_rtv = rtv;
+    if (!live_submit) {
+      const uint32_t draw_guest_color_base =
+          GuestColorBaseForDraw(uploaded_state);
+      D3D12ReplayRenderTarget *draw_target = nullptr;
+      if (!CreateReplayRenderTarget(device.Get(), offline_render_targets,
+                                    draw_guest_color_base, width, height,
+                                    format, clear_value, draw_target, error)) {
+        return false;
+      }
+      if (!draw_target->initialized) {
+        list->ClearRenderTargetView(draw_target->rtv, clear_value.Color, 0,
+                                    nullptr);
+        draw_target->initialized = true;
+      }
+      draw_rtv = draw_target->rtv;
+    }
+    const bool draw_uses_depth =
+        batch_uses_depth && RenderStateUsesDepthTarget(pipeline->render_state);
+    list->OMSetRenderTargets(1, &draw_rtv, FALSE,
+                             draw_uses_depth ? &dsv : nullptr);
     list->OMSetStencilRef(StencilRefFromRenderState(pipeline->render_state));
     const D3D12_RECT draw_scissor =
         ScissorRectFromRenderState(pipeline->render_state, width, height);
@@ -5534,6 +5640,13 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     }
   }
 
+  if (!live_submit) {
+    std::cout << "D3D12 real replay offline render targets: count="
+              << offline_render_targets.targets.size()
+              << " presented_guest_color_base=0x" << std::hex
+              << std::uppercase << presented_guest_color_base << std::dec
+              << std::nouppercase << "\n";
+  }
   std::cout << "D3D12 real replay color readback: bytes=" << color_stats.total_bytes
             << " nonzero=" << color_stats.nonzero_bytes
             << " output=" << output.string() << "\n";

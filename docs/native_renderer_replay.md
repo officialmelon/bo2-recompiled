@@ -559,3 +559,13 @@ pairs while keeping `diagnostic_pipelines=0`. The extra `56` submitted draws
 are reported separately as `forced_depth_only_zero_color_draws=56`; they do not
 count as solved A4 color rendering. Current output:
 `C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-depthonly-a4.bmp`.
+
+Follow-up: offline D3D12 real replay now caches host RTVs by captured guest
+color base and binds the target matching each draw. On MP010 this creates `3`
+offline render targets and reads back presented guest color base `0x530`.
+The output remains the current best BO2-derived menu image at
+`C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-rtcache.bmp`,
+SHA-256 `4D11C18AFD29F24DFF62FBA97EB5FC07BD64ABAFF56FD41016EE8BEEFAE25BF6`.
+This is still an offline replay fix; live `native_d3d12` must use the same
+target selection and still needs swap/resolve metadata to prove the final
+presented target.
