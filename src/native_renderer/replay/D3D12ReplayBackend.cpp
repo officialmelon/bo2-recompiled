@@ -820,6 +820,16 @@ struct UploadedRealDraw {
   std::array<std::string, kMaxRealReplayTextureSlots> texture_notes;
 };
 
+struct CachedTextureUpload {
+  ComPtr<ID3D12Resource> texture;
+  ComPtr<ID3D12Resource> upload;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t format = 0;
+  bool from_capture = false;
+  std::string note;
+};
+
 struct D3D12ReplayPipeline {
   uint64_t vertex_shader_hash = 0;
   uint64_t pixel_shader_hash = 0;
@@ -2149,6 +2159,28 @@ bool CheckCapturedTextureSupport(const ReplayDrawState &state,
     return false;
   }
   return true;
+}
+
+std::string TextureUploadCacheKey(const TextureFetchRecord *fetch,
+                                  bool fallback) {
+  if (fallback || fetch == nullptr) {
+    return "fallback:white-rgba8";
+  }
+
+  std::ostringstream key;
+  key << "captured:"
+      << "base=" << FormatHex32(fetch->base_address_bytes)
+      << ":mip=" << FormatHex32(fetch->mip_address_bytes)
+      << ":size=" << fetch->width << "x" << fetch->height
+      << ":pitch=" << fetch->pitch
+      << ":format=" << fetch->format
+      << ":endian=" << fetch->endian
+      << ":tiled=" << (fetch->tiled ? 1 : 0)
+      << ":payload=" << fetch->payload_bytes.size();
+  if (!fetch->payload_resource_path.empty()) {
+    key << ":resource=" << fetch->payload_resource_path;
+  }
+  return key.str();
 }
 
 void CopyFramePlanDiagnosticsToLiveBinding(
@@ -5525,6 +5557,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   uint32_t fallback_sampler_count = 0;
   uint32_t exact_sampler_clamp_count = 0;
   uint32_t fallback_sampler_clamp_count = 0;
+  std::map<std::string, CachedTextureUpload> texture_upload_cache;
+  std::size_t texture_cache_hits = 0;
+  std::size_t texture_cache_misses = 0;
   const uint8_t white_texel[4] = {0xFF, 0xFF, 0xFF, 0xFF};
   uint32_t next_sampler_descriptor_base =
       static_cast<uint32_t>(kMaxRealReplayTextureSlots);
@@ -5580,6 +5615,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       }
 
       if (selected_fetch) {
+        const std::string texture_cache_key =
+            TextureUploadCacheKey(selected_fetch, false);
         uploaded.texture_widths[slot] = selected_fetch->width;
         uploaded.texture_heights[slot] = selected_fetch->height;
         uploaded.texture_formats[slot] = selected_fetch->format;
@@ -5590,12 +5627,29 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         if (!texture_reason.empty()) {
           ++partial_texture_preview_count;
         }
-        if (!CreateTexture2DRgba8(
-                device.Get(), list.Get(), texture_rgba.data(),
-                uploaded.texture_widths[slot],
-                uploaded.texture_heights[slot], uploaded.textures[slot],
-                uploaded.texture_uploads[slot], error)) {
-          return false;
+        auto cached = texture_upload_cache.find(texture_cache_key);
+        if (cached != texture_upload_cache.end()) {
+          uploaded.textures[slot] = cached->second.texture;
+          uploaded.texture_uploads[slot] = cached->second.upload;
+          ++texture_cache_hits;
+        } else {
+          if (!CreateTexture2DRgba8(
+                  device.Get(), list.Get(), texture_rgba.data(),
+                  uploaded.texture_widths[slot],
+                  uploaded.texture_heights[slot], uploaded.textures[slot],
+                  uploaded.texture_uploads[slot], error)) {
+            return false;
+          }
+          CachedTextureUpload cache_entry;
+          cache_entry.texture = uploaded.textures[slot];
+          cache_entry.upload = uploaded.texture_uploads[slot];
+          cache_entry.width = uploaded.texture_widths[slot];
+          cache_entry.height = uploaded.texture_heights[slot];
+          cache_entry.format = uploaded.texture_formats[slot];
+          cache_entry.from_capture = true;
+          cache_entry.note = uploaded.texture_notes[slot];
+          texture_upload_cache.emplace(texture_cache_key, std::move(cache_entry));
+          ++texture_cache_misses;
         }
         ++captured_texture_count;
         ++captured_sampler_count;
@@ -5605,6 +5659,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
           ++fallback_sampler_clamp_count;
         }
       } else {
+        const std::string texture_cache_key = TextureUploadCacheKey(nullptr, true);
         uploaded.texture_widths[slot] = 1;
         uploaded.texture_heights[slot] = 1;
         uploaded.texture_formats[slot] = 6;
@@ -5612,10 +5667,27 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         uploaded.sampler_from_capture[slot] = false;
         uploaded.texture_notes[slot] =
             texture_reason.empty() ? "no texture fetch" : texture_reason;
-        if (!CreateTexture2DRgba8(device.Get(), list.Get(), white_texel, 1, 1,
-                                  uploaded.textures[slot],
-                                  uploaded.texture_uploads[slot], error)) {
-          return false;
+        auto cached = texture_upload_cache.find(texture_cache_key);
+        if (cached != texture_upload_cache.end()) {
+          uploaded.textures[slot] = cached->second.texture;
+          uploaded.texture_uploads[slot] = cached->second.upload;
+          ++texture_cache_hits;
+        } else {
+          if (!CreateTexture2DRgba8(device.Get(), list.Get(), white_texel, 1, 1,
+                                    uploaded.textures[slot],
+                                    uploaded.texture_uploads[slot], error)) {
+            return false;
+          }
+          CachedTextureUpload cache_entry;
+          cache_entry.texture = uploaded.textures[slot];
+          cache_entry.upload = uploaded.texture_uploads[slot];
+          cache_entry.width = uploaded.texture_widths[slot];
+          cache_entry.height = uploaded.texture_heights[slot];
+          cache_entry.format = uploaded.texture_formats[slot];
+          cache_entry.from_capture = false;
+          cache_entry.note = uploaded.texture_notes[slot];
+          texture_upload_cache.emplace(texture_cache_key, std::move(cache_entry));
+          ++texture_cache_misses;
         }
         ++fallback_texture_count;
         if (draw_has_texture_fetches) {
@@ -5725,6 +5797,10 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
               << unsupported_texture_count
               << ", partial_texture_previews="
               << partial_texture_preview_count << "\n";
+    std::cout << "D3D12 real replay texture upload cache: entries="
+              << texture_upload_cache.size() << " misses="
+              << texture_cache_misses << " hits=" << texture_cache_hits
+              << "\n";
     std::cout << "D3D12 real replay bound " << captured_sampler_count
               << " captured sampler descriptor(s), " << fallback_sampler_count
               << " fallback sampler descriptor(s), exact_clamp_modes="

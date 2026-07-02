@@ -2554,3 +2554,48 @@ report for `PS=0x7D1EF030F5710BDA` or `PS=0x8645E8BA65E424B2`. This removes
 the proven missing-constant cause of stretched/static atlas sampling. Remaining
 texture issues should now be debugged as shader math/translation, sampler
 addressing, or texture decode issues rather than absent `c72/c235/...` state.
+
+Texture upload cache and bounded live probe:
+
+The real D3D12 replay/live submit path now caches per-submit texture uploads by
+captured texture identity (`base`, `mip`, dimensions, pitch, format, endian,
+tiled flag, payload size/resource path) and uses one shared white RGBA8 fallback
+texture for fallback slots. SRV and sampler descriptors are still emitted per
+draw/slot, so shader binding behavior is unchanged; only duplicate D3D12
+resource/upload creation is avoided. This is a performance/resource-churn fix,
+not a shader correctness fix.
+
+Validation:
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_057_float_constants_sidecar\events.jsonl --validate --no-summary
+```
+
+Result: `Validation OK: 4000 events, 17 frames, 828 draws`.
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_057_float_constants_sidecar\events.jsonl --backend d3d12 --d3d12-output native-renderer-mp057-texture-cache-replay.bmp --shader-override-root shader_work\native_overrides --skip-unsupported --d3d12-draws 1200
+```
+
+Result: `118` supported real draws across `8` shader pairs,
+`148` captured texture SRVs, `796` fallback texture SRVs, and:
+
+```text
+D3D12 real replay texture upload cache: entries=149 misses=149 hits=795
+```
+
+The replay output remains a partially correct MP menu/background image. It is
+still not a finished renderer: UI/text correctness and broader shader/texture
+semantics remain incomplete.
+
+Bounded live validation:
+
+```text
+default_mp.exe --native_renderer_mode=native_d3d12 --native_renderer_verbose=false --native_renderer_live_allow_diagnostic_shader=false --native_renderer_skip_unsupported_draws=true
+```
+
+Result: the RelWithDebInfo MP native D3D12 build stayed `Responding=True` for
+all 5 second samples through 35 seconds, with working set stable around
+`835 MB`; the watchdog then stopped the process. This shows the current build
+does not immediately enter the Windows not-responding state in this bounded
+probe, but it does not prove good frame pacing or final visual correctness.
