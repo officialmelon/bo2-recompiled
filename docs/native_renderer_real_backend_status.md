@@ -2154,3 +2154,42 @@ per-frame constants, but it does not invent ranges the capture never observes.
 The next texture-specific task is to trace the XEX constant emitters and
 ReXGlue CP constant events until those missing ranges are captured or their
 initial/static source is identified.
+
+MP034 atlas constant-slot update:
+
+The MP028 capture shows the active atlas/animated texture pixel shader draws
+bind captured PM4 float constant ranges at indices `1952` and `2032`. The D3D12
+replay backend materializes those as sparse float4 slots using `index >> 3`, so
+they become slots `244` and `254`. Two manual pixel shader overrides were still
+reading raw/guessed slots such as `captured_constants[2032 & 511]` and
+`captured_constants[232]`, which left atlas/UV transform inputs zero or
+unrelated. That maps directly to the symptom where an animated texture sheet is
+sampled as a stretched whole texture instead of the intended frame.
+
+Validation:
+
+```text
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\live_d3d12_mp_028\events.jsonl --backend d3d12 --d3d12-output native-renderer-mp034-atlas-constant-fix-replay.bmp --shader-override-root shader_work\native_overrides --skip-unsupported --d3d12-draws 1200
+```
+
+Result:
+
+```text
+D3D12 real replay submitted 165 supported draw(s) across 8 shader pair(s)
+D3D12 real replay PSO cache: entries=11 misses=11 hits=154 diagnostic_pipelines=0
+D3D12 real replay bound 204 captured texture SRV(s), 1116 fallback texture SRV(s)
+D3D12 real replay color readback: bytes=3686400 nonzero=3686398 output=native-renderer-mp034-atlas-constant-fix-replay.bmp
+```
+
+Output evidence:
+`C:\Users\braxt\bo2-recompiled\native-renderer-mp034-atlas-constant-fix-replay.bmp`.
+
+Remaining texture work:
+
+- Replace the manual atlas approximations with real lowered Xenos ALU/texture
+  coordinate code for shaders `0x7D1EF030F5710BDA` and
+  `0x8645E8BA65E424B2`.
+- Capture or reconstruct the missing static/initial constant ranges reported by
+  `scripts/windows/audit_native_constant_coverage.ps1`.
+- Implement packed mip capture/upload instead of relying on the temporary base
+  mip sampler clamp.

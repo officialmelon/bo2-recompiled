@@ -13,6 +13,11 @@ cbuffer CapturedConstants : register(b1)
   float4 captured_constants[512];
 };
 
+// PM4 constant upload indices in captures are dword/register-file offsets.
+// The D3D12 native backend stores them as sparse float4 slots using index >> 3.
+static const uint kBo2Const244 = 1952u >> 3;
+static const uint kBo2Const254 = 2032u >> 3;
+
 Texture2D native_texture0 : register(t0);
 Texture2D native_texture1 : register(t1);
 Texture2D native_texture2 : register(t2);
@@ -32,8 +37,8 @@ struct PSInput
 float4 PSMain(PSInput input) : SV_Target0
 {
   const float2 uv = saturate(input.uv);
-  const float2 wave = captured_constants[2032 & 511].xy;
-  const float2 bias = captured_constants[1952 & 511].zw;
+  const float2 wave = captured_constants[kBo2Const254].xy;
+  const float2 bias = captured_constants[kBo2Const244].zw;
   const float tf1 = native_texture0.Sample(native_sampler0, uv).r;
   const float tfa = native_texture1.Sample(native_sampler1, uv).r;
   const float tfb = native_texture2.Sample(native_sampler2,
@@ -42,7 +47,7 @@ float4 PSMain(PSInput input) : SV_Target0
       saturate(uv + bias * (1.0f / 128.0f))).r;
 
   const float mask = saturate(abs(tf1) * 1.35f +
-                              abs(captured_constants[2032 & 511].z) *
+                              abs(captured_constants[kBo2Const254].z) *
                                   (1.0f / 64.0f));
   const float3 scalar_color = float3(tfa, tfb, tfc) * mask;
   return float4(saturate(scalar_color * max(input.color.rgb, 0.35f.xxx)),
