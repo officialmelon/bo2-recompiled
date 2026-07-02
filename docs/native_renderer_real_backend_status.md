@@ -6,6 +6,27 @@ Last updated: 2026-07-02
 
 Real native rendering is not complete.
 
+## 2026-07-02 live D3D12 pacing checkpoint
+
+The live `native_d3d12` backend no longer performs a full `WaitForGpu()` drain
+before every frame's command allocator reset. Steady-state command recording now
+cycles through three live D3D12 command frame contexts and waits only when the
+specific context being reused still has an unfinished fence value.
+
+This is a responsiveness/pacing fix, not a correctness fix for the remaining
+texture, shader, and render-state issues. Full GPU drains are still kept for
+shutdown and swapchain resize/recreation paths.
+
+Validation:
+
+- Built `native_render_replay.exe` and RelWithDebInfo `default_mp.exe` with
+  parallel Ninja (`-j12`), exit `0`.
+- Bounded `default_mp.exe --native_renderer_mode=native_d3d12` run remained
+  responsive for every 2-second watchdog sample and produced
+  `native_captures\live_d3d12_mp_072_frame_pacing\events.jsonl`.
+- Replay validation passed:
+  `Validation OK: 4500 events, 19 frames, 920 draws`.
+
 ## 2026-07-02 MP010 replay checkpoint
 
 Current best offline real D3D12 replay image:

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <atomic>
 #include <condition_variable>
@@ -97,6 +98,7 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   D3D12LiveFrameBuilder& ActiveFrameBuilder();
   bool BeginCommandFrame(uint64_t frame_index);
   void EndCommandFrame(uint64_t frame_index, bool execute);
+  bool WaitForFenceValue(uint64_t fence_value);
   bool WaitForGpu();
   bool EnsureSwapChain(uint32_t width, uint32_t height);
   bool EnsureNativeWindow(uint32_t width, uint32_t height);
@@ -134,10 +136,19 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   std::filesystem::path shader_override_root_;
 
 #if defined(_WIN32)
+  static constexpr uint32_t kLiveCommandFrameCount = 3;
+
+  struct CommandFrameContext {
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> command_list;
+    uint64_t fence_value = 0;
+    bool open = false;
+  };
+
   Microsoft::WRL::ComPtr<ID3D12Device> device_;
   Microsoft::WRL::ComPtr<ID3D12CommandQueue> command_queue_;
-  Microsoft::WRL::ComPtr<ID3D12CommandAllocator> command_allocator_;
-  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> command_list_;
+  std::array<CommandFrameContext, kLiveCommandFrameCount> command_frames_;
+  CommandFrameContext* active_command_frame_ = nullptr;
   Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
   Microsoft::WRL::ComPtr<IDXGIFactory4> dxgi_factory_;
   Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain_;
@@ -154,9 +165,9 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   bool window_failed_ = false;
   HANDLE fence_event_ = nullptr;
   uint64_t fence_value_ = 0;
+  uint32_t next_command_frame_ = 0;
   uint32_t swap_width_ = 0;
   uint32_t swap_height_ = 0;
-  bool command_frame_open_ = false;
   bool swapchain_ready_ = false;
 #endif
 };

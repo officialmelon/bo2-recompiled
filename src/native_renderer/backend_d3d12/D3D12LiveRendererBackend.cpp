@@ -111,30 +111,41 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
     return false;
   }
 
-  hr = device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                       IID_PPV_ARGS(&command_allocator_));
-  if (FAILED(hr)) {
-    last_error_ = "CreateCommandAllocator failed for native_d3d12 live backend";
-    REXLOG_ERROR("BO2 native D3D12 command allocator init failed hr={:#010x}",
-                 static_cast<uint32_t>(hr));
-    return false;
-  }
+  for (uint32_t frame_slot = 0; frame_slot < kLiveCommandFrameCount;
+       ++frame_slot) {
+    CommandFrameContext& command_frame = command_frames_[frame_slot];
+    hr = device_->CreateCommandAllocator(
+        D3D12_COMMAND_LIST_TYPE_DIRECT,
+        IID_PPV_ARGS(&command_frame.allocator));
+    if (FAILED(hr)) {
+      last_error_ =
+          "CreateCommandAllocator failed for native_d3d12 live backend";
+      REXLOG_ERROR(
+          "BO2 native D3D12 command allocator init failed slot={} hr={:#010x}",
+          frame_slot, static_cast<uint32_t>(hr));
+      return false;
+    }
 
-  hr = device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                  command_allocator_.Get(), nullptr,
-                                  IID_PPV_ARGS(&command_list_));
-  if (FAILED(hr)) {
-    last_error_ = "CreateCommandList failed for native_d3d12 live backend";
-    REXLOG_ERROR("BO2 native D3D12 command list init failed hr={:#010x}",
-                 static_cast<uint32_t>(hr));
-    return false;
-  }
-  hr = command_list_->Close();
-  if (FAILED(hr)) {
-    last_error_ = "Initial command list close failed for native_d3d12 live backend";
-    REXLOG_ERROR("BO2 native D3D12 command list initial close failed hr={:#010x}",
-                 static_cast<uint32_t>(hr));
-    return false;
+    hr = device_->CreateCommandList(
+        0, D3D12_COMMAND_LIST_TYPE_DIRECT, command_frame.allocator.Get(),
+        nullptr, IID_PPV_ARGS(&command_frame.command_list));
+    if (FAILED(hr)) {
+      last_error_ = "CreateCommandList failed for native_d3d12 live backend";
+      REXLOG_ERROR(
+          "BO2 native D3D12 command list init failed slot={} hr={:#010x}",
+          frame_slot, static_cast<uint32_t>(hr));
+      return false;
+    }
+    hr = command_frame.command_list->Close();
+    if (FAILED(hr)) {
+      last_error_ =
+          "Initial command list close failed for native_d3d12 live backend";
+      REXLOG_ERROR(
+          "BO2 native D3D12 command list initial close failed slot={} "
+          "hr={:#010x}",
+          frame_slot, static_cast<uint32_t>(hr));
+      return false;
+    }
   }
 
   hr = device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_));
@@ -199,8 +210,13 @@ void D3D12LiveRendererBackend::Shutdown() {
     fence_event_ = nullptr;
   }
   fence_.Reset();
-  command_list_.Reset();
-  command_allocator_.Reset();
+  active_command_frame_ = nullptr;
+  for (CommandFrameContext& command_frame : command_frames_) {
+    command_frame.command_list.Reset();
+    command_frame.allocator.Reset();
+    command_frame.fence_value = 0;
+    command_frame.open = false;
+  }
   command_queue_.Reset();
   device_.Reset();
 #endif
@@ -403,10 +419,15 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
   }
   PumpNativeWindowMessages();
 
+  if (!active_command_frame_ || !active_command_frame_->command_list) {
+    last_error_ = "No active native_d3d12 command frame for live submit";
+    return false;
+  }
+
   replay::D3D12LiveSubmitBinding binding{};
   binding.device = device_.Get();
   binding.queue = command_queue_.Get();
-  binding.command_list = command_list_.Get();
+  binding.command_list = active_command_frame_->command_list.Get();
   binding.color_target = color_target_.Get();
   binding.rtv_heap = rtv_heap_.Get();
   binding.rtv_descriptor_index = swap_chain_->GetCurrentBackBufferIndex();
@@ -768,15 +789,25 @@ bool D3D12LiveRendererBackend::BeginCommandFrame(uint64_t frame_index) {
   (void)frame_index;
   return false;
 #else
-  if (!command_allocator_ || !command_list_) {
+  if (!command_queue_ || !fence_ || !fence_event_) {
+    return false;
+  }
+  if (active_command_frame_) {
+    last_error_ = "native_d3d12 command frame already open";
+    REXLOG_ERROR("BO2 native D3D12 command frame overlap at frame={}",
+                 frame_index);
     return false;
   }
 
-  if (!WaitForGpu()) {
+  CommandFrameContext& command_frame = command_frames_[next_command_frame_];
+  if (!command_frame.allocator || !command_frame.command_list) {
+    return false;
+  }
+  if (!WaitForFenceValue(command_frame.fence_value)) {
     return false;
   }
 
-  HRESULT hr = command_allocator_->Reset();
+  HRESULT hr = command_frame.allocator->Reset();
   if (FAILED(hr)) {
     last_error_ = "Reset command allocator failed for native_d3d12 live frame";
     REXLOG_ERROR("BO2 native D3D12 command allocator reset failed frame={} "
@@ -784,7 +815,8 @@ bool D3D12LiveRendererBackend::BeginCommandFrame(uint64_t frame_index) {
                  frame_index, static_cast<uint32_t>(hr));
     return false;
   }
-  hr = command_list_->Reset(command_allocator_.Get(), nullptr);
+  hr = command_frame.command_list->Reset(command_frame.allocator.Get(),
+                                         nullptr);
   if (FAILED(hr)) {
     last_error_ = "Reset command list failed for native_d3d12 live frame";
     REXLOG_ERROR("BO2 native D3D12 command list reset failed frame={} "
@@ -793,7 +825,9 @@ bool D3D12LiveRendererBackend::BeginCommandFrame(uint64_t frame_index) {
     return false;
   }
 
-  command_frame_open_ = true;
+  command_frame.open = true;
+  active_command_frame_ = &command_frame;
+  next_command_frame_ = (next_command_frame_ + 1) % kLiveCommandFrameCount;
   return true;
 #endif
 }
@@ -804,12 +838,15 @@ void D3D12LiveRendererBackend::EndCommandFrame(uint64_t frame_index,
   (void)frame_index;
   (void)execute;
 #else
-  if (!command_frame_open_ || !command_list_ || !command_queue_) {
+  if (!active_command_frame_ || !active_command_frame_->open ||
+      !active_command_frame_->command_list || !command_queue_) {
     return;
   }
-  command_frame_open_ = false;
+  CommandFrameContext* command_frame = active_command_frame_;
+  active_command_frame_ = nullptr;
+  command_frame->open = false;
 
-  HRESULT hr = command_list_->Close();
+  HRESULT hr = command_frame->command_list->Close();
   if (FAILED(hr)) {
     last_error_ = "Close command list failed for native_d3d12 live frame";
     REXLOG_ERROR("BO2 native D3D12 command list close failed frame={} "
@@ -822,25 +859,31 @@ void D3D12LiveRendererBackend::EndCommandFrame(uint64_t frame_index,
     return;
   }
 
-  ID3D12CommandList *lists[] = {command_list_.Get()};
+  ID3D12CommandList *lists[] = {command_frame->command_list.Get()};
   command_queue_->ExecuteCommandLists(1, lists);
+
+  const uint64_t signal_value = ++fence_value_;
+  hr = command_queue_->Signal(fence_.Get(), signal_value);
+  if (FAILED(hr)) {
+    last_error_ = "Signal frame fence failed for native_d3d12 live backend";
+    REXLOG_ERROR("BO2 native D3D12 frame fence signal failed frame={} "
+                 "hr={:#010x}",
+                 frame_index, static_cast<uint32_t>(hr));
+    return;
+  }
+  command_frame->fence_value = signal_value;
 #endif
 }
 
-bool D3D12LiveRendererBackend::WaitForGpu() {
+bool D3D12LiveRendererBackend::WaitForFenceValue(uint64_t signal_value) {
 #if !defined(_WIN32)
+  (void)signal_value;
   return false;
 #else
-  if (!command_queue_ || !fence_ || !fence_event_) {
-    return false;
+  if (signal_value == 0) {
+    return true;
   }
-
-  const uint64_t signal_value = ++fence_value_;
-  HRESULT hr = command_queue_->Signal(fence_.Get(), signal_value);
-  if (FAILED(hr)) {
-    last_error_ = "Signal fence failed for native_d3d12 live backend";
-    REXLOG_ERROR("BO2 native D3D12 fence signal failed hr={:#010x}",
-                 static_cast<uint32_t>(hr));
+  if (!fence_ || !fence_event_) {
     return false;
   }
 
@@ -848,7 +891,7 @@ bool D3D12LiveRendererBackend::WaitForGpu() {
     return true;
   }
 
-  hr = fence_->SetEventOnCompletion(signal_value, fence_event_);
+  HRESULT hr = fence_->SetEventOnCompletion(signal_value, fence_event_);
   if (FAILED(hr)) {
     last_error_ = "SetEventOnCompletion failed for native_d3d12 live backend";
     REXLOG_ERROR("BO2 native D3D12 fence wait setup failed hr={:#010x}",
@@ -885,6 +928,26 @@ bool D3D12LiveRendererBackend::WaitForGpu() {
     return false;
   }
   return true;
+#endif
+}
+
+bool D3D12LiveRendererBackend::WaitForGpu() {
+#if !defined(_WIN32)
+  return false;
+#else
+  if (!command_queue_ || !fence_ || !fence_event_) {
+    return false;
+  }
+
+  const uint64_t signal_value = ++fence_value_;
+  HRESULT hr = command_queue_->Signal(fence_.Get(), signal_value);
+  if (FAILED(hr)) {
+    last_error_ = "Signal fence failed for native_d3d12 live backend";
+    REXLOG_ERROR("BO2 native D3D12 fence signal failed hr={:#010x}",
+                 static_cast<uint32_t>(hr));
+    return false;
+  }
+  return WaitForFenceValue(signal_value);
 #endif
 }
 
