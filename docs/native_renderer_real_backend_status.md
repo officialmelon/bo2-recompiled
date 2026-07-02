@@ -2529,6 +2529,13 @@ that selected `c244` instead of `c232` after the full constant snapshot path
 landed. The overrides now preserve wrap/animated atlas coordinates more closely
 to the decoded Xenos ALU and leave captured sampler address modes in control.
 
+The D3D12 sampler filter mapping also treats Xenos texture filter value `3` as
+`kUseFetchConst` instead of nearest-point. Native replay does not yet carry a
+separate shader sampler binding for every manual override, so unresolved
+`kUseFetchConst` now falls back to linear filtering for mag/min/mip sampling.
+This avoids turning BO2 UI/menu atlas samples into visibly blocky nearest-point
+samples while the full sampler binding translator is still incomplete.
+
 Validation:
 
 ```text

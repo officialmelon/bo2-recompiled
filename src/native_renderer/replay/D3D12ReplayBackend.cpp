@@ -2857,7 +2857,24 @@ void CreateTextureSrv(ID3D12Device *device, ID3D12Resource *texture,
   device->CreateShaderResourceView(texture, &srv_desc, descriptor);
 }
 
-bool IsLinearTextureFilter(uint32_t filter) { return filter == 1; }
+bool IsLinearTextureFilter(uint32_t filter, bool mip_filter = false) {
+  // Xenos TextureFilter: 0=point, 1=linear, 2=base-map-only (mip only),
+  // 3=use the other fetch/filter source. Native replay currently captures the
+  // resolved texture fetch state but not every shader sampler binding in the
+  // backend-neutral draw record, so unresolved kUseFetchConst should not fall
+  // back to nearest-point. Linear is the least destructive fallback for BO2 UI
+  // atlas and animated-menu samples.
+  if (filter == 1) {
+    return true;
+  }
+  if (filter == 3) {
+    return true;
+  }
+  if (mip_filter && filter == 2) {
+    return false;
+  }
+  return false;
+}
 
 D3D12_TEXTURE_ADDRESS_MODE D3D12AddressModeFromXenosClamp(uint32_t clamp) {
   switch (clamp) {
@@ -2897,8 +2914,8 @@ D3D12_FILTER D3D12FilterFromTextureFetch(const TextureFetchRecord *fetch) {
       IsLinearTextureFilter(fetch->mag_filter) ? D3D12_FILTER_TYPE_LINEAR
                                                : D3D12_FILTER_TYPE_POINT;
   const D3D12_FILTER_TYPE mip_filter =
-      IsLinearTextureFilter(fetch->mip_filter) ? D3D12_FILTER_TYPE_LINEAR
-                                               : D3D12_FILTER_TYPE_POINT;
+      IsLinearTextureFilter(fetch->mip_filter, true) ? D3D12_FILTER_TYPE_LINEAR
+                                                     : D3D12_FILTER_TYPE_POINT;
   return D3D12_ENCODE_BASIC_FILTER(min_filter, mag_filter, mip_filter,
                                    D3D12_FILTER_REDUCTION_TYPE_STANDARD);
 }
