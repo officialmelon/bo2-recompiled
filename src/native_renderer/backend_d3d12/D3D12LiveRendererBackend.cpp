@@ -345,11 +345,17 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
                                 last_submit_stats_.utility_draws,
                                 last_submit_stats_.skipped_draws,
                                 last_submit_stats_.elided_noop_draws,
+                                last_submit_stats_
+                                    .candidate_presented_guest_color_base,
+                                last_submit_stats_
+                                    .selected_presented_guest_color_base,
                                 last_submit_stats_.unsupported_reasons,
                                 last_submit_stats_.presentable_frame,
                                 last_submit_stats_.noop_utility_frame,
                                 last_submit_stats_.retained_color_ready,
                                 last_submit_stats_.copied_retained_frame,
+                                last_submit_stats_
+                                    .rejected_presented_guest_color_switch,
                                 present_native_frame,
                                 last_error_);
   RecordLiveSubmitDiagnostics(frame_index, attempted_submit, submit_success,
@@ -456,11 +462,17 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
   last_submit_stats_.utility_draws = binding.utility_draws;
   last_submit_stats_.skipped_draws = binding.skipped_draws;
   last_submit_stats_.elided_noop_draws = binding.elided_noop_draws;
+  last_submit_stats_.candidate_presented_guest_color_base =
+      binding.candidate_presented_guest_color_base;
+  last_submit_stats_.selected_presented_guest_color_base =
+      binding.selected_presented_guest_color_base;
   last_submit_stats_.unsupported_reasons = binding.unsupported_reasons;
   last_submit_stats_.presentable_frame = binding.presentable_frame;
   last_submit_stats_.noop_utility_frame = binding.noop_utility_frame;
   last_submit_stats_.retained_color_ready = binding.retained_color_ready;
   last_submit_stats_.copied_retained_frame = binding.copied_retained_frame;
+  last_submit_stats_.rejected_presented_guest_color_switch =
+      binding.rejected_presented_guest_color_switch;
   if (verbose_ || submitted_frames_ < 5 || ShouldLogHighFrequencyEvent(frame_index)) {
     REXLOG_INFO(
         "BO2 native D3D12 live frame {} submitted real_draws={} "
@@ -469,7 +481,8 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
         "input_layout_variants={} scene_draws={} depth_only_draws={} "
         "utility_draws={} skipped_draws={} elided_noop_draws={} "
         "presentable_frame={} noop_utility_frame={} retained_ready={} "
-        "copied_retained_frame={}",
+        "copied_retained_frame={} presented_target_candidate={:#010x} "
+        "presented_target_selected={:#010x} rejected_target_switch={}",
         frame_index, binding.submitted_draws, binding.shader_pair_count,
         binding.pso_entries, binding.pso_cache_misses, binding.pso_cache_hits,
         binding.diagnostic_pipelines, binding.input_layout_variants,
@@ -479,7 +492,10 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
         binding.presentable_frame ? "yes" : "no",
         binding.noop_utility_frame ? "yes" : "no",
         binding.retained_color_ready ? "yes" : "no",
-        binding.copied_retained_frame ? "yes" : "no");
+        binding.copied_retained_frame ? "yes" : "no",
+        binding.candidate_presented_guest_color_base,
+        binding.selected_presented_guest_color_base,
+        binding.rejected_presented_guest_color_switch ? "yes" : "no");
   }
   return true;
 #endif

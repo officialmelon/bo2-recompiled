@@ -868,7 +868,15 @@ uint32_t GuestColorBaseForDraw(const ReplayDrawState &state) {
   return state.draw.render_state.color_base[0];
 }
 
-uint32_t ChoosePresentedGuestColorBase(
+struct PresentedGuestColorChoice {
+  uint32_t base = 0;
+  std::size_t scene_draws = 0;
+  std::size_t total_draws = 0;
+  std::size_t depth_base_matches = 0;
+  std::size_t last_draw_index = 0;
+};
+
+PresentedGuestColorChoice ChoosePresentedGuestColorBase(
     const std::vector<PreparedRealDraw> &draws, const ReplayCapture &capture) {
   struct BaseScore {
     std::size_t scene_draws = 0;
@@ -920,7 +928,8 @@ uint32_t ChoosePresentedGuestColorBase(
     }
   }
   if (best_base != 0) {
-    return best_base;
+    return {best_base, best_score.scene_draws, best_score.total_draws,
+            best_score.depth_base_matches, best_score.last_draw_index};
   }
 
   for (auto it = draws.rbegin(); it != draws.rend(); ++it) {
@@ -929,10 +938,10 @@ uint32_t ChoosePresentedGuestColorBase(
     }
     const uint32_t base = GuestColorBaseForDraw(capture.draws[it->draw_index]);
     if (base != 0) {
-      return base;
+      return {base, 0, 1, 0, it->draw_index};
     }
   }
-  return 0;
+  return {};
 }
 
 struct NativeShaderOverridePair {
@@ -5157,8 +5166,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   ComPtr<ID3D12DescriptorHeap> rtv_heap;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
   D3D12ReplayRenderTargetCache offline_render_targets;
-  const uint32_t presented_guest_color_base =
+  const PresentedGuestColorChoice presented_guest_color_candidate =
       ChoosePresentedGuestColorBase(prepared_draws, capture);
+  uint32_t presented_guest_color_base = presented_guest_color_candidate.base;
   D3D12_CLEAR_VALUE clear_value{};
   clear_value.Format = format;
   clear_value.Color[0] = 0.015f;
@@ -5226,7 +5236,6 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       list->ClearRenderTargetView(live_session->color_accum_rtv,
                                   clear_value.Color, 0, nullptr);
     }
-    live_session->presented_guest_color_base = presented_guest_color_base;
     target = live_session->color_accum_target;
     rtv_heap = live_session->color_accum_rtv_heap;
     rtv = live_session->color_accum_rtv;
@@ -5808,6 +5817,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   }
   if (live_submit) {
     CopyFramePlanDiagnosticsToLiveBinding(frame_plan, *live_binding);
+    live_binding->candidate_presented_guest_color_base =
+        presented_guest_color_candidate.base;
+    live_binding->selected_presented_guest_color_base =
+        presented_guest_color_base;
+    live_binding->rejected_presented_guest_color_switch = false;
     live_binding->submitted_draws =
         static_cast<uint64_t>(uploaded_draws.size());
     live_binding->shader_pair_count =
@@ -5830,6 +5844,26 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
                                    live_session->has_presentable_color);
     live_binding->retained_color_ready =
         live_session && live_session->has_presentable_color;
+    if (live_session && live_session->has_presentable_color &&
+        live_session->presented_guest_color_base != 0 &&
+        presented_guest_color_base != live_session->presented_guest_color_base) {
+      constexpr std::size_t kMinSceneDrawsForPresentedTargetSwitch = 12;
+      const bool strong_target_switch =
+          live_binding->presentable_frame &&
+          presented_guest_color_candidate.scene_draws >=
+              kMinSceneDrawsForPresentedTargetSwitch;
+      if (!strong_target_switch) {
+        presented_guest_color_base = live_session->presented_guest_color_base;
+        live_binding->selected_presented_guest_color_base =
+            presented_guest_color_base;
+        live_binding->rejected_presented_guest_color_switch = true;
+        live_binding->presentable_frame = false;
+      }
+    }
+    if (live_session && live_binding->presentable_frame &&
+        presented_guest_color_base != 0) {
+      live_session->presented_guest_color_base = presented_guest_color_base;
+    }
   }
   if (log_backend) {
     std::cout << "D3D12 real replay PSO cache: entries=" << pipelines->size()

@@ -1191,9 +1191,12 @@ void NativeRenderCaptureWriter::WriteLiveD3D12Submit(
     uint64_t scene_candidate_draws, uint64_t depth_only_draws,
     uint64_t utility_draws, uint64_t skipped_draws,
     uint64_t elided_noop_draws,
+    uint32_t candidate_presented_guest_color_base,
+    uint32_t selected_presented_guest_color_base,
     const std::vector<std::pair<std::string, uint64_t>>& unsupported_reasons,
     bool presentable_frame, bool noop_utility_frame,
-    bool retained_color_ready, bool copied_retained_frame, bool presented,
+    bool retained_color_ready, bool copied_retained_frame,
+    bool rejected_presented_guest_color_switch, bool presented,
     std::string_view error) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("live_d3d12_submit")) {
@@ -1218,6 +1221,10 @@ void NativeRenderCaptureWriter::WriteLiveD3D12Submit(
   WriteU64Field("utility_draws", utility_draws);
   WriteU64Field("skipped_draws", skipped_draws);
   WriteU64Field("elided_noop_draws", elided_noop_draws);
+  WriteHex32Field("candidate_presented_guest_color_base",
+                  candidate_presented_guest_color_base);
+  WriteHex32Field("selected_presented_guest_color_base",
+                  selected_presented_guest_color_base);
   uint64_t unsupported_reason_total = 0;
   for (const auto &[reason, count] : unsupported_reasons) {
     (void)reason;
@@ -1240,6 +1247,8 @@ void NativeRenderCaptureWriter::WriteLiveD3D12Submit(
   WriteBoolField("retained_color_blocked",
                  !presentable_frame && !retained_color_ready);
   WriteBoolField("copied_retained_frame", copied_retained_frame);
+  WriteBoolField("rejected_presented_guest_color_switch",
+                 rejected_presented_guest_color_switch);
   WriteBoolField("presented", presented);
   if (!error.empty()) {
     WriteStringField("error", error);

@@ -48,11 +48,15 @@ class NativeRenderCaptureWriter {
                             uint64_t depth_only_draws,
                             uint64_t utility_draws, uint64_t skipped_draws,
                             uint64_t elided_noop_draws,
+                            uint32_t candidate_presented_guest_color_base,
+                            uint32_t selected_presented_guest_color_base,
                             const std::vector<std::pair<std::string, uint64_t>>&
                                 unsupported_reasons,
                             bool presentable_frame,
                             bool noop_utility_frame, bool retained_color_ready,
-                            bool copied_retained_frame, bool presented,
+                            bool copied_retained_frame,
+                            bool rejected_presented_guest_color_switch,
+                            bool presented,
                             std::string_view error);
 
  private:

@@ -27,6 +27,35 @@ Validation:
 - Replay validation passed:
   `Validation OK: 4500 events, 19 frames, 920 draws`.
 
+## 2026-07-02 live D3D12 presented-target stability checkpoint
+
+The live D3D12 replay backend no longer lets a weak per-frame presented-target
+heuristic overwrite the retained frame with a newly selected guest color target.
+After a presentable target has been established, a different candidate guest
+color base must be backed by a presentable frame with at least 12 scene draws;
+otherwise the frame is marked non-presentable and the retained color target is
+copied to the swapchain.
+
+New `live_d3d12_submit` fields make this visible in captures:
+
+- `candidate_presented_guest_color_base`
+- `selected_presented_guest_color_base`
+- `rejected_presented_guest_color_switch`
+
+Validation:
+
+- Built `native_render_replay.exe` and RelWithDebInfo `default_mp.exe` with
+  parallel Ninja (`-j12`), exit `0`.
+- Bounded `default_mp.exe --native_renderer_mode=native_d3d12` run remained
+  responsive for every 2-second watchdog sample and produced
+  `native_captures\live_d3d12_mp_074_sticky_present_target_telemetry\events.jsonl`.
+- Replay validation passed:
+  `Validation OK: 4500 events, 18 frames, 897 draws`.
+- Submit telemetry showed target base `0x00000530` selected on the first
+  presentable frame; later weak frames were non-presentable and copied retained
+  color (`14` retained copies, `0` skipped draws), so they could not replace the
+  retained image with a weak target.
+
 ## 2026-07-02 MP010 replay checkpoint
 
 Current best offline real D3D12 replay image:
