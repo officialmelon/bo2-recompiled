@@ -795,6 +795,7 @@ struct PreparedRealDraw {
 
 struct PreparedCapturedConstants {
   std::array<uint32_t, kCapturedConstantDwordCount> dwords{};
+  std::array<bool, kCapturedFloat4ConstantCount> present{};
   uint32_t count = 0;
 };
 
@@ -3926,6 +3927,7 @@ PreparedCapturedConstants BuildCapturedConstants(
         }
         const uint32_t target_dword = constant_index * 4 + dword_index % 4;
         prepared.dwords[target_dword] = record->dwords[dword_index];
+        prepared.present[constant_index] = true;
       }
       prepared.count = std::max<uint32_t>(
           prepared.count,
@@ -3940,10 +3942,60 @@ PreparedCapturedConstants BuildCapturedConstants(
       if (prepared.count >= prepared.dwords.size()) {
         return prepared;
       }
+      prepared.present[prepared.count / 4] = true;
       prepared.dwords[prepared.count++] = dword;
     }
   }
   return prepared;
+}
+
+std::vector<uint32_t> SemanticPixelShaderConstants(uint64_t pixel_shader_hash) {
+  switch (pixel_shader_hash) {
+  case 0x7D1EF030F5710BDAull:
+    return {72, 235, 252, 253, 254, 255};
+  case 0x8645E8BA65E424B2ull:
+    return {72, 73, 232, 233, 234, 235, 252, 253, 254, 255};
+  default:
+    return {};
+  }
+}
+
+std::string FormatMissingSemanticConstants(
+    const PreparedCapturedConstants &constants,
+    const std::vector<uint32_t> &required_constants) {
+  std::ostringstream out;
+  bool first = true;
+  for (const uint32_t constant : required_constants) {
+    if (constant >= constants.present.size() || constants.present[constant]) {
+      continue;
+    }
+    if (!first) {
+      out << ",";
+    }
+    out << "c" << constant;
+    first = false;
+  }
+  return out.str();
+}
+
+std::string FormatPresentConstantSlots(
+    const PreparedCapturedConstants &constants) {
+  std::ostringstream out;
+  bool first = true;
+  for (std::size_t i = 0; i < constants.present.size(); ++i) {
+    if (!constants.present[i]) {
+      continue;
+    }
+    if (!first) {
+      out << ",";
+    }
+    out << "c" << i;
+    first = false;
+  }
+  if (first) {
+    return "none";
+  }
+  return out.str();
 }
 
 bool CreateDebugPipeline(ID3D12Device *device,
@@ -5504,9 +5556,31 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   std::size_t scene_candidate_draws = 0;
   std::size_t depth_only_draws = 0;
   std::size_t utility_draws = 0;
+  struct SemanticConstantGap {
+    std::size_t draws = 0;
+    std::size_t example_draw = 0;
+    std::string present_slots;
+  };
+  std::map<std::tuple<uint64_t, std::string>, SemanticConstantGap>
+      semantic_constant_gaps;
   for (const UploadedRealDraw &uploaded : uploaded_draws) {
     submitted_input_layouts.insert(uploaded.prepared.input_layout_signature);
     const ReplayDrawState &state = capture.draws[uploaded.prepared.draw_index];
+    const std::vector<uint32_t> required_constants =
+        SemanticPixelShaderConstants(state.pixel_shader.hash);
+    if (!required_constants.empty()) {
+      const std::string missing_constants =
+          FormatMissingSemanticConstants(uploaded.constants, required_constants);
+      if (!missing_constants.empty()) {
+        auto &gap = semantic_constant_gaps[{state.pixel_shader.hash,
+                                            missing_constants}];
+        if (gap.draws == 0) {
+          gap.example_draw = uploaded.prepared.draw_index;
+          gap.present_slots = FormatPresentConstantSlots(uploaded.constants);
+        }
+        ++gap.draws;
+      }
+    }
     if (uploaded.prepared.force_depth_only_color_mask) {
       ++depth_only_draws;
     } else if (IsAb1eA4ZeroColorFillDraw(
@@ -5555,6 +5629,16 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
               << exact_sampler_clamp_count
               << ", clamp_addressing_fallbacks="
               << fallback_sampler_clamp_count << "\n";
+    if (!semantic_constant_gaps.empty()) {
+      std::cout << "D3D12 real replay semantic constant gaps:\n";
+      for (const auto &[key, gap] : semantic_constant_gaps) {
+        std::cout << "  PS=" << FormatHex64(std::get<0>(key))
+                  << " missing=" << std::get<1>(key)
+                  << " draws=" << gap.draws
+                  << " example_draw=" << gap.example_draw
+                  << " present_slots=" << gap.present_slots << "\n";
+      }
+    }
     std::cout << "D3D12 real replay draw classes: scene_candidate="
               << scene_candidate_draws << " depth_only=" << depth_only_draws
               << " utility=" << utility_draws << "\n";

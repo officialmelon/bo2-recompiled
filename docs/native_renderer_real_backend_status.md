@@ -2194,6 +2194,45 @@ Remaining texture work:
 - Implement packed mip capture/upload instead of relying on the temporary base
   mip sampler clamp.
 
+MP038 semantic constant-gap diagnostics:
+
+`D3D12ReplayBackend.cpp` now tracks which sparse captured constant slots are
+actually present when building the native constant buffer, and D3D12 real replay
+prints semantic gaps for the two active MP atlas/animated-texture pixel shaders.
+This is diagnostic-only; it does not add another shader approximation.
+
+Validation:
+
+```text
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture native_captures\live_d3d12_mp_028\events.jsonl --backend d3d12 --d3d12-output native-renderer-mp038-semantic-constant-gaps.bmp --shader-override-root shader_work\native_overrides --skip-unsupported --d3d12-draws 1200
+```
+
+Result:
+
+```text
+D3D12 real replay submitted 165 supported draw(s) across 8 shader pair(s)
+D3D12 real replay bound 204 captured texture SRV(s), 1116 fallback texture SRV(s)
+D3D12 real replay semantic constant gaps:
+  PS=0x7D1EF030F5710BDA missing=c72,c235 draws=6 example_draw=877 present_slots=c126,c127,c128,c129,c238,c239,c240,c241,c242,c243,c244,c245,c246,c247,c248,c249,c250,c251,c252,c253,c254,c255,c256,c257
+  PS=0x7D1EF030F5710BDA missing=c72,c235,c252,c253 draws=14 example_draw=455 present_slots=c126,c127,c128,c129,c244,c245,c246,c247,c254,c255,c256,c257
+  PS=0x8645E8BA65E424B2 missing=c72,c73,c232,c233,c234,c235 draws=3 example_draw=876 present_slots=c126,c127,c128,c129,c238,c239,c240,c241,c242,c243,c244,c245,c246,c247,c248,c249,c250,c251,c252,c253,c254,c255,c256,c257
+  PS=0x8645E8BA65E424B2 missing=c72,c73,c232,c233,c234,c235,c252,c253 draws=7 example_draw=454 present_slots=c126,c127,c128,c129,c244,c245,c246,c247,c254,c255,c256,c257
+D3D12 real replay color readback: bytes=3686400 nonzero=3686398 output=native-renderer-mp038-semantic-constant-gaps.bmp
+```
+
+This confirms the animated/atlas texture distortion is not caused by missing
+texture payloads in MP028. The capture has the texture sidecars, but the current
+native constant state lacks several constants used by the real Xenos texture
+coordinate ALU. Example `draw[454]` uses `PS=0x8645E8BA65E424B2`, whose semantic
+IR requires `c72`, `c73`, `c232-c235`, and `c252-c255`; replay only has
+`c126-c129`, `c244-c247`, and `c254-c257` present for that draw.
+
+The failed frame-ring pacing attempt was also backed out before commit. The live
+path currently renders into one persistent accumulation target and one persistent
+depth target, so a command-list ring without per-frame render/depth targets and
+fenced resource retention can race/release GPU resources. The stable serialized
+path remains active until that lifetime model is implemented.
+
 MP036 Phase 0 diagnostics update:
 
 The live D3D12 path now exposes low-noise per-run diagnostics for frame and draw
