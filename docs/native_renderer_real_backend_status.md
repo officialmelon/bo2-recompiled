@@ -2599,3 +2599,43 @@ all 5 second samples through 35 seconds, with working set stable around
 `835 MB`; the watchdog then stopped the process. This shows the current build
 does not immediately enter the Windows not-responding state in this bounded
 probe, but it does not prove good frame pacing or final visual correctness.
+
+Live partial-frame present gating:
+
+Observed user-visible behavior: the native window can show a recognizable MP
+menu for a few frames, then flicker through partial assets and sometimes fall
+to black. The bounded live captures show why: live frames were marked
+presentable when they contained only a small supported subset of the BO2 frame,
+for example `2` scene draws out of `27-52` captured draws or `19` submitted
+draws out of `67` captured draws. Presenting those partial frames lets an
+incomplete native reconstruction overwrite the last better image.
+
+`D:\UnleashedRecomp` was checked as a reference. Its renderer keeps persistent
+guest surfaces/textures/framebuffers, binds framebuffers by render-target/depth
+pair, handles pending StretchRect/resolve copies, and presents only after the
+command queue has executed against the actual backbuffer or intermediary
+surface. The relevant lesson for BO2 is that a native renderer should keep the
+game's render targets alive and execute full surface/resolve/present sequencing;
+it should not present arbitrary low-coverage frame fragments as final output.
+
+The BO2 live D3D12 path now seeds the retained native image with the first
+scene-producing frame, then requires a stronger coverage threshold before a
+later frame can replace it: at least `12` scene draws and at least half of the
+captured frame draws submitted by the native backend. Low-coverage frames copy
+the retained native color target instead. This is a flicker/black-frame guard,
+not a completion claim; it trades unstable partial animation for a stable
+partial image while shader/draw/resource coverage is expanded.
+
+Validation captures:
+
+```text
+native_captures\live_d3d12_mp_066_present_threshold\events.jsonl
+native_captures\live_d3d12_mp_067_seed_then_threshold\events.jsonl
+```
+
+Both validate with `native_render_replay.exe --validate --no-summary`.
+`live_d3d12_mp_067_seed_then_threshold` shows frame `4` seeding
+`presentable=true`, frames `5-19` copying the retained frame, and later
+higher-coverage frames becoming eligible. The subsequent stricter half-coverage
+policy is intended to keep those later partial frames from flickering until
+the renderer supports substantially more of the captured frame.

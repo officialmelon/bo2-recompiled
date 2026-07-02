@@ -4587,6 +4587,31 @@ PreparedDrawClassCounts ClassifyPreparedDraws(
   return counts;
 }
 
+bool IsLiveFramePresentable(std::size_t scene_draws,
+                            std::size_t submitted_draws,
+                            std::size_t frame_draws,
+                            bool has_retained_presentable_color) {
+  if (scene_draws == 0 || submitted_draws == 0) {
+    return false;
+  }
+
+  if (!has_retained_presentable_color) {
+    return true;
+  }
+
+  if (frame_draws <= 8) {
+    return true;
+  }
+
+  constexpr std::size_t kMinLiveSceneDraws = 12;
+  constexpr std::size_t kMinSubmittedCoverageDivisor = 2;
+  if (scene_draws < kMinLiveSceneDraws) {
+    return false;
+  }
+
+  return submitted_draws * kMinSubmittedCoverageDivisor >= frame_draws;
+}
+
 #endif
 
 } // namespace
@@ -5782,7 +5807,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         static_cast<uint64_t>(scene_candidate_draws);
     live_binding->depth_only_draws = static_cast<uint64_t>(depth_only_draws);
     live_binding->utility_draws = static_cast<uint64_t>(utility_draws);
-    live_binding->presentable_frame = scene_candidate_draws > 0;
+    live_binding->presentable_frame =
+        IsLiveFramePresentable(scene_candidate_draws, uploaded_draws.size(),
+                               frame_plan.frame_draw_count,
+                               live_session &&
+                                   live_session->has_presentable_color);
   }
   if (log_backend) {
     std::cout << "D3D12 real replay PSO cache: entries=" << pipelines->size()
