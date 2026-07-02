@@ -53,6 +53,7 @@ set(NATIVE_RENDERER_SOURCES
 set(NATIVE_RENDER_REPLAY_SOURCES
     ../src/native_renderer/replay/NativeRenderReplay.cpp
     ../src/native_renderer/replay/D3D12ReplayBackend.cpp
+    ../src/native_renderer/shader_translation/ShaderTranslation.cpp
     ../src/native_renderer/replay/NativeRenderReplayTool.cpp
 )
 

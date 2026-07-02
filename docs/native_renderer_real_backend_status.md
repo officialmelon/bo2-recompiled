@@ -6,6 +6,35 @@ Last updated: 2026-07-02
 
 Real native rendering is not complete.
 
+## 2026-07-02 shader pipeline boundary checkpoint
+
+The D3D12 replay backend no longer owns shader override/cache source discovery.
+That logic has been moved into `src/native_renderer/shader_translation/` behind
+`ResolveD3D12ShaderProgramSource`, so D3D12 consumes a resolved shader program
+description instead of directly walking override manifests and cache indexes.
+This is a cleanup/architecture checkpoint, not a new correctness claim.
+
+Validation:
+
+- Built `native_render_replay.exe` and RelWithDebInfo `default_mp.exe` with
+  parallel Ninja (`-j12`), exit `0`.
+- Replay validation on
+  `native_captures\live_d3d12_mp_074_sticky_present_target_telemetry\events.jsonl`
+  passed: `Validation OK: 4500 events, 18 frames, 897 draws`.
+- Real D3D12 replay with diagnostic shaders disabled submitted `121` supported
+  draws across `8` shader pairs, with `diagnostic_pipelines=0`.
+- The run bound `127` captured texture SRVs and `127` captured samplers, but
+  still needed `841` fallback texture SRVs and `329` fallback samplers because
+  most root-signature slots do not yet have complete translated resource state.
+- Output was written to
+  `C:\Users\braxt\bo2-recompiled\native-renderer-shader-pipeline-extract-2.bmp`.
+
+This confirms the extraction preserved current behavior. It also confirms the
+renderer is still not in a polished/final state: only a subset of the captured
+frame is renderable, many shader/resource combinations are still skipped or
+approximated, and the texture atlas/animation issues must be fixed in the real
+shader/resource translation path rather than by adding more D3D12-local hacks.
+
 ## 2026-07-02 live D3D12 pacing checkpoint
 
 The live `native_d3d12` backend no longer performs a full `WaitForGpu()` drain
