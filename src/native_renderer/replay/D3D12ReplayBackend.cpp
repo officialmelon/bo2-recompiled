@@ -645,6 +645,14 @@ bool DecodeFloatAttribute(const VertexFetchRecord &fetch,
 
   switch (attribute.data_format) {
   case 6: {
+    if (fetch.endian == 2) {
+      const uint8_t *bytes = fetch.payload_bytes.data() + base;
+      components.push_back(ConvertPackedComponent(bytes[1], 8, attribute));
+      components.push_back(ConvertPackedComponent(bytes[2], 8, attribute));
+      components.push_back(ConvertPackedComponent(bytes[3], 8, attribute));
+      components.push_back(ConvertPackedComponent(bytes[0], 8, attribute));
+      return true;
+    }
     const uint32_t word = load_word(0);
     for (uint32_t component = 0; component < 4; ++component) {
       components.push_back(
@@ -2450,7 +2458,7 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
         rgba[pixel * 4 + 0] = value;
         rgba[pixel * 4 + 1] = value;
         rgba[pixel * 4 + 2] = value;
-        rgba[pixel * 4 + 3] = 255;
+        rgba[pixel * 4 + 3] = value;
         continue;
       } else if (fetch.format == 7 || fetch.format == 54) {
         const uint32_t word =

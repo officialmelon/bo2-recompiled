@@ -1513,3 +1513,65 @@ renderer work is still substantial: live `native_d3d12` only submits subsets of
 some frames, frames with only ignored/no-output utility work still report as
 failures, and exact live scene parity still needs resolved presentation,
 complete texture/sampler coverage, and broader shader/state semantics.
+
+## 2026-07-02 MP menu font mask and color-order fix
+
+The MP012 offline output exposed a concrete UI correctness bug: menu text drew
+in the right positions, but the glyphs appeared as solid white/blue rectangles.
+The issue was not missing font texture capture. Draw `1363` uses real indexed
+text quads with:
+
+```text
+VS=0x261BDD733FEC1F64 PS=0xFF01D28E1EF3A880
+indices=192 indexed=yes
+texture fetch: format=2, 512x1024, tiled=yes, payload=524288
+vertex attr[1]: FMT_8_8_8_8 color, endian=2
+```
+
+The decoded font atlas preview contains real glyphs, but format `2` (`k_8`)
+was being expanded to RGBA as `(r,r,r,1)`. The FF01 glyph override uses the
+sampled max channel as coverage, so forced alpha `1` made every glyph quad
+opaque. Format `2` now expands as `(r,r,r,r)`, preserving the mask in alpha.
+The texture preview for draw `1363` changed from:
+
+```text
+avg_rgba=(86,86,86,255)
+```
+
+to:
+
+```text
+avg_rgba=(86,86,86,86)
+```
+
+The selected menu item also drew blue because `FMT_8_8_8_8` vertex colors with
+fetch endian `2` were decoded through the generic swapped-word path. Raw bytes
+`FF FF 66 00` are the BO2 selected text color in `A,R,G,B` byte order, which
+should decode to orange `(1.0,0.4,0.0,1.0)`. The vertex decoder and replay
+dump decoder now use byte order `R,G,B,A = byte1,byte2,byte3,byte0` for this
+format/endian class. The same rule preserves the existing translucent white
+quad case `1A FF FF FF` as `(1.0,1.0,1.0,0.101961)`.
+
+Validation commands:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 native_render_replay"
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_012\events.jsonl --draw 1363 --dump-vertices --no-summary
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_012\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-live-mp012-format2-alpha-colororder.bmp --no-summary
+```
+
+Results:
+
+```text
+draw[1363] v[0] color=(1.000000,0.400000,0.000000,1.000000)
+D3D12 real replay submitted 159 supported draw(s) across 9 shader pair(s)
+D3D12 real replay PSO cache: entries=12 misses=12 hits=147 diagnostic_pipelines=0 input_layout_variants=4
+D3D12 real replay bound 156 captured texture SRV(s), 1116 fallback texture SRV(s), unsupported_texture_attempts=0
+```
+
+Output:
+`C:\Users\braxt\bo2-recompiled\native-renderer-live-mp012-format2-alpha-colororder.bmp`.
+
+The image now shows readable BO2 menu glyphs and the selected `XBOX LIVE`
+entry is orange. This is still offline replay evidence, not a claim that live
+native rendering is complete.

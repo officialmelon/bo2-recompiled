@@ -2360,6 +2360,14 @@ bool DecodeVertexAttribute(const VertexFetchRecord &fetch,
 
   switch (attribute.data_format) {
   case 6: {
+    if (fetch.endian == 2) {
+      const uint8_t *bytes = fetch.payload_bytes.data() + std::size_t(base);
+      components.push_back(ConvertPackedComponent(bytes[1], 8, attribute));
+      components.push_back(ConvertPackedComponent(bytes[2], 8, attribute));
+      components.push_back(ConvertPackedComponent(bytes[3], 8, attribute));
+      components.push_back(ConvertPackedComponent(bytes[0], 8, attribute));
+      return true;
+    }
     const uint32_t word = load_word(0);
     for (uint32_t i = 0; i < 4; ++i) {
       components.push_back(ConvertPackedComponent((word >> (i * 8)) & 0xFF,
