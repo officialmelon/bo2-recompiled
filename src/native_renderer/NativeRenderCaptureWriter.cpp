@@ -959,6 +959,53 @@ void NativeRenderCaptureWriter::WriteShaderRecordProbe(
     file_ << '"' << HexValue(probe.secondary_dwords[i], 8) << '"';
   }
   file_ << ']';
+  WriteHex32Field("tertiary_address", probe.tertiary_address);
+  WriteU64Field("tertiary_dword_count", probe.tertiary_dword_count);
+  WriteBoolField("tertiary_truncated", probe.tertiary_truncated);
+  WriteBoolField("tertiary_missing", probe.tertiary_missing);
+  WriteFieldPrefix("tertiary_dwords");
+  file_ << '[';
+  for (uint32_t i = 0; i < probe.tertiary_dword_count &&
+                       i < probe.tertiary_dwords.size();
+       ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(probe.tertiary_dwords[i], 8) << '"';
+  }
+  file_ << ']';
+  WriteHex32Field("quaternary_address", probe.quaternary_address);
+  WriteU64Field("quaternary_dword_count", probe.quaternary_dword_count);
+  WriteBoolField("quaternary_truncated", probe.quaternary_truncated);
+  WriteBoolField("quaternary_missing", probe.quaternary_missing);
+  WriteFieldPrefix("quaternary_dwords");
+  file_ << '[';
+  for (uint32_t i = 0; i < probe.quaternary_dword_count &&
+                       i < probe.quaternary_dwords.size();
+       ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(probe.quaternary_dwords[i], 8) << '"';
+  }
+  file_ << ']';
+  WriteHex32Field("heap_candidate_address", probe.heap_candidate_address);
+  WriteU64Field("heap_candidate_dword_count",
+                probe.heap_candidate_dword_count);
+  WriteBoolField("heap_candidate_truncated",
+                 probe.heap_candidate_truncated);
+  WriteBoolField("heap_candidate_missing", probe.heap_candidate_missing);
+  WriteFieldPrefix("heap_candidate_dwords");
+  file_ << '[';
+  for (uint32_t i = 0; i < probe.heap_candidate_dword_count &&
+                       i < probe.heap_candidate_dwords.size();
+       ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(probe.heap_candidate_dwords[i], 8) << '"';
+  }
+  file_ << ']';
   EndEvent();
 }
 

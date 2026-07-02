@@ -216,6 +216,110 @@ void CaptureDwordSnapshot(
   missing = dword_count == 0;
 }
 
+uint32_t FindNestedGuestPointer(
+    const std::array<uint32_t, ShaderRecordProbeInfo::kMaxRecordDwords>& dwords,
+    uint32_t dword_count) {
+  constexpr std::array<uint32_t, 8> kPreferredOffsets = {12, 16, 8, 10,
+                                                         14, 18, 20, 24};
+  for (const uint32_t offset : kPreferredOffsets) {
+    if (offset < dword_count && LooksLikeGuestPointer(dwords[offset])) {
+      return dwords[offset];
+    }
+  }
+  for (uint32_t i = 0; i < dword_count; ++i) {
+    if (LooksLikeGuestPointer(dwords[i])) {
+      return dwords[i];
+    }
+  }
+  return 0;
+}
+
+bool LooksLikeRuntimeHeapPointer(uint32_t value) {
+  return LooksLikeGuestPointer(value) && value >= 0x84480000u &&
+         value < 0x90000000u;
+}
+
+std::size_t AppendRuntimeHeapPointers(
+    const std::array<uint32_t, ShaderRecordProbeInfo::kMaxRecordDwords>& dwords,
+    uint32_t dword_count, std::array<uint32_t, 64>& candidates,
+    std::size_t candidate_count) {
+  constexpr std::array<uint32_t, 16> kPreferredOffsets = {
+      21, 13, 1, 7, 9, 11, 19, 23, 25, 27, 29, 33, 35, 37, 45, 47};
+  auto append = [&](uint32_t value) {
+    if (!LooksLikeRuntimeHeapPointer(value) ||
+        candidate_count >= candidates.size()) {
+      return;
+    }
+    for (std::size_t i = 0; i < candidate_count; ++i) {
+      if (candidates[i] == value) {
+        return;
+      }
+    }
+    candidates[candidate_count++] = value;
+  };
+  for (const uint32_t offset : kPreferredOffsets) {
+    if (offset < dword_count) {
+      append(dwords[offset]);
+    }
+  }
+  for (uint32_t i = 0; i < dword_count; ++i) {
+    append(dwords[i]);
+  }
+  return candidate_count;
+}
+
+bool IsUsefulHeapCandidate(
+    const std::array<uint32_t, ShaderRecordProbeInfo::kMaxRecordDwords>& dwords,
+    uint32_t dword_count) {
+  uint32_t useful = 0;
+  for (uint32_t i = 0; i < dword_count; ++i) {
+    const uint32_t value = dwords[i];
+    if (value != 0 && value != 0xffffffffu && value != 0xbebebebeu) {
+      ++useful;
+    }
+  }
+  return useful >= 4;
+}
+
+void CaptureHeapCandidate(ShaderRecordProbeInfo& probe) {
+  std::array<uint32_t, 64> candidates{};
+  std::size_t candidate_count = 0;
+  candidate_count = AppendRuntimeHeapPointers(
+      probe.tertiary_dwords, probe.tertiary_dword_count, candidates,
+      candidate_count);
+  candidate_count = AppendRuntimeHeapPointers(
+      probe.secondary_dwords, probe.secondary_dword_count, candidates,
+      candidate_count);
+  candidate_count = AppendRuntimeHeapPointers(
+      probe.primary_dwords, probe.primary_dword_count, candidates,
+      candidate_count);
+
+  for (std::size_t i = 0; i < candidate_count; ++i) {
+    std::array<uint32_t, ShaderRecordProbeInfo::kMaxRecordDwords> dwords{};
+    uint32_t dword_count = 0;
+    bool truncated = false;
+    bool missing = true;
+    CaptureDwordSnapshot(candidates[i],
+                         ShaderRecordProbeInfo::kMaxRecordDwords,
+                         dwords, dword_count, truncated, missing);
+    if (!missing && IsUsefulHeapCandidate(dwords, dword_count)) {
+      probe.heap_candidate_address = candidates[i];
+      probe.heap_candidate_dwords = dwords;
+      probe.heap_candidate_dword_count = dword_count;
+      probe.heap_candidate_truncated = truncated;
+      probe.heap_candidate_missing = false;
+      return;
+    }
+    if (probe.heap_candidate_address == 0 && !missing) {
+      probe.heap_candidate_address = candidates[i];
+      probe.heap_candidate_dwords = dwords;
+      probe.heap_candidate_dword_count = dword_count;
+      probe.heap_candidate_truncated = truncated;
+      probe.heap_candidate_missing = false;
+    }
+  }
+}
+
 ShaderRecordProbeInfo BuildShaderRecordProbe(
     const CommandBufferEventInfo& event) {
   ShaderRecordProbeInfo probe{};
@@ -258,6 +362,30 @@ ShaderRecordProbeInfo BuildShaderRecordProbe(
                          probe.secondary_dwords, probe.secondary_dword_count,
                          probe.secondary_truncated, probe.secondary_missing);
   }
+  probe.tertiary_address =
+      FindNestedGuestPointer(probe.secondary_dwords, probe.secondary_dword_count);
+  if (probe.tertiary_address != 0 &&
+      probe.tertiary_address != probe.primary_address &&
+      probe.tertiary_address != probe.secondary_address) {
+    CaptureDwordSnapshot(probe.tertiary_address,
+                         ShaderRecordProbeInfo::kMaxRecordDwords,
+                         probe.tertiary_dwords, probe.tertiary_dword_count,
+                         probe.tertiary_truncated, probe.tertiary_missing);
+  }
+  probe.quaternary_address =
+      FindNestedGuestPointer(probe.tertiary_dwords, probe.tertiary_dword_count);
+  if (probe.quaternary_address != 0 &&
+      probe.quaternary_address != probe.primary_address &&
+      probe.quaternary_address != probe.secondary_address &&
+      probe.quaternary_address != probe.tertiary_address) {
+    CaptureDwordSnapshot(probe.quaternary_address,
+                         ShaderRecordProbeInfo::kMaxRecordDwords,
+                         probe.quaternary_dwords,
+                         probe.quaternary_dword_count,
+                         probe.quaternary_truncated,
+                         probe.quaternary_missing);
+  }
+  CaptureHeapCandidate(probe);
   return probe;
 }
 
@@ -304,6 +432,30 @@ ShaderRecordProbeInfo BuildShaderRecordProbe(
                          probe.secondary_dwords, probe.secondary_dword_count,
                          probe.secondary_truncated, probe.secondary_missing);
   }
+  probe.tertiary_address =
+      FindNestedGuestPointer(probe.secondary_dwords, probe.secondary_dword_count);
+  if (probe.tertiary_address != 0 &&
+      probe.tertiary_address != probe.primary_address &&
+      probe.tertiary_address != probe.secondary_address) {
+    CaptureDwordSnapshot(probe.tertiary_address,
+                         ShaderRecordProbeInfo::kMaxRecordDwords,
+                         probe.tertiary_dwords, probe.tertiary_dword_count,
+                         probe.tertiary_truncated, probe.tertiary_missing);
+  }
+  probe.quaternary_address =
+      FindNestedGuestPointer(probe.tertiary_dwords, probe.tertiary_dword_count);
+  if (probe.quaternary_address != 0 &&
+      probe.quaternary_address != probe.primary_address &&
+      probe.quaternary_address != probe.secondary_address &&
+      probe.quaternary_address != probe.tertiary_address) {
+    CaptureDwordSnapshot(probe.quaternary_address,
+                         ShaderRecordProbeInfo::kMaxRecordDwords,
+                         probe.quaternary_dwords,
+                         probe.quaternary_dword_count,
+                         probe.quaternary_truncated,
+                         probe.quaternary_missing);
+  }
+  CaptureHeapCandidate(probe);
   return probe;
 }
 

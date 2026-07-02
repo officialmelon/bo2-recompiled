@@ -379,6 +379,21 @@ struct ShaderRecordProbeRecord {
   std::vector<uint32_t> secondary_dwords;
   bool secondary_truncated = false;
   bool secondary_missing = true;
+  uint32_t tertiary_address = 0;
+  uint32_t tertiary_dword_count = 0;
+  std::vector<uint32_t> tertiary_dwords;
+  bool tertiary_truncated = false;
+  bool tertiary_missing = true;
+  uint32_t quaternary_address = 0;
+  uint32_t quaternary_dword_count = 0;
+  std::vector<uint32_t> quaternary_dwords;
+  bool quaternary_truncated = false;
+  bool quaternary_missing = true;
+  uint32_t heap_candidate_address = 0;
+  uint32_t heap_candidate_dword_count = 0;
+  std::vector<uint32_t> heap_candidate_dwords;
+  bool heap_candidate_truncated = false;
+  bool heap_candidate_missing = true;
 };
 
 struct CaptureEvent {

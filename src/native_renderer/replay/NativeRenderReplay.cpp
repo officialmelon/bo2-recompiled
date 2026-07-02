@@ -1173,6 +1173,35 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
         GetBool(object, "secondary_truncated");
     event.shader_probe.secondary_missing =
         GetBool(object, "secondary_missing");
+    event.shader_probe.tertiary_address = GetU32(object, "tertiary_address");
+    event.shader_probe.tertiary_dword_count =
+        GetU32(object, "tertiary_dword_count");
+    event.shader_probe.tertiary_dwords =
+        GetU32Array(object, "tertiary_dwords");
+    event.shader_probe.tertiary_truncated =
+        GetBool(object, "tertiary_truncated");
+    event.shader_probe.tertiary_missing =
+        GetBool(object, "tertiary_missing");
+    event.shader_probe.quaternary_address =
+        GetU32(object, "quaternary_address");
+    event.shader_probe.quaternary_dword_count =
+        GetU32(object, "quaternary_dword_count");
+    event.shader_probe.quaternary_dwords =
+        GetU32Array(object, "quaternary_dwords");
+    event.shader_probe.quaternary_truncated =
+        GetBool(object, "quaternary_truncated");
+    event.shader_probe.quaternary_missing =
+        GetBool(object, "quaternary_missing");
+    event.shader_probe.heap_candidate_address =
+        GetU32(object, "heap_candidate_address");
+    event.shader_probe.heap_candidate_dword_count =
+        GetU32(object, "heap_candidate_dword_count");
+    event.shader_probe.heap_candidate_dwords =
+        GetU32Array(object, "heap_candidate_dwords");
+    event.shader_probe.heap_candidate_truncated =
+        GetBool(object, "heap_candidate_truncated");
+    event.shader_probe.heap_candidate_missing =
+        GetBool(object, "heap_candidate_missing");
     break;
   default:
     break;
@@ -4269,6 +4298,9 @@ void PrintShaderRecordProbes(const ReplayCapture &capture,
   std::size_t printed = 0;
   uint64_t primary_snapshots = 0;
   uint64_t secondary_snapshots = 0;
+  uint64_t tertiary_snapshots = 0;
+  uint64_t quaternary_snapshots = 0;
+  uint64_t heap_candidate_snapshots = 0;
   for (const CaptureEvent &event : capture.events) {
     if (event.type != CaptureEventType::ShaderRecordProbe) {
       continue;
@@ -4279,6 +4311,16 @@ void PrintShaderRecordProbes(const ReplayCapture &capture,
     }
     if (!probe.secondary_missing && !probe.secondary_dwords.empty()) {
       ++secondary_snapshots;
+    }
+    if (!probe.tertiary_missing && !probe.tertiary_dwords.empty()) {
+      ++tertiary_snapshots;
+    }
+    if (!probe.quaternary_missing && !probe.quaternary_dwords.empty()) {
+      ++quaternary_snapshots;
+    }
+    if (!probe.heap_candidate_missing &&
+        !probe.heap_candidate_dwords.empty()) {
+      ++heap_candidate_snapshots;
     }
     if (printed >= max_count) {
       continue;
@@ -4349,6 +4391,17 @@ void PrintShaderRecordProbes(const ReplayCapture &capture,
     print_dwords("secondary", probe.secondary_address,
                  probe.secondary_dword_count, probe.secondary_missing,
                  probe.secondary_truncated, probe.secondary_dwords);
+    print_dwords("tertiary", probe.tertiary_address,
+                 probe.tertiary_dword_count, probe.tertiary_missing,
+                 probe.tertiary_truncated, probe.tertiary_dwords);
+    print_dwords("quaternary", probe.quaternary_address,
+                 probe.quaternary_dword_count, probe.quaternary_missing,
+                 probe.quaternary_truncated, probe.quaternary_dwords);
+    print_dwords("heap_candidate", probe.heap_candidate_address,
+                 probe.heap_candidate_dword_count,
+                 probe.heap_candidate_missing,
+                 probe.heap_candidate_truncated,
+                 probe.heap_candidate_dwords);
   }
   const auto total_it =
       capture.summary.event_counts.find(CaptureEventType::ShaderRecordProbe);
@@ -4356,7 +4409,11 @@ void PrintShaderRecordProbes(const ReplayCapture &capture,
       total_it == capture.summary.event_counts.end() ? 0 : total_it->second;
   std::cout << "  total=" << total
             << " primary_snapshots=" << primary_snapshots
-            << " secondary_snapshots=" << secondary_snapshots << "\n";
+            << " secondary_snapshots=" << secondary_snapshots
+            << " tertiary_snapshots=" << tertiary_snapshots
+            << " quaternary_snapshots=" << quaternary_snapshots
+            << " heap_candidate_snapshots=" << heap_candidate_snapshots
+            << "\n";
   if (printed == 0) {
     std::cout << "  no shader_record_probe events captured\n";
   }

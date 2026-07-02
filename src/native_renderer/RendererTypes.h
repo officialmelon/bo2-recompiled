@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,6 +28,12 @@ struct RendererConfig {
   RendererBackendKind backend = RendererBackendKind::None;
   bool verbose = true;
   std::string app_name;
+  std::filesystem::path shader_cache_root =
+      std::filesystem::path("shader_work") / "cache";
+  std::filesystem::path shader_override_root =
+      std::filesystem::path("shader_work") / "native_overrides";
+  bool skip_unsupported_draws = true;
+  bool allow_live_diagnostic_shader = false;
 };
 
 struct VdSwapInfo {
@@ -116,7 +123,7 @@ struct CommandBufferEventInfo {
 };
 
 struct ShaderRecordProbeInfo {
-  static constexpr std::size_t kMaxRecordDwords = 32;
+  static constexpr std::size_t kMaxRecordDwords = 64;
 
   uint64_t event_index = 0;
   uint32_t function_address = 0;
@@ -151,6 +158,21 @@ struct ShaderRecordProbeInfo {
   std::array<uint32_t, kMaxRecordDwords> secondary_dwords{};
   bool secondary_truncated = false;
   bool secondary_missing = true;
+  uint32_t tertiary_address = 0;
+  uint32_t tertiary_dword_count = 0;
+  std::array<uint32_t, kMaxRecordDwords> tertiary_dwords{};
+  bool tertiary_truncated = false;
+  bool tertiary_missing = true;
+  uint32_t quaternary_address = 0;
+  uint32_t quaternary_dword_count = 0;
+  std::array<uint32_t, kMaxRecordDwords> quaternary_dwords{};
+  bool quaternary_truncated = false;
+  bool quaternary_missing = true;
+  uint32_t heap_candidate_address = 0;
+  uint32_t heap_candidate_dword_count = 0;
+  std::array<uint32_t, kMaxRecordDwords> heap_candidate_dwords{};
+  bool heap_candidate_truncated = false;
+  bool heap_candidate_missing = true;
 };
 
 struct PM4PacketInfo {

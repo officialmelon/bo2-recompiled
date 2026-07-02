@@ -2410,3 +2410,59 @@ The secondary block contains repeated runtime/XEX pointers including
 The currently active Ghidra program did not resolve the MP addresses, so the
 next reverse-engineering step is to switch Ghidra to the MP/XEX program and map
 those fields to material/pass or draw-state structures.
+
+MP050-MP053 draw-probe follow-up:
+
+Shader-record probes now support deeper bounded snapshots:
+
+* `primary_*`: the first draw argument/state block.
+* `secondary_*`: the nested block referenced by the draw argument block.
+* `tertiary_*` and `quaternary_*`: stack/material staging links followed from
+  the secondary block.
+* `heap_candidate_*`: the first non-empty runtime heap record referenced by the
+  captured probe chain.
+
+Validation:
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_050_draw_probe_tertiary\events.jsonl --validate --no-summary
+```
+
+Result: `Validation OK: 9000 events, 30 frames, 1750 draws`, with `17`
+shader-record probes and `15` tertiary snapshots.
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_051_draw_probe_quaternary\events.jsonl --validate --no-summary
+```
+
+Result: `Validation OK: 9000 events, 30 frames, 1729 draws`, with `28`
+shader-record probes and `25` quaternary snapshots.
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_052_draw_probe_heap_candidate\events.jsonl --validate --no-summary
+```
+
+Result: `Validation OK: 9000 events, 30 frames, 1729 draws`, with `28`
+shader-record probes and `25` heap-candidate snapshots.
+
+Evidence:
+
+```text
+probe[0] sub_82117BC8 primary=0x7026FCB0 secondary=0x7026FD60
+tertiary=0x7026FE00 quaternary=0x7026FF10 heap_candidate=0x84766B00
+```
+
+The tertiary/quaternary chain is mostly stack/staging data (`0xBEBEBEBE`
+sentinels and stack pointers), not the missing atlas constants. Ghidra MCP
+confirmed `default.xex` is loaded for XEX addresses, but the `0x847...` and
+`0x848...` values captured here are runtime heap addresses outside the static
+XEX image. The probe now skips empty heap candidates when possible so later
+captures can select a meaningful material/state record.
+
+The latest MP053 capture reached the event cap with no draw-probe events before
+the cap, even though the generated-function detours installed successfully. This
+is capture timing/path variability, not evidence that the hook code is absent.
+The renderer freeze remained reproducible in that run: the process was not
+responding when the watchdog terminated it, while the capture itself still
+validated (`9000` events, `32` frames, `1800` draws). The current live-stability
+target is therefore still the D3D12 live frame/resource synchronization path.
