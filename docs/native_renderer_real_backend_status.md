@@ -1334,3 +1334,42 @@ work: prove the presented guest base from swap/resolve metadata instead of the
 current last-submitted-color-base heuristic, support multiple MRT slots, carry
 real depth target contents instead of a synthetic replay DSV, and factor the
 same target selection into live `native_d3d12`.
+
+# Live D3D12 submit proof telemetry - 2026-07-02
+
+The live `native_d3d12` path now carries real replay submission counters back
+from the shared D3D12 replay backend into the live backend. Each
+`live_d3d12_submit` capture event now records:
+
+- `submitted_draws`
+- `shader_pair_count`
+- `pso_entries`
+- `diagnostic_pipelines`
+- `input_layout_variants`
+
+The live backend also logs those counters after a successful native submit.
+This does not by itself prove that every live BO2 frame is correct, but it gives
+an immediate way to distinguish real native D3D12 draw submission from an empty
+or diagnostic-only native window.
+
+Build validation:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 default.exe"
+```
+
+Result: exit `0`, `263` Ninja steps, elapsed `214.7s`.
+
+Replay regression after the live telemetry change:
+
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_010\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-live-stats-regression.bmp --no-summary
+```
+
+Result:
+
+```text
+D3D12 real replay submitted 180 supported draw(s) across 8 shader pair(s)
+D3D12 real replay PSO cache: entries=10 misses=10 hits=170 diagnostic_pipelines=0 cache_index_writes=10 input_layout_variants=3
+D3D12 real replay offline render targets: count=3 presented_guest_color_base=0x530
+```
