@@ -1432,3 +1432,84 @@ D3D12 real replay offline render targets: count=3 presented_guest_color_base=0x5
 
 Output:
 `C:\Users\braxt\bo2-recompiled\native-renderer-live-mp011-replay.bmp`.
+
+## 2026-07-02 live MP AB1E/A4 utility fill update
+
+The D3D12 real replay path now accepts the narrow fullscreen utility class
+`VS=0xAB1E86137A0240E8` / `PS=0xA4A965C189287B99` instead of treating it as
+an unsafe zero-color export blocker. The acceptance gate is intentionally
+specific: non-indexed rectangle-list draw, three vertices, no texture fetches,
+captured render state present, color writes enabled, no depth write/stencil,
+no captured `COLOR0`, ParamGen disabled in `SQ_PROGRAM_CNTL`, and decoded
+positions covering the render target. Other A4 zero-export draws still fail
+closed unless they are already proven depth/stencil-only writes.
+
+Build validation after the change:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 native_render_replay"
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default_mp\out\build\win-clang-msvc-amd64-relwithdebinfo-msvctarget"" -j12 default_mp.exe"
+```
+
+Both builds exited `0`.
+
+Fresh strict live MP capture after the change:
+
+```powershell
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_012\events.jsonl --native_renderer_capture_limit 6500 --native_renderer_capture_flush_interval 64 --native_renderer_verbose true --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+The process was stopped after `120s` once the capture was already populated.
+Replay validation:
+
+```text
+Validation OK: 6500 events, 27 frames, 1366 draws
+```
+
+Aggregated live-submit counters from `live_d3d12_submit` events:
+
+```text
+live_submit_events=27
+attempted=26
+success=20
+failed=6
+total_submitted_draws=97
+max_submitted_draws=11
+max_shader_pairs=6
+max_pso_entries=10
+diagnostic_pipelines_sum=0
+```
+
+Offline real D3D12 replay of the same capture:
+
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_012\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-live-mp012-ab1e-a4-fill.bmp --no-summary
+```
+
+Result:
+
+```text
+D3D12 real replay submitted 159 supported draw(s) across 9 shader pair(s)
+pair VS=0xAB1E86137A0240E8 PS=0xA4A965C189287B99 submitted=9 captured=9
+D3D12 real replay PSO cache: entries=12 misses=12 hits=147 diagnostic_pipelines=0 input_layout_variants=4
+D3D12 real replay bound 156 captured texture SRV(s), 1116 fallback texture SRV(s), unsupported_texture_attempts=0
+D3D12 real replay offline render targets: count=3 presented_guest_color_base=0x530
+```
+
+Output SHA-256:
+`E5E2C7FA803D689B208A1A7137EB7A7A1F0B273D6E086615515E215CEB74CEDE`.
+
+Current gap report for this capture:
+
+```text
+draws=1366 geometry_ok=159 shader_ok=159 texture_ok=159 ready=159 utility_ready=9 depth_only_zero_color_ready=58 scene_candidate_ready=92 ignored_utility=1207
+top blockers: none
+```
+
+The rendered BMP shows a recognizable BO2 Multiplayer menu frame with the
+background soldiers, logo/menu text, and button glyphs. This is real
+BO2-derived offline D3D12 output, not diagnostic geometry. Remaining live
+renderer work is still substantial: live `native_d3d12` only submits subsets of
+some frames, frames with only ignored/no-output utility work still report as
+failures, and exact live scene parity still needs resolved presentation,
+complete texture/sampler coverage, and broader shader/state semantics.

@@ -1234,6 +1234,61 @@ bool ShouldReplayAsDepthOnlyZeroColorDraw(
   return render_state.depth_write_enable || render_state.stencil_enable;
 }
 
+bool VerticesCoverRenderTarget(const ReplayDrawState &state,
+                               const std::vector<RealReplayVertex> &vertices) {
+  if (vertices.empty()) {
+    return false;
+  }
+
+  float min_x = vertices.front().position[0];
+  float max_x = min_x;
+  float min_y = vertices.front().position[1];
+  float max_y = min_y;
+  for (const RealReplayVertex &vertex : vertices) {
+    min_x = std::min(min_x, vertex.position[0]);
+    max_x = std::max(max_x, vertex.position[0]);
+    min_y = std::min(min_y, vertex.position[1]);
+    max_y = std::max(max_y, vertex.position[1]);
+  }
+
+  const RenderStateRecord *render_state =
+      state.draw.render_state.present ? &state.draw.render_state : nullptr;
+  const float target_width =
+      render_state && render_state->surface_pitch != 0
+          ? static_cast<float>(render_state->surface_pitch)
+          : 1280.0f;
+  constexpr float kTargetHeight = 720.0f;
+  return min_x <= 1.0f && min_y <= 1.0f &&
+         (max_x - min_x) >= target_width * 0.95f &&
+         (max_y - min_y) >= kTargetHeight * 0.95f;
+}
+
+bool IsAb1eA4ZeroColorFillDraw(const ReplayDrawState &state,
+                               const std::vector<RealReplayVertex> &vertices,
+                               uint32_t input_layout_mask) {
+  if (state.vertex_shader.hash != 0xAB1E86137A0240E8ull ||
+      state.pixel_shader.hash != 0xA4A965C189287B99ull) {
+    return false;
+  }
+  const PM4DrawRecord &draw = state.draw;
+  if (draw.indexed || draw.primitive_type != 8 || draw.index_count != 3 ||
+      !draw.texture_fetches.empty() || !draw.render_state.present) {
+    return false;
+  }
+  if ((input_layout_mask & kInputLayoutColor0) != 0) {
+    return false;
+  }
+  const RenderStateRecord &render_state = draw.render_state;
+  const bool param_gen_enabled =
+      ((render_state.sq_program_cntl >> 18) & 0x1u) != 0;
+  if ((render_state.rb_color_mask & 0xF) == 0 ||
+      render_state.depth_write_enable || render_state.stencil_enable ||
+      param_gen_enabled) {
+    return false;
+  }
+  return VerticesCoverRenderTarget(state, vertices);
+}
+
 bool IsAb1eTextureInterpolatorBlocker(const ReplayDrawState &state) {
   if (state.vertex_shader.hash != 0xAB1E86137A0240E8ull) {
     return false;
@@ -1497,7 +1552,9 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
             state, candidate.vertices, candidate.input_layout_mask);
     if (IsKnownZeroColorExportDraw(state, candidate.vertices,
                                    candidate.input_layout_mask) &&
-        !candidate.force_depth_only_color_mask) {
+        !candidate.force_depth_only_color_mask &&
+        !IsAb1eA4ZeroColorFillDraw(state, candidate.vertices,
+                                   candidate.input_layout_mask)) {
       continue;
     }
 
@@ -1653,6 +1710,9 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
     if (IsKnownZeroColorExportDraw(state, vertices, input_layout_mask)) {
       if (ShouldReplayAsDepthOnlyZeroColorDraw(state, vertices,
                                                input_layout_mask)) {
+        return "";
+      }
+      if (IsAb1eA4ZeroColorFillDraw(state, vertices, input_layout_mask)) {
         return "";
       }
       return "A4 pass-through color export has no captured color/texture "
