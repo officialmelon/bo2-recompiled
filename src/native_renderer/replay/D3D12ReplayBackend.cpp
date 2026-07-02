@@ -4434,6 +4434,81 @@ struct D3D12LiveReplaySessionStorage {
   bool depth_ready = false;
 };
 
+bool CopyRetainedColorToLiveTarget(D3D12LiveReplaySessionStorage *live_session,
+                                   D3D12LiveSubmitBinding *live_binding) {
+  if (!live_session || !live_binding || !live_binding->command_list ||
+      !live_binding->color_target || !live_session->color_accum_ready ||
+      !live_session->has_presentable_color ||
+      !live_session->color_accum_target ||
+      live_session->color_accum_width != live_binding->width ||
+      live_session->color_accum_height != live_binding->height) {
+    return false;
+  }
+
+  D3D12_RESOURCE_BARRIER copy_barriers[2]{};
+  copy_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  copy_barriers[0].Transition.pResource =
+      live_session->color_accum_target.Get();
+  copy_barriers[0].Transition.Subresource =
+      D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  copy_barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+  copy_barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  copy_barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  copy_barriers[1].Transition.pResource = live_binding->color_target;
+  copy_barriers[1].Transition.Subresource =
+      D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  copy_barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+  copy_barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+  live_binding->command_list->ResourceBarrier(2, copy_barriers);
+
+  live_binding->command_list->CopyResource(live_binding->color_target,
+                                           live_session->color_accum_target.Get());
+
+  D3D12_RESOURCE_BARRIER restore_barriers[2]{};
+  restore_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  restore_barriers[0].Transition.pResource =
+      live_session->color_accum_target.Get();
+  restore_barriers[0].Transition.Subresource =
+      D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  restore_barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  restore_barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+  restore_barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  restore_barriers[1].Transition.pResource = live_binding->color_target;
+  restore_barriers[1].Transition.Subresource =
+      D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  restore_barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+  restore_barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+  live_binding->command_list->ResourceBarrier(2, restore_barriers);
+  live_binding->copied_retained_frame = true;
+  return true;
+}
+
+struct PreparedDrawClassCounts {
+  std::size_t scene = 0;
+  std::size_t depth_only = 0;
+  std::size_t utility = 0;
+};
+
+PreparedDrawClassCounts ClassifyPreparedDraws(
+    const ReplayCapture &capture, const std::vector<PreparedRealDraw> &draws) {
+  PreparedDrawClassCounts counts{};
+  for (const PreparedRealDraw &draw : draws) {
+    if (draw.draw_index >= capture.draws.size()) {
+      continue;
+    }
+    const ReplayDrawState &state = capture.draws[draw.draw_index];
+    if (draw.force_depth_only_color_mask) {
+      ++counts.depth_only;
+    } else if (IsAb1eA4ZeroColorFillDraw(state, draw.vertices,
+                                         draw.input_layout_mask)) {
+      ++counts.utility;
+    } else {
+      ++counts.scene;
+    }
+  }
+  return counts;
+}
+
 #endif
 
 } // namespace
@@ -4798,62 +4873,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         live_binding->input_layout_variants = 0;
         CopyFramePlanDiagnosticsToLiveBinding(frame_plan, *live_binding);
         live_binding->noop_utility_frame = true;
-        if (options.live_session && live_binding->command_list &&
-            live_binding->color_target) {
-          auto *live_session =
+        if (options.live_session) {
+          CopyRetainedColorToLiveTarget(
               reinterpret_cast<D3D12LiveReplaySessionStorage *>(
-                  options.live_session);
-          if (live_session->color_accum_ready &&
-              live_session->has_presentable_color &&
-              live_session->color_accum_target &&
-              live_session->color_accum_width == live_binding->width &&
-              live_session->color_accum_height == live_binding->height) {
-            D3D12_RESOURCE_BARRIER copy_barriers[2]{};
-            copy_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            copy_barriers[0].Transition.pResource =
-                live_session->color_accum_target.Get();
-            copy_barriers[0].Transition.Subresource =
-                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            copy_barriers[0].Transition.StateBefore =
-                D3D12_RESOURCE_STATE_RENDER_TARGET;
-            copy_barriers[0].Transition.StateAfter =
-                D3D12_RESOURCE_STATE_COPY_SOURCE;
-            copy_barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            copy_barriers[1].Transition.pResource = live_binding->color_target;
-            copy_barriers[1].Transition.Subresource =
-                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            copy_barriers[1].Transition.StateBefore =
-                D3D12_RESOURCE_STATE_PRESENT;
-            copy_barriers[1].Transition.StateAfter =
-                D3D12_RESOURCE_STATE_COPY_DEST;
-            live_binding->command_list->ResourceBarrier(2, copy_barriers);
-
-            live_binding->command_list->CopyResource(
-                live_binding->color_target,
-                live_session->color_accum_target.Get());
-
-            D3D12_RESOURCE_BARRIER restore_barriers[2]{};
-            restore_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            restore_barriers[0].Transition.pResource =
-                live_session->color_accum_target.Get();
-            restore_barriers[0].Transition.Subresource =
-                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            restore_barriers[0].Transition.StateBefore =
-                D3D12_RESOURCE_STATE_COPY_SOURCE;
-            restore_barriers[0].Transition.StateAfter =
-                D3D12_RESOURCE_STATE_RENDER_TARGET;
-            restore_barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            restore_barriers[1].Transition.pResource =
-                live_binding->color_target;
-            restore_barriers[1].Transition.Subresource =
-                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            restore_barriers[1].Transition.StateBefore =
-                D3D12_RESOURCE_STATE_COPY_DEST;
-            restore_barriers[1].Transition.StateAfter =
-                D3D12_RESOURCE_STATE_PRESENT;
-            live_binding->command_list->ResourceBarrier(2, restore_barriers);
-            live_binding->copied_retained_frame = true;
-          }
+                  options.live_session),
+              live_binding);
         }
       }
       if (!options.live_submit) {
@@ -4869,6 +4893,36 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     }
     prepared = frame_plan.supported_draws.front();
     prepared_draws = frame_plan.supported_draws;
+    if (options.live_submit && options.live_binding) {
+      D3D12LiveSubmitBinding *early_live_binding = options.live_binding;
+      const PreparedDrawClassCounts draw_classes =
+          ClassifyPreparedDraws(capture, prepared_draws);
+      if (draw_classes.scene == 0) {
+        CopyFramePlanDiagnosticsToLiveBinding(frame_plan, *early_live_binding);
+        early_live_binding->submitted_draws = 0;
+        early_live_binding->shader_pair_count = 0;
+        early_live_binding->pso_entries = 0;
+        early_live_binding->pso_cache_hits = 0;
+        early_live_binding->pso_cache_misses = 0;
+        early_live_binding->diagnostic_pipelines = 0;
+        early_live_binding->input_layout_variants = 0;
+        early_live_binding->scene_candidate_draws = 0;
+        early_live_binding->depth_only_draws =
+            static_cast<uint64_t>(draw_classes.depth_only);
+        early_live_binding->utility_draws =
+            static_cast<uint64_t>(draw_classes.utility);
+        early_live_binding->presentable_frame = false;
+        early_live_binding->noop_utility_frame =
+            draw_classes.depth_only == 0 && draw_classes.utility > 0;
+        if (options.live_session) {
+          CopyRetainedColorToLiveTarget(
+              reinterpret_cast<D3D12LiveReplaySessionStorage *>(
+                  options.live_session),
+              early_live_binding);
+        }
+        return true;
+      }
+    }
   } else if (options.skip_unsupported && !options.draw_index) {
     for (std::size_t draw_index = 0; draw_index < capture.draws.size();
          ++draw_index) {

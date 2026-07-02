@@ -2466,3 +2466,47 @@ The renderer freeze remained reproducible in that run: the process was not
 responding when the watchdog terminated it, while the capture itself still
 validated (`9000` events, `32` frames, `1800` draws). The current live-stability
 target is therefore still the D3D12 live frame/resource synchronization path.
+
+Live D3D12 retained-frame fast path:
+
+The live D3D12 backend now classifies frame-plan draws before uploading D3D12
+resources. In live mode only, frames with no scene-color candidate skip the
+expensive resource build/upload path and copy the retained color target when a
+previous presentable frame exists. Offline replay is unchanged.
+
+Validation:
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_052_draw_probe_heap_candidate\events.jsonl --backend d3d12 --d3d12-output native-renderer-mp052-live-fastpath-replay.bmp --shader-override-root shader_work\native_overrides --skip-unsupported --d3d12-draws 1200
+```
+
+Result: unchanged offline behavior, `354` supported real draws across `9`
+shader pairs, nonzero color/depth output, and the same semantic constant gaps
+for the atlas/animated shaders.
+
+Bounded live validation:
+
+```text
+default_mp.exe --native_renderer_mode=native_d3d12 --native_renderer_verbose=false --native_renderer_live_allow_diagnostic_shader=false --native_renderer_skip_unsupported_draws=true
+```
+
+Result: responsive at every 4 second sample through 28 seconds; watchdog stopped
+the process. Latest log:
+`default_mp/out/build/win-clang-msvc-amd64-relwithdebinfo-msvctarget/logs/default_mp_064.log`.
+
+Relevant evidence:
+
+```text
+frame 2: real_draws=0 scene_draws=0 depth_only_draws=1 copied_retained_frame=no
+frame 4: real_draws=2 scene_draws=2 presentable_frame=yes
+frame 5: real_draws=0 scene_draws=0 copied_retained_frame=yes
+frame 7: real_draws=0 scene_draws=0 copied_retained_frame=yes
+```
+
+No `Present failed` or fence wait errors were emitted in the validation run.
+This reduces wasted live work on depth-only/utility-only frames and should
+reduce black-frame flicker and frame-time spikes, but it does not fix the
+remaining texture/atlas correctness issue. The texture issue still tracks to
+missing semantic shader constants (`c72`, `c73`, `c232-c235`, and sometimes
+`c252-c253`) rather than mip selection; base texture payloads are present and
+the D3D12 sampler is clamped to mip 0.
