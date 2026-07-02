@@ -19,6 +19,12 @@ replay. Non-indexed 3-corner rect groups are expanded to two native triangle-lis
 triangles before submission. This is a primitive conversion step only; it does
 not bypass shader semantic blockers.
 
+`--dump-bound-state` prints `SQ_PROGRAM_CNTL` and `SQ_CONTEXT_MISC` shader
+control fields. The real-backend gap classifier uses those fields for the MP010
+`AB1E/FF01` class: when `param_gen` is disabled and the VS writes no
+interpolators, ReXGlue's translator would zero the pixel GPR used as FF01's
+color multiplier, making the blended draw preserve the destination.
+
 ## Build
 
 The tool is built from the `default` CMake project:

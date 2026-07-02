@@ -1327,9 +1327,40 @@ bool IsKnownZeroTextureNoOutputDraw(const ReplayDrawState &state) {
   return TextureDecodesAllZeroRgba(draw.texture_fetches.front());
 }
 
+bool SqProgramParamGenEnabled(uint32_t sq_program_cntl) {
+  return ((sq_program_cntl >> 18) & 0x1u) != 0;
+}
+
+bool IsKnownZeroedInterpolatorNoOutputDraw(const ReplayDrawState &state) {
+  if (state.vertex_shader.hash != 0xAB1E86137A0240E8ull ||
+      state.pixel_shader.hash != 0xFF01D28E1EF3A880ull) {
+    return false;
+  }
+  const PM4DrawRecord &draw = state.draw;
+  if (draw.texture_fetches.size() != 1 || !draw.render_state.present) {
+    return false;
+  }
+  const RenderStateRecord &render_state = draw.render_state;
+  if (render_state.depth_write_enable || render_state.stencil_enable ||
+      SqProgramParamGenEnabled(render_state.sq_program_cntl)) {
+    return false;
+  }
+  const uint32_t blend_control =
+      render_state.rb_blendcontrol.empty() ? 0 : render_state.rb_blendcontrol[0];
+  if ((render_state.rb_color_mask & 0xF) == 0 || blend_control != 0x010B0706u) {
+    return false;
+  }
+  // ReXGlue's shader translator zeroes pixel GPRs without an interpolator or
+  // PsParamGen source. AB1E exports no interpolators, and FF01's final color is
+  // `mul oC0, r1.xxxy, r0`, so r0=0 makes the source alpha zero and preserves
+  // the destination under the captured SRC_ALPHA/INV_SRC_ALPHA blend state.
+  return true;
+}
+
 bool IsKnownIgnoredUtilityDraw(const ReplayDrawState &state) {
   return IsKnownNoRasterNoFetchDraw(state) ||
-         IsKnownZeroTextureNoOutputDraw(state);
+         IsKnownZeroTextureNoOutputDraw(state) ||
+         IsKnownZeroedInterpolatorNoOutputDraw(state);
 }
 
 bool IsLikelyFullscreenUtilityPass(const ReplayDrawState &state,
@@ -5568,6 +5599,9 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
         ++stats.ignored_utility;
         if (IsKnownZeroTextureNoOutputDraw(state)) {
           ++ready_class_counts["ignored utility/zero-texture no-output draw"];
+        } else if (IsKnownZeroedInterpolatorNoOutputDraw(state)) {
+          ++ready_class_counts
+              ["ignored utility/zeroed-interpolator no-output draw"];
         } else {
           ++ready_class_counts["ignored utility/no-raster no-fetch draw"];
         }

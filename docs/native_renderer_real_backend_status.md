@@ -57,14 +57,18 @@ Current AB1E finding:
   destination. These are now classified as ignored zero-texture no-output
   utility draws, not as scene-ready rendering.
 - The `AB1E/FF01` draws bind a real `512x1024` glyph atlas. They remain blocked
-  because inventing UVs from screen position would fake output instead of
-  decoding the actual Xenos interpolator/register path.
+  until the replay proves a nonzero pixel input. The MP010 draws currently have
+  `SQ_PROGRAM_CNTL=0x00010002`, `param_gen=0`, and the AB1E vertex shader writes
+  no interpolators. ReXGlue's translator zeroes such pixel GPRs, so FF01's
+  `mul oC0, r1.xxxy, r0` has zero source alpha and preserves the destination
+  with the captured `SRC_ALPHA/INV_SRC_ALPHA` blend state. These are classified
+  as ignored zeroed-interpolator no-output utility draws, not scene rendering.
 
 Next correctness target:
 
-- Decode the implicit AB1E input/interpolator/register semantics for the
-  `AB1E/FF01` glyph-atlas draw class, then replay it without synthetic UV or
-  color assumptions.
+- Decode the remaining `AB1E/A4` no-texture color-export group. Unlike FF01,
+  it has blend disabled, so zero output would overwrite color; it cannot be
+  treated as no-output without deeper target/register evidence.
 
 ## 2026-07-01 MP replay real-output checkpoint
 

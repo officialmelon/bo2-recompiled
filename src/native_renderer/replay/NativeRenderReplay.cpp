@@ -3379,6 +3379,13 @@ void PrintRenderStateDecode(const RenderStateRecord &rs) {
             << " pa_cl_vte_cntl=" << FormatHex32(rs.pa_cl_vte_cntl)
             << " cull=" << rs.cull_mode << " fill=" << rs.fill_mode
             << " front_face=" << rs.front_face << "\n";
+  std::cout << "    shader_control sq_program_cntl="
+            << FormatHex32(rs.sq_program_cntl)
+            << " sq_context_misc=" << FormatHex32(rs.sq_context_misc)
+            << " param_gen="
+            << (((rs.sq_program_cntl >> 18) & 0x1u) ? "yes" : "no")
+            << " param_gen_pos=" << ((rs.sq_context_misc >> 8) & 0xFFu)
+            << "\n";
   if (!rs.rb_blendcontrol.empty()) {
     PrintBlendControlDecode(rs.rb_blendcontrol[0], "    ");
   } else {
