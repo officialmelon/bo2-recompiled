@@ -223,10 +223,23 @@ native_shader_inspect.exe ^
   --xenosrecomp-hlsl shader_work\cache\xenosrecomp_smoke\inspect_bridge_pixel.hlsl
 ```
 
+The bridge can also resolve a static container hash through
+`shader_work/shaders/index.json` before invoking XenosRecomp:
+
+```bat
+native_shader_inspect.exe ^
+  --index shader_work\shaders\index.json ^
+  --hash 34bf3f734648398a4cc35c9799c55dc262c2e880266ee0f04dc3a45ef333d40f ^
+  --xenosrecomp out\build\xenosrecomp-win-msvc-compat\XenosRecomp\XenosRecomp.exe ^
+  --xenosrecomp-hlsl shader_work\cache\xenosrecomp_smoke\inspect_bridge_by_hash.hlsl
+```
+
 Verified output:
 
 - `shader_work/cache/xenosrecomp_smoke/inspect_bridge_pixel.hlsl`
 - `shader_work/cache/xenosrecomp_smoke/inspect_bridge_pixel.hlsl.xenosrecomp.log`
+- `shader_work/cache/xenosrecomp_smoke/inspect_bridge_by_hash.hlsl`
+- `shader_work/cache/xenosrecomp_smoke/inspect_bridge_by_hash.hlsl.xenosrecomp.log`
 
 The generated HLSL contains a real translated Xenos pixel shader body with
 register declarations, color export, and alpha-test specialization logic.
@@ -235,9 +248,19 @@ Current limitation:
 
 - Runtime shader hashes such as `0xEDC17DCC3FFDB040` and
   `0xA4A965C189287B99` still do not directly match the static SHA-256
-  container/microcode index. The next renderer step is to add an explicit
-  runtime-to-container mapping path, then let D3D12 shader resolution prefer
-  XenosRecomp-generated HLSL/DXIL over manual overrides.
+  container/microcode index.
+- On capture
+  `native_captures\live_d3d12_mp_074_sticky_present_target_telemetry\events.jsonl`,
+  `native_shader_inspect.exe --match-runtime-shaders --top-shaders 20`
+  reported `Runtime shader direct matches: 0/16`.
+- The top runtime shaders had stable captured PM4 payloads, but none matched by
+  runtime hash substring, raw little-endian payload SHA-256, raw big-endian
+  payload SHA-256, trimmed little-endian payload SHA-256, or trimmed big-endian
+  payload SHA-256. Example top runtime shader:
+  `PS 0xA4A965C189287B99`, `draws=797`, `payload_sha256_le=f73f655ea80c22bde4bc93575f87664e81056b6f4714bef3a4defaa18994d18a`.
+- The next renderer step is to recover the material/pass shader-record mapping
+  or the missing PM4 payload-to-container transform, then let D3D12 shader
+  resolution prefer XenosRecomp-generated HLSL/DXIL over manual overrides.
 
 Ghidra evidence for the matching runtime path:
 

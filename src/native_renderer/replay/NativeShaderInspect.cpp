@@ -1139,6 +1139,41 @@ std::optional<std::string_view> FindRecordByStage(std::string_view text,
   return RecordAround(text, pos);
 }
 
+std::optional<std::filesystem::path> ResolveContainerPathFromIndexRecord(
+    const std::filesystem::path &index_path, std::string_view record) {
+  const std::string file = ExtractJsonString(record, "file");
+  if (file.empty()) {
+    return std::nullopt;
+  }
+
+  const std::filesystem::path index_dir = index_path.parent_path();
+  const std::filesystem::path containers_dir =
+      index_dir.empty() ? std::filesystem::path("containers")
+                        : index_dir / "containers";
+  return containers_dir / file;
+}
+
+std::optional<std::filesystem::path> ResolveContainerPathFromIndexHash(
+    const std::filesystem::path &index_path, std::string_view index_text,
+    std::string_view hash_or_substring) {
+  if (hash_or_substring.empty()) {
+    return std::nullopt;
+  }
+
+  const std::string lower_index = ToLower(std::string(index_text));
+  const std::string lower_hash = ToLower(std::string(hash_or_substring));
+  const std::size_t pos = lower_index.find(lower_hash);
+  if (pos == std::string::npos) {
+    return std::nullopt;
+  }
+
+  const std::optional<std::string_view> record = RecordAround(index_text, pos);
+  if (!record) {
+    return std::nullopt;
+  }
+  return ResolveContainerPathFromIndexRecord(index_path, *record);
+}
+
 void PrintRecord(std::string_view block, std::string_view prefix) {
   const std::string hash = ExtractJsonString(block, "hash");
   const std::string stage = ExtractJsonString(block, "stage");
@@ -4427,8 +4462,9 @@ int main(int argc, char **argv) {
     return 2;
   }
   if (!cli.xenosrecomp_hlsl_output_path.empty()) {
-    if (cli.shader_path.empty()) {
-      std::cerr << "--xenosrecomp-hlsl requires --shader <container.bin>\n";
+    if (cli.shader_path.empty() && cli.hash.empty()) {
+      std::cerr << "--xenosrecomp-hlsl requires either --shader "
+                   "<container.bin> or --hash <static_container_hash>\n";
       return 2;
     }
     if (cli.xenosrecomp_path.empty()) {
@@ -4444,20 +4480,6 @@ int main(int argc, char **argv) {
       std::cerr << error << "\n";
       return 1;
     }
-    printed_anything = true;
-  }
-  if (!cli.xenosrecomp_hlsl_output_path.empty()) {
-    std::filesystem::path log_path;
-    std::string error;
-    if (!RunXenosRecompContainerToHlsl(
-            cli.xenosrecomp_path, cli.shader_path, cli.xenosrecomp_header_path,
-            cli.xenosrecomp_hlsl_output_path, log_path, error)) {
-      std::cerr << error << "\n";
-      return 1;
-    }
-    std::cout << "xenosrecomp_hlsl="
-              << cli.xenosrecomp_hlsl_output_path.string() << "\n"
-              << "xenosrecomp_log=" << log_path.string() << "\n";
     printed_anything = true;
   }
   if (!cli.disasm_output_path.empty()) {
@@ -4543,7 +4565,10 @@ int main(int argc, char **argv) {
   }
 
   const bool needs_index =
-      cli.show_summary || cli.find_hash || cli.match_runtime_shaders;
+      cli.show_summary || cli.find_hash || cli.match_runtime_shaders ||
+      (!cli.xenosrecomp_hlsl_output_path.empty() && cli.shader_path.empty());
+  const bool needs_xenosrecomp =
+      !cli.xenosrecomp_hlsl_output_path.empty();
   const bool needs_capture = cli.list_runtime_shaders ||
                              cli.match_runtime_shaders ||
                              (cli.semantic_disassemble &&
@@ -4558,7 +4583,7 @@ int main(int argc, char **argv) {
                              !cli.hlsl_dxc_compile_cache_path.empty() ||
                              !cli.translated_hlsl_dxc_compile_cache_path
                                   .empty();
-  if (!needs_index && !needs_capture) {
+  if (!needs_index && !needs_capture && !needs_xenosrecomp) {
     return 0;
   }
 
@@ -4586,6 +4611,41 @@ int main(int argc, char **argv) {
       std::cerr << capture_error << "\n";
       return 1;
     }
+  }
+
+  if (!cli.xenosrecomp_hlsl_output_path.empty()) {
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    std::filesystem::path log_path;
+    std::string error;
+    std::filesystem::path shader_path = cli.shader_path;
+    if (shader_path.empty()) {
+      if (!resolved) {
+        std::cerr << "shader index does not exist: "
+                  << cli.index_path.string() << "\n";
+        return 1;
+      }
+      const std::optional<std::filesystem::path> resolved_shader =
+          ResolveContainerPathFromIndexHash(*resolved, text, cli.hash);
+      if (!resolved_shader) {
+        std::cerr << "could not resolve static shader container for --hash "
+                  << cli.hash << " in " << resolved->string() << "\n";
+        return 1;
+      }
+      shader_path = *resolved_shader;
+    }
+    if (!RunXenosRecompContainerToHlsl(
+            cli.xenosrecomp_path, shader_path, cli.xenosrecomp_header_path,
+            cli.xenosrecomp_hlsl_output_path, log_path, error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    std::cout << "xenosrecomp_shader=" << shader_path.string() << "\n"
+              << "xenosrecomp_hlsl="
+              << cli.xenosrecomp_hlsl_output_path.string() << "\n"
+              << "xenosrecomp_log=" << log_path.string() << "\n";
+    printed_anything = true;
   }
 
   if (cli.semantic_disassemble && cli.microcode_path.empty()) {
