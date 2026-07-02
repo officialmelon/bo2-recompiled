@@ -781,6 +781,7 @@ struct PreparedRealDraw {
   bool indexed = false;
   bool vertexless = false;
   bool uses_32bit_indices = false;
+  bool force_depth_only_color_mask = false;
   D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 };
 
@@ -817,6 +818,7 @@ struct D3D12ReplayPipeline {
   ComPtr<ID3D12PipelineState> pipeline_state;
   const RenderStateRecord *render_state = nullptr;
   bool used_diagnostic_shader = false;
+  bool forced_depth_only_color_mask = false;
 };
 
 struct CapturedColorTargetSeed {
@@ -1147,6 +1149,19 @@ bool IsKnownZeroColorExportDraw(const ReplayDrawState &state,
   return true;
 }
 
+bool ShouldReplayAsDepthOnlyZeroColorDraw(
+    const ReplayDrawState &state, const std::vector<RealReplayVertex> &vertices,
+    uint32_t input_layout_mask) {
+  if (!IsKnownZeroColorExportDraw(state, vertices, input_layout_mask)) {
+    return false;
+  }
+  const RenderStateRecord &render_state = state.draw.render_state;
+  if (!render_state.present) {
+    return false;
+  }
+  return render_state.depth_write_enable || render_state.stencil_enable;
+}
+
 bool IsAb1eTextureInterpolatorBlocker(const ReplayDrawState &state) {
   if (state.vertex_shader.hash != 0xAB1E86137A0240E8ull) {
     return false;
@@ -1337,8 +1352,12 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
                                 candidate.input_layout_signature)) {
       continue;
     }
+    candidate.force_depth_only_color_mask =
+        ShouldReplayAsDepthOnlyZeroColorDraw(
+            state, candidate.vertices, candidate.input_layout_mask);
     if (IsKnownZeroColorExportDraw(state, candidate.vertices,
-                                   candidate.input_layout_mask)) {
+                                   candidate.input_layout_mask) &&
+        !candidate.force_depth_only_color_mask) {
       continue;
     }
 
@@ -1486,6 +1505,10 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
       continue;
     }
     if (IsKnownZeroColorExportDraw(state, vertices, input_layout_mask)) {
+      if (ShouldReplayAsDepthOnlyZeroColorDraw(state, vertices,
+                                               input_layout_mask)) {
+        return "";
+      }
       return "A4 pass-through color export has no captured color/texture "
              "dependency or exports all zero; needs Xenos export/register "
              "semantics before it counts as scene rendering";
@@ -1593,6 +1616,7 @@ struct PipelineKey {
   uint32_t front_face = 0;
   uint32_t input_layout_mask = 0;
   uint64_t input_layout_signature = 0;
+  uint32_t forced_depth_only_color_mask = 0;
 
   bool operator<(const PipelineKey &other) const {
     return std::tie(vertex_shader_hash, pixel_shader_hash, topology,
@@ -1603,7 +1627,7 @@ struct PipelineKey {
                     blendcontrol0, msaa_samples, depth_test_enable,
                     depth_write_enable, stencil_enable, depth_func, cull_mode,
                     fill_mode, front_face, input_layout_mask,
-                    input_layout_signature) <
+                    input_layout_signature, forced_depth_only_color_mask) <
            std::tie(other.vertex_shader_hash, other.pixel_shader_hash,
                     other.topology, other.render_target_format,
                     other.render_state_present, other.rb_colorcontrol,
@@ -1615,7 +1639,8 @@ struct PipelineKey {
                     other.depth_test_enable, other.depth_write_enable,
                     other.stencil_enable, other.depth_func, other.cull_mode,
                     other.fill_mode, other.front_face, other.input_layout_mask,
-                    other.input_layout_signature);
+                    other.input_layout_signature,
+                    other.forced_depth_only_color_mask);
   }
 };
 
@@ -1637,6 +1662,8 @@ PipelineKey MakePipelineKey(const ReplayDrawState &state,
   key.render_target_format = static_cast<uint32_t>(render_target_format);
   key.input_layout_mask = prepared.input_layout_mask;
   key.input_layout_signature = prepared.input_layout_signature;
+  key.forced_depth_only_color_mask =
+      BoolKey(prepared.force_depth_only_color_mask);
   const RenderStateRecord *render_state =
       state.draw.render_state.present ? &state.draw.render_state : nullptr;
   if (!render_state) {
@@ -2650,7 +2677,7 @@ bool CreateRealGeometryPipeline(
     const char *pixel_shader_entry, const char *pixel_shader_profile,
     const std::filesystem::path &pixel_cache_path,
     const std::filesystem::path &pixel_log_path, uint32_t input_layout_mask,
-    std::string &error) {
+    bool force_depth_only_color_mask, std::string &error) {
   D3D12_DESCRIPTOR_RANGE texture_srv_range{};
   texture_srv_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
   texture_srv_range.NumDescriptors =
@@ -2768,6 +2795,9 @@ bool CreateRealGeometryPipeline(
   pso_desc.PS = {pixel_shader->GetBufferPointer(),
                  pixel_shader->GetBufferSize()};
   pso_desc.BlendState = BlendDescFromRenderState(render_state);
+  if (force_depth_only_color_mask) {
+    pso_desc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+  }
   pso_desc.SampleMask = UINT_MAX;
   pso_desc.RasterizerState = RasterizerDescFromRenderState(render_state);
   pso_desc.DepthStencilState = DepthStencilDescFromRenderState(render_state);
@@ -4641,6 +4671,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     pipeline.render_state =
         state.draw.render_state.present ? &state.draw.render_state : nullptr;
     pipeline.used_diagnostic_shader = used_diagnostic_shader;
+    pipeline.forced_depth_only_color_mask =
+        prepared_draw.force_depth_only_color_mask;
     if (!CreateRealGeometryPipeline(
             device.Get(), pipeline.root_signature, pipeline.pipeline_state,
             format, pipeline.render_state, vertex_shader_source,
@@ -4651,7 +4683,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             pixel_shader_profile, override_pair.pixel_cache_path,
             override_pair.pixel_log_path,
             EffectiveInputLayoutMask(state, prepared_draw.input_layout_mask),
-            error)) {
+            prepared_draw.force_depth_only_color_mask, error)) {
       error = "could not create D3D12 real replay PSO for draw " +
               std::to_string(state.draw_index) + " VS=" +
               FormatHex64(state.vertex_shader.hash) + " PS=" +
@@ -5015,8 +5047,12 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   std::size_t depth_enabled_draws = 0;
   std::size_t depth_write_draws = 0;
   std::size_t stencil_enabled_draws = 0;
+  std::size_t forced_depth_only_zero_color_draws = 0;
   for (const UploadedRealDraw &uploaded : uploaded_draws) {
     const ReplayDrawState &state = capture.draws[uploaded.prepared.draw_index];
+    if (uploaded.prepared.force_depth_only_color_mask) {
+      ++forced_depth_only_zero_color_draws;
+    }
     if (!state.draw.render_state.present) {
       continue;
     }
@@ -5035,7 +5071,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             << " depth_target_bound=" << (batch_uses_depth ? "yes" : "no")
             << " depth_enabled_draws=" << depth_enabled_draws
             << " depth_write_draws=" << depth_write_draws
-            << " stencil_enabled_draws=" << stencil_enabled_draws << "\n";
+            << " stencil_enabled_draws=" << stencil_enabled_draws
+            << " forced_depth_only_zero_color_draws="
+            << forced_depth_only_zero_color_draws << "\n";
   const ReplayDrawState &first_submitted_state =
       capture.draws[uploaded_draws.front().prepared.draw_index];
   const RenderStateRecord *first_pipeline_render_state =
@@ -5419,6 +5457,7 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
     std::size_t texture_ok = 0;
     std::size_t ready = 0;
     std::size_t utility_ready = 0;
+    std::size_t depth_only_zero_color_ready = 0;
     std::size_t scene_candidate_ready = 0;
     std::size_t ignored_utility = 0;
   };
@@ -5431,6 +5470,7 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
   std::size_t texture_ok = 0;
   std::size_t ready = 0;
   std::size_t utility_ready = 0;
+  std::size_t depth_only_zero_color_ready = 0;
   std::size_t scene_candidate_ready = 0;
   std::size_t ignored_utility = 0;
 
@@ -5486,7 +5526,11 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
     ++stats.texture_ok;
     ++ready;
     ++stats.ready;
-    if (IsLikelyFullscreenUtilityPass(state, prepared)) {
+    if (prepared.force_depth_only_color_mask) {
+      ++depth_only_zero_color_ready;
+      ++stats.depth_only_zero_color_ready;
+      ++ready_class_counts["ready depth-only zero-color A4 pass"];
+    } else if (IsLikelyFullscreenUtilityPass(state, prepared)) {
       ++utility_ready;
       ++stats.utility_ready;
       ++ready_class_counts["ready utility/postprocess fullscreen pass"];
@@ -5502,6 +5546,8 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
             << " geometry_ok=" << geometry_ok << " shader_ok=" << shader_ok
             << " texture_ok=" << texture_ok << " ready=" << ready
             << " utility_ready=" << utility_ready
+            << " depth_only_zero_color_ready="
+            << depth_only_zero_color_ready
             << " scene_candidate_ready=" << scene_candidate_ready
             << " ignored_utility=" << ignored_utility << "\n";
 
@@ -5553,6 +5599,8 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
               << " shader_ok=" << stats.shader_ok
               << " texture_ok=" << stats.texture_ok
               << " ready=" << stats.ready
+              << " depth_only_zero_color="
+              << stats.depth_only_zero_color_ready
               << " utility_ready=" << stats.utility_ready
               << " scene_candidate_ready=" << stats.scene_candidate_ready
               << " ignored_utility=" << stats.ignored_utility

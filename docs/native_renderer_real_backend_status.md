@@ -1183,3 +1183,55 @@ diagnostic_pipelines=0
 Remaining correctness blockers are now easier to see: A4/AB1E skipped passes,
 missing exact shader ALU/export semantics, and live in-game parity with this
 offline replay output.
+
+# Depth-only A4 replay path - 2026-07-02
+
+The no-texture `PS=0xA4A965C189287B99` class is still not treated as visible
+scene color when its exported `r0` value cannot be proven. However, the
+`VS=0x1E6883FCCDE1F688 / PS=0xA4A965C189287B99` subset in MP010 has complete
+captured vertices and render state with depth/stencil side effects. The D3D12
+real replay path now submits that subset with a forced zero color write mask,
+so the real BO2 geometry can affect replay depth/stencil without reintroducing
+the old false fullscreen/diagonal color output.
+
+Validation command:
+
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_010\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-depthonly-a4.bmp --no-summary
+```
+
+Result:
+
+```text
+D3D12 real replay submitted 180 supported draw(s) across 8 shader pair(s)
+  pair VS=0x1E6883FCCDE1F688 PS=0xA4A965C189287B99 submitted=56 captured=56
+captured texture SRVs=196
+unsupported_texture_attempts=0
+partial_texture_previews=0
+diagnostic_pipelines=0
+forced_depth_only_zero_color_draws=56
+```
+
+Gap report after this change:
+
+```text
+draws=1314 geometry_ok=180 shader_ok=180 texture_ok=180 ready=180
+utility_ready=0 depth_only_zero_color_ready=56 scene_candidate_ready=124
+ignored_utility=1100
+top blockers:
+  23 x AB1E texture/interpolator semantics
+  11 x A4 pass-through color export with no captured/proven color dependency
+```
+
+Color output:
+`C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-depthonly-a4.bmp`,
+SHA-256 `4D11C18AFD29F24DFF62FBA97EB5FC07BD64ABAFF56FD41016EE8BEEFAE25BF6`.
+
+Depth output:
+`C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-depthonly-a4-depth.bmp`,
+SHA-256 `AF64BFC707E84C5C9B200056BC91AB6012794CB82D9B022DB47CCE3ACA480B7C`.
+
+This is a correctness improvement for the real backend state path, not a claim
+that A4 color semantics are solved. The remaining high-priority shader work is
+still Xenos register/export/interpolator lowering for AB1E and the remaining
+no-texture A4 draws.

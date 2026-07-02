@@ -532,3 +532,11 @@ Xenos endian mode to DXT/BC RGB565 color endpoints. The current best output is
 `C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-bc-endian.bmp`.
 Use `--dump-texture` on draw `774`, texture slot `0`, to inspect the corrected
 grayscale background texture decode.
+
+Follow-up: the `VS=0x1E6883FCCDE1F688 / PS=0xA4A965C189287B99` subset now
+replays as depth/stencil-only work with color writes forced off. This raises
+MP010 D3D12 real replay coverage to `180` submitted draws across `8` shader
+pairs while keeping `diagnostic_pipelines=0`. The extra `56` submitted draws
+are reported separately as `forced_depth_only_zero_color_draws=56`; they do not
+count as solved A4 color rendering. Current output:
+`C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-depthonly-a4.bmp`.
