@@ -27,6 +27,7 @@ class NativeRenderer {
 
   void OnSystemCommandBufferGpuIdentifierAddress(uint32_t address);
   VdSwapInfo OnVdSwapBegin(PPCContext& ctx, uint8_t* base);
+  bool CanForwardVdSwap(const VdSwapInfo& swap) const;
   void OnVdSwapEnd(const VdSwapInfo& swap, bool command_buffer_written);
   DrawPacketCandidateInfo OnDrawPacketCandidateBegin(std::string_view function_name,
                                                      uint32_t function_address,

@@ -14,58 +14,14 @@
     },
     {
       "backend": "d3d12",
-      "stage": "vertex",
-      "runtime_hash": "0x5D918D91043B3ED0",
-      "profile": "vs_5_0",
-      "compiler": "D3DCompile",
-      "format": "dxbc",
-      "cache_key": "VS_0x5D918D91043B3ED0.translated.v5.dxc",
-      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/VS_0x5D918D91043B3ED0.translated.v5.dxc.d3dcompile.dxbc",
-      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/VS_0x5D918D91043B3ED0.translated.v5.dxc.hlsl"
-    },
-    {
-      "backend": "d3d12",
-      "stage": "pixel",
-      "runtime_hash": "0xC4ED2979F29C9139",
-      "profile": "ps_5_0",
-      "compiler": "D3DCompile",
-      "format": "dxbc",
-      "cache_key": "PS_0xC4ED2979F29C9139.translated.v7.dxc",
-      "path": "shader_work/cache/d3d12/PS_0xC4ED2979F29C9139.translated.v7.dxc.d3dcompile.dxbc",
-      "source": "shader_work/cache/hlsl/PS_0xC4ED2979F29C9139.translated.v7.dxc.hlsl"
-    },
-    {
-      "backend": "d3d12",
-      "stage": "vertex",
-      "runtime_hash": "0xB6C9863F710683EC",
-      "profile": "vs_5_0",
-      "compiler": "D3DCompile",
-      "format": "dxbc",
-      "cache_key": "VS_0xB6C9863F710683EC.vertexless.v8.dxc",
-      "path": "shader_work/cache/d3d12/VS_0xB6C9863F710683EC.vertexless.v8.dxc.d3dcompile.dxbc",
-      "source": "shader_work/cache/hlsl/VS_0xB6C9863F710683EC.vertexless.v8.dxc.hlsl"
-    },
-    {
-      "backend": "d3d12",
       "stage": "pixel",
       "runtime_hash": "0xA4A965C189287B99",
       "profile": "ps_5_0",
       "compiler": "D3DCompile",
       "format": "dxbc",
-      "cache_key": "PS_0xA4A965C189287B99.translated.v7.dxc",
-      "path": "shader_work/cache/d3d12/PS_0xA4A965C189287B99.translated.v7.dxc.d3dcompile.dxbc",
-      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/PS_0xA4A965C189287B99.translated.v7.dxc.hlsl"
-    },
-    {
-      "backend": "d3d12",
-      "stage": "vertex",
-      "runtime_hash": "0x81311AC4B1FBD082",
-      "profile": "vs_5_0",
-      "compiler": "D3DCompile",
-      "format": "dxbc",
-      "cache_key": "VS_0x81311AC4B1FBD082.translated.v6.dxc",
-      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/VS_0x81311AC4B1FBD082.translated.v6.dxc.d3dcompile.dxbc",
-      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/VS_0x81311AC4B1FBD082.translated.v6.dxc.hlsl"
+      "cache_key": "PS_0xA4A965C189287B99.ab1e_zero.v1.dxc",
+      "path": "shader_work/cache/d3d12/PS_0xA4A965C189287B99.ab1e_zero.v1.dxc.d3dcompile.dxbc",
+      "source": "shader_work/cache/hlsl/PS_0xA4A965C189287B99.ab1e_zero.v1.dxc.hlsl"
     },
     {
       "backend": "d3d12",
@@ -74,20 +30,9 @@
       "profile": "vs_5_0",
       "compiler": "D3DCompile",
       "format": "dxbc",
-      "cache_key": "VS_0xAB1E86137A0240E8.translated.v5.dxc",
-      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/VS_0xAB1E86137A0240E8.translated.v5.dxc.d3dcompile.dxbc",
-      "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/VS_0xAB1E86137A0240E8.translated.v5.dxc.hlsl"
-    },
-    {
-      "backend": "d3d12",
-      "stage": "pixel",
-      "runtime_hash": "0x246E20EF10E0DDC7",
-      "profile": "ps_5_0",
-      "compiler": "D3DCompile",
-      "format": "dxbc",
-      "cache_key": "PS_0x246E20EF10E0DDC7.translated.v7.dxc",
-      "path": "shader_work/cache/d3d12/PS_0x246E20EF10E0DDC7.translated.v7.dxc.d3dcompile.dxbc",
-      "source": "shader_work/cache/hlsl/PS_0x246E20EF10E0DDC7.translated.v7.dxc.hlsl"
+      "cache_key": "manual_vs_AB1E86137A0240E8_vs_5_0_layout8_src882A4F01EA173440",
+      "path": "shader_work/cache/d3d12/manual_vs_AB1E86137A0240E8_vs_5_0_layout8_src882A4F01EA173440.dxbc",
+      "source": "shader_work/native_overrides/d3d12/vs_AB1E86137A0240E8.hlsl"
     },
     {
       "backend": "d3d12",
@@ -110,6 +55,116 @@
       "cache_key": "PS_0x3A6876055FEC1674.translated.v7.dxc",
       "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/PS_0x3A6876055FEC1674.translated.v7.dxc.d3dcompile.dxbc",
       "source": "C:/Users/braxt/bo2-recompiled/shader_work/cache/hlsl/PS_0x3A6876055FEC1674.translated.v7.dxc.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "pixel",
+      "runtime_hash": "0x79E1F538A5074A65",
+      "profile": "ps_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "manual_ps_79E1F538A5074A65_ps_5_0_layout8_srcB104CA8AB4DB3EE7",
+      "path": "C:/Users/braxt/bo2-recompiled/shader_work/cache/d3d12/manual_ps_79E1F538A5074A65_ps_5_0_layout8_srcB104CA8AB4DB3EE7.dxbc",
+      "source": "C:/Users/braxt/bo2-recompiled/shader_work/native_overrides/d3d12/ps_79E1F538A5074A65.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "vertex",
+      "runtime_hash": "0xEF95534343684F5B",
+      "profile": "vs_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "manual_vs_EF95534343684F5B_vs_5_0_layout8_src6814C6E272A05068",
+      "path": "shader_work/cache/d3d12/manual_vs_EF95534343684F5B_vs_5_0_layout8_src6814C6E272A05068.dxbc",
+      "source": "shader_work/native_overrides/d3d12/vs_EF95534343684F5B.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "pixel",
+      "runtime_hash": "0xDC168FB6031AFC41",
+      "profile": "ps_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "manual_ps_DC168FB6031AFC41_ps_5_0_layout8_src5FD060D672668647",
+      "path": "shader_work/cache/d3d12/manual_ps_DC168FB6031AFC41_ps_5_0_layout8_src5FD060D672668647.dxbc",
+      "source": "shader_work/native_overrides/d3d12/ps_DC168FB6031AFC41.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "vertex",
+      "runtime_hash": "0x3C4F6D40D699817B",
+      "profile": "vs_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "manual_vs_3C4F6D40D699817B_vs_5_0_layout8_src4CE6CC5E9E8A03F8",
+      "path": "shader_work/cache/d3d12/manual_vs_3C4F6D40D699817B_vs_5_0_layout8_src4CE6CC5E9E8A03F8.dxbc",
+      "source": "shader_work/native_overrides/d3d12/vs_3C4F6D40D699817B.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "pixel",
+      "runtime_hash": "0xEDC17DCC3FFDB040",
+      "profile": "ps_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "manual_ps_EDC17DCC3FFDB040_ps_5_0_layout8_src5B90474C722436CB",
+      "path": "shader_work/cache/d3d12/manual_ps_EDC17DCC3FFDB040_ps_5_0_layout8_src5B90474C722436CB.dxbc",
+      "source": "shader_work/native_overrides/d3d12/ps_EDC17DCC3FFDB040.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "pixel",
+      "runtime_hash": "0x8645E8BA65E424B2",
+      "profile": "ps_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "manual_ps_8645E8BA65E424B2_ps_5_0_layout8_src4DB8C94A4A5C84B9",
+      "path": "shader_work/cache/d3d12/manual_ps_8645E8BA65E424B2_ps_5_0_layout8_src4DB8C94A4A5C84B9.dxbc",
+      "source": "shader_work/native_overrides/d3d12/ps_8645E8BA65E424B2.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "vertex",
+      "runtime_hash": "0xCBC9604F48930B36",
+      "profile": "vs_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "manual_vs_CBC9604F48930B36_vs_5_0_layout8_src2943490793FFE044",
+      "path": "shader_work/cache/d3d12/manual_vs_CBC9604F48930B36_vs_5_0_layout8_src2943490793FFE044.dxbc",
+      "source": "shader_work/native_overrides/d3d12/vs_CBC9604F48930B36.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "pixel",
+      "runtime_hash": "0x7D1EF030F5710BDA",
+      "profile": "ps_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "manual_ps_7D1EF030F5710BDA_ps_5_0_layout8_srcF2AD221505E9E167",
+      "path": "shader_work/cache/d3d12/manual_ps_7D1EF030F5710BDA_ps_5_0_layout8_srcF2AD221505E9E167.dxbc",
+      "source": "shader_work/native_overrides/d3d12/ps_7D1EF030F5710BDA.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "vertex",
+      "runtime_hash": "0x261BDD733FEC1F64",
+      "profile": "vs_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "manual_vs_261BDD733FEC1F64_vs_5_0_layout8_src759EA70513A25564",
+      "path": "shader_work/cache/d3d12/manual_vs_261BDD733FEC1F64_vs_5_0_layout8_src759EA70513A25564.dxbc",
+      "source": "shader_work/native_overrides/d3d12/vs_261BDD733FEC1F64.hlsl"
+    },
+    {
+      "backend": "d3d12",
+      "stage": "pixel",
+      "runtime_hash": "0xFF01D28E1EF3A880",
+      "profile": "ps_5_0",
+      "compiler": "D3DCompile",
+      "format": "dxbc",
+      "cache_key": "manual_ps_FF01D28E1EF3A880_ps_5_0_layout8_srcCA7C39760F2EB7DA",
+      "path": "shader_work/cache/d3d12/manual_ps_FF01D28E1EF3A880_ps_5_0_layout8_srcCA7C39760F2EB7DA.dxbc",
+      "source": "shader_work/native_overrides/d3d12/ps_FF01D28E1EF3A880.hlsl"
     }
   ]
 }

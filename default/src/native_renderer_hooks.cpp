@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <iterator>
 
@@ -44,6 +45,7 @@ constexpr uint32_t kCommandBufferGrow = 0x8257AB00;
 constexpr uint32_t kCommandBufferReserve = 0x8257AD38;
 constexpr uint32_t kMaxProjectTexturePayloadBytes = 8 * 1024 * 1024;
 constexpr uint32_t kMaxProjectVertexPayloadBytes = 8 * 1024 * 1024;
+constexpr uint32_t kMaxProjectTargetPayloadBytes = 16 * 1024 * 1024;
 
 PPCFunc *original_draw_autoindex_shader_bootstrap;
 PPCFunc *original_draw_packet_candidate;
@@ -219,6 +221,52 @@ void RecaptureVertexPayloadFromGuest(bo2::native::VertexFetchInfo &target) {
   target.payload_byte_count = static_cast<uint32_t>(byte_count);
   target.payload_truncated = false;
   target.payload_missing = false;
+}
+
+void RecaptureTargetPayloadFromGuest(uint32_t base_pages,
+                                     uint32_t requested_byte_count,
+                                     uint32_t &payload_offset_bytes,
+                                     uint32_t &payload_byte_count,
+                                     std::vector<uint8_t> &payload_bytes,
+                                     bool &payload_truncated,
+                                     bool &payload_missing) {
+  static const bool enabled = [] {
+    const char *value = std::getenv("BO2_NATIVE_CAPTURE_FULL_TARGETS");
+    return value && std::strcmp(value, "1") == 0;
+  }();
+  if (!enabled) {
+    return;
+  }
+  if (!payload_truncated || base_pages == 0 || requested_byte_count == 0 ||
+      requested_byte_count > kMaxProjectTargetPayloadBytes ||
+      payload_bytes.size() >= requested_byte_count) {
+    if (payload_truncated && requested_byte_count != 0 &&
+        payload_bytes.size() >= requested_byte_count) {
+      payload_byte_count = requested_byte_count;
+      payload_offset_bytes = 0;
+      payload_truncated = false;
+      payload_missing = false;
+    }
+    return;
+  }
+
+  const uint64_t physical_address64 = uint64_t(base_pages) << 12;
+  if (physical_address64 > UINT32_MAX) {
+    return;
+  }
+  const uint8_t *source =
+      REX_KERNEL_MEMORY()->TranslatePhysical<const uint8_t *>(
+          static_cast<uint32_t>(physical_address64));
+  if (!source) {
+    return;
+  }
+
+  payload_bytes.resize(requested_byte_count);
+  std::memcpy(payload_bytes.data(), source, requested_byte_count);
+  payload_offset_bytes = 0;
+  payload_byte_count = requested_byte_count;
+  payload_truncated = false;
+  payload_missing = false;
 }
 
 void OnNativeRendererPM4Packet(
@@ -478,6 +526,12 @@ void CopyDrawRenderStateIfPresent(const DrawEvent *event,
               source.color_payload_bytes[i],
               source.color_payload_bytes[i] + payload_count);
         }
+        RecaptureTargetPayloadFromGuest(
+            target.color_base[i], target.color_payload_requested_byte_count[i],
+            target.color_payload_offset_bytes[i],
+            target.color_payload_byte_count[i], target.color_payload_bytes[i],
+            target.color_payload_truncated[i],
+            target.color_payload_missing[i]);
       }
       target.depth_payload_requested_byte_count =
           source.depth_payload_requested_byte_count;
@@ -492,6 +546,11 @@ void CopyDrawRenderStateIfPresent(const DrawEvent *event,
             source.depth_payload_bytes,
             source.depth_payload_bytes + depth_payload_count);
       }
+      RecaptureTargetPayloadFromGuest(
+          source.depth_base, target.depth_payload_requested_byte_count,
+          target.depth_payload_offset_bytes, target.depth_payload_byte_count,
+          target.depth_payload_bytes, target.depth_payload_truncated,
+          target.depth_payload_missing);
     }
     target.surface_pitch = source.surface_pitch;
     target.msaa_samples = source.msaa_samples;
@@ -750,7 +809,8 @@ REX_HOOK_RAW(
 REX_HOOK_RAW(default_native_vd_swap) {
   auto &renderer = bo2::native::NativeRenderer::Instance();
   const auto swap = renderer.OnVdSwapBegin(ctx, base);
-  if (!renderer.ShouldSuppressEmulatedPresent()) {
+  if (!renderer.ShouldSuppressEmulatedPresent() &&
+      renderer.CanForwardVdSwap(swap)) {
     rex::ppc::HostToGuestFunction<rex::kernel::xboxkrnl::VdSwap_entry>(ctx,
                                                                        base);
     renderer.OnVdSwapEnd(swap, true);
@@ -872,12 +932,12 @@ void InstallDefaultNativeRenderer(rex::Runtime *runtime) {
       &default_native_command_buffer_reserve, &original_command_buffer_reserve,
       "sub_8257AD38");
 
-  native::InstallHostDetour(
+  native::InstallImportThunkDetour(
       &__imp__VdSetSystemCommandBufferGpuIdentifierAddress,
       &default_native_vd_set_system_command_buffer_gpu_identifier_address,
       "__imp__VdSetSystemCommandBufferGpuIdentifierAddress");
-  native::InstallHostDetour(&__imp__VdSwap, &default_native_vd_swap,
-                            "__imp__VdSwap");
+  native::InstallImportThunkDetour(&__imp__VdSwap, &default_native_vd_swap,
+                                   "__imp__VdSwap");
 }
 
 } // namespace bo2
