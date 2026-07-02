@@ -126,6 +126,54 @@ Validation:
 - Real D3D12 replay remained behavior-preserving: `121` supported draws across
   `8` shader pairs with `diagnostic_pipelines=0`.
 
+## Limited HLSL translator interface checkpoint
+
+Evidence date: 2026-07-02
+
+The first shared HLSL translator entry point now exists under
+`src/native_renderer/shader_translation/`:
+
+- `XenosHlslTranslator.h`
+- `XenosHlslTranslator.cpp`
+
+The interface accepts a `XenosHlslTranslationRequest` containing runtime stage,
+runtime hash, capture path, stage name, and ReXGlue semantic disassembly text.
+It returns complete HLSL through `TryTranslateLimitedXenosHlsl`.
+
+The first migrated rule is the MP UI/screen-space vertex shader:
+
+- `VS 0x3C4F6D40D699817B`
+
+`native_shader_inspect` now tries the shared translator before falling back to
+the older tool-local pattern rules. This preserves current coverage while rules
+are migrated incrementally out of the CLI. The new module deliberately does not
+run ReXGlue shader analysis itself; for now the inspect tool still produces the
+semantic disassembly, and the shared translator consumes that decoded text.
+This keeps replay/live targets from depending on ReXGlue analyzer internals.
+
+Validation:
+
+- Built `native_shader_inspect.exe`, `native_render_replay.exe`, and
+  RelWithDebInfo `default_mp.exe` with parallel Ninja (`-j12`), exit `0`.
+- `native_shader_inspect.exe --capture
+  native_captures\live_d3d12_mp_074_sticky_present_target_telemetry\events.jsonl
+  --hash 0x3C4F6D40D699817B --compile-translated-hlsl-dxc
+  shader_work\cache-xenos-hlsl-translator-test` generated and compiled the
+  migrated HLSL rule to DXIL.
+- Replay validation on the same capture passed:
+  `Validation OK: 4500 events, 18 frames, 897 draws`.
+- Real D3D12 replay remained behavior-preserving: `121` supported draws across
+  `8` shader pairs with `diagnostic_pipelines=0`.
+
+Remaining shader architecture work:
+
+- migrate the rest of the limited pattern rules from `NativeShaderInspect.cpp`;
+- replace broad pattern rules with real semantic IR nodes;
+- lower pixel shader ALU/texture/constant operations instead of sampling
+  `input.uv` directly;
+- make D3D12 replay consume shader-cache records produced by the shared
+  translator/cache path without any D3D12-local shader special cases.
+
 Ghidra evidence for the matching runtime path:
 
 - XEX `0x82597DF8` loads a pass-relative shader record from `r5 + ((r10 + 0x70) << 3)`, reads microcode size at record offset `0x36c`, reads microcode offset at record offset `0x368`, adds pass base `*(r5 + 0x20)`, then emits/copies the microcode payload into the command buffer.

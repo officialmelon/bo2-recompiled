@@ -34,6 +34,7 @@
 #include <rex/string/buffer.h>
 
 #include "../shader_translation/XenosDisassembly.h"
+#include "../shader_translation/XenosHlslTranslator.h"
 
 // ReXGlue's shader analyzer checks the optional graphics dump_shaders CVar.
 // The standalone inspector keeps that disabled without linking graphics/flags.cpp,
@@ -50,6 +51,8 @@ using bo2::native::DisassemblyContains;
 using bo2::native::HasOperation;
 using bo2::native::ParseDisassemblyOperations;
 using bo2::native::ParsedShaderOperation;
+using bo2::native::TryTranslateLimitedXenosHlsl;
+using bo2::native::XenosHlslTranslationRequest;
 
 struct CliOptions {
   std::filesystem::path index_path = "shader_work/shaders/index.json";
@@ -2260,6 +2263,19 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
   const std::string &disassembly = shader.ucode_disassembly();
   const std::vector<ParsedShaderOperation> operations =
       ParseDisassemblyOperations(disassembly);
+
+  {
+    XenosHlslTranslationRequest request;
+    request.runtime_stage = runtime_shader.stage;
+    request.runtime_hash = runtime_shader.hash;
+    request.capture_path = capture.path;
+    request.stage_name = StageName(runtime_shader.stage);
+    request.disassembly = disassembly;
+    std::string shared_error;
+    if (TryTranslateLimitedXenosHlsl(request, out, shared_error)) {
+      return true;
+    }
+  }
 
   out << "// BO2 native renderer translated HLSL from decoded Xenos "
          "operations.\n";

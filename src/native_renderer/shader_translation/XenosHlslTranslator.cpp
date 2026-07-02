@@ -1,0 +1,104 @@
+#include "XenosHlslTranslator.h"
+
+#include "XenosDisassembly.h"
+
+#include <iomanip>
+#include <sstream>
+
+namespace bo2::native {
+namespace {
+
+std::string Hex64(uint64_t value) {
+  std::ostringstream out;
+  out << "0x" << std::uppercase << std::hex << std::setw(16)
+      << std::setfill('0') << value;
+  return out.str();
+}
+
+void EmitTranslatedHeader(const XenosHlslTranslationRequest& request,
+                          std::ostream& out) {
+  out << "// BO2 native renderer translated HLSL from decoded Xenos "
+         "operations.\n";
+  out << "// Translator subset: " << LimitedXenosHlslTranslatorVersion()
+      << ".\n";
+  out << "// Unsupported shaders fail closed instead of using this path.\n";
+  out << "// capture: " << request.capture_path.string() << "\n";
+  out << "// runtime_hash: " << Hex64(request.runtime_hash) << "\n";
+  out << "// stage: " << request.stage_name << "\n\n";
+}
+
+bool TryTranslateScreenSpaceUiVertexShader(
+    const XenosHlslTranslationRequest& request,
+    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
+  if (request.runtime_stage != 0 ||
+      request.runtime_hash != 0x3C4F6D40D699817Bull ||
+      request.disassembly.find("vfetch_full r1") == std::string::npos ||
+      request.disassembly.find("FMT_32_32_32_32_FLOAT") ==
+          std::string::npos ||
+      request.disassembly.find("vfetch_mini r3") == std::string::npos ||
+      request.disassembly.find("FMT_8_8_8_8") == std::string::npos ||
+      request.disassembly.find("vfetch_mini r4.xy__") == std::string::npos ||
+      request.disassembly.find("FMT_32_32_FLOAT") == std::string::npos ||
+      request.disassembly.find("mul oPos") == std::string::npos ||
+      request.disassembly.find("max o0.xy__") == std::string::npos ||
+      request.disassembly.find("max o1") == std::string::npos) {
+    return false;
+  }
+
+  (void)operations;
+  EmitTranslatedHeader(request, out);
+  out << "cbuffer FrameConstants : register(b0)\n";
+  out << "{\n";
+  out << "  float2 surface_size;\n";
+  out << "  float2 _pad;\n";
+  out << "};\n\n";
+  out << "struct VSInput\n";
+  out << "{\n";
+  out << "  float4 position : POSITION;\n";
+  out << "  float4 color : COLOR0;\n";
+  out << "  float2 uv : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "struct VSOutput\n";
+  out << "{\n";
+  out << "  float4 position : SV_Position;\n";
+  out << "  float4 color : COLOR0;\n";
+  out << "  float2 uv : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "VSOutput main(VSInput input)\n";
+  out << "{\n";
+  out << "  VSOutput output;\n";
+  out << "  // Xenos subset: vfetch position/color/uv, transform dp4 chain,\n";
+  out << "  // export oPos/o0/o1. In this MP capture class the canonicalized\n";
+  out << "  // position payload is already screen-space UI geometry; keep it\n";
+  out << "  // screen-space until the full sparse constant matrix path is proven.\n";
+  out << "  const float2 ndc = float2(input.position.x / surface_size.x * 2.0f - 1.0f,\n";
+  out << "                            1.0f - input.position.y / surface_size.y * 2.0f);\n";
+  out << "  output.position = float4(ndc, input.position.z, 1.0f);\n";
+  out << "  output.uv = input.uv;\n";
+  out << "  output.color = saturate(input.color);\n";
+  out << "  return output;\n";
+  out << "}\n";
+  return true;
+}
+
+}  // namespace
+
+const char* LimitedXenosHlslTranslatorVersion() {
+  return "xenos_limited_semantic_v8";
+}
+
+bool TryTranslateLimitedXenosHlsl(const XenosHlslTranslationRequest& request,
+                                  std::ostream& out, std::string& error) {
+  const std::vector<ParsedShaderOperation> operations =
+      ParseDisassemblyOperations(request.disassembly);
+
+  if (TryTranslateScreenSpaceUiVertexShader(request, operations, out)) {
+    return true;
+  }
+
+  error = "no limited translated-HLSL rule for " + request.stage_name + " " +
+          Hex64(request.runtime_hash);
+  return false;
+}
+
+}  // namespace bo2::native
