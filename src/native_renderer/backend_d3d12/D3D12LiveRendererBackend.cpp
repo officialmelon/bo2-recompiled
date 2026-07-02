@@ -285,6 +285,8 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
       submit_success = true;
     }
   }
+  const bool present_native_frame =
+      submit_success && last_submit_stats_.submitted_draws > 0;
   capture_.WriteLiveD3D12Submit(frame_index, frame_pending_draws_, frame_draws,
                                 attempted_submit, submit_success,
                                 submitted_frames_, failed_frames_,
@@ -294,13 +296,16 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
                                 last_submit_stats_.diagnostic_pipelines,
                                 last_submit_stats_.input_layout_variants,
                                 last_submit_stats_.noop_utility_frame,
+                                present_native_frame,
                                 last_error_);
 
-  EndCommandFrame(frame_index);
+  EndCommandFrame(frame_index, present_native_frame);
 
 #if defined(_WIN32)
   if (swapchain_ready_ && swap_chain_) {
-    swap_chain_->Present(1, 0);
+    if (present_native_frame) {
+      swap_chain_->Present(1, 0);
+    }
     PumpNativeWindowMessages();
   }
 #endif
@@ -580,9 +585,11 @@ bool D3D12LiveRendererBackend::BeginCommandFrame(uint64_t frame_index) {
 #endif
 }
 
-void D3D12LiveRendererBackend::EndCommandFrame(uint64_t frame_index) {
+void D3D12LiveRendererBackend::EndCommandFrame(uint64_t frame_index,
+                                               bool execute) {
 #if !defined(_WIN32)
   (void)frame_index;
+  (void)execute;
 #else
   if (!command_frame_open_ || !command_list_ || !command_queue_) {
     return;
@@ -598,9 +605,12 @@ void D3D12LiveRendererBackend::EndCommandFrame(uint64_t frame_index) {
     return;
   }
 
+  if (!execute) {
+    return;
+  }
+
   ID3D12CommandList *lists[] = {command_list_.Get()};
   command_queue_->ExecuteCommandLists(1, lists);
-  WaitForGpu();
 #endif
 }
 

@@ -65,7 +65,7 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   FrameStats& ActiveStats();
   D3D12LiveFrameBuilder& ActiveFrameBuilder();
   bool BeginCommandFrame(uint64_t frame_index);
-  void EndCommandFrame(uint64_t frame_index);
+  void EndCommandFrame(uint64_t frame_index, bool execute);
   bool WaitForGpu();
   bool EnsureSwapChain(uint32_t width, uint32_t height);
   bool EnsureNativeWindow(uint32_t width, uint32_t height);

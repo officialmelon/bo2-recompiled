@@ -1625,3 +1625,78 @@ current live flicker easier to explain: live mode is still presenting a mix of
 partial real frames and no-op utility-only frames instead of preserving or
 compositing a stable last-good native frame. That is still live-renderer
 incomplete work, not completion.
+
+## 2026-07-02 live present gate and GPU stall reduction
+
+Live `native_d3d12` no longer presents frames that did not submit any real
+native draws. `live_d3d12_submit` now records `presented`, and the swapchain
+present path is gated on `success && submitted_draws > 0`. Utility-only
+no-op frames are still captured and counted, but they do not advance the
+native D3D12 swapchain. This is intended to reduce the visible flicker caused
+by alternating real partial frames with empty/stale utility buckets.
+
+The live command-list path also no longer executes empty command lists and no
+longer waits for the GPU immediately after every submitted command list. The
+existing next-frame reset path and shutdown path still wait for GPU completion
+before reusing command allocators/resources. This removes one full CPU/GPU
+stall from every live frame.
+
+Build validation:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 native_render_replay default.exe"
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default_mp\out\build\win-clang-msvc-amd64-relwithdebinfo-msvctarget"" -j12 default_mp.exe"
+```
+
+Both builds exited `0`.
+
+Fresh live MP capture after the present gate:
+
+```powershell
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_015\events.jsonl --native_renderer_capture_limit 6500 --native_renderer_capture_flush_interval 64 --native_renderer_verbose true --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+The process stayed alive until the `120s` guard stopped it. Validation:
+
+```text
+Validation OK: 6500 events, 24 frames, 1299 draws
+```
+
+Aggregated live-submit counters:
+
+```text
+live_submit_events=23
+attempted=23
+success=23
+failed=0
+noop_utility_frames=9
+presented=14
+not_presented=9
+total_submitted_draws=111
+max_submitted_draws=19
+diagnostic_pipelines_sum=0
+```
+
+Fresh offline replay of the preceding capture (`live_d3d12_mp_014`) still
+produced coherent BO2 MP menu output:
+
+```text
+D3D12 real replay submitted 232 supported draw(s) across 8 shader pair(s)
+D3D12 real replay PSO cache: entries=11 misses=11 hits=221 diagnostic_pipelines=0
+D3D12 real replay bound 282 captured texture SRV(s), 1574 fallback texture SRV(s)
+D3D12 real replay bound 282 captured sampler descriptor(s), 934 fallback sampler descriptor(s)
+```
+
+Output:
+`C:\Users\braxt\bo2-recompiled\native-renderer-live-mp014-present-gate-regression.bmp`.
+
+Remaining issues visible from these counters:
+
+* Live is still partial: only a subset of the captured draw stream reaches the
+  native backend each frame.
+* Texture quality can still be wrong because all uploaded D3D12 texture SRVs
+  are single-mip `R8G8B8A8_UNORM` previews and many unused/fallback slots are
+  still bound per draw.
+* The renderer still needs real mip payload upload, better sampler LOD
+  handling, and fewer fallback descriptors before live output can be called
+  complete.
