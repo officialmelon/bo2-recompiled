@@ -1,10 +1,70 @@
 # Native Renderer Real Backend Status
 
-Last updated: 2026-07-01
+Last updated: 2026-07-02
 
 ## Status
 
 Real native rendering is not complete.
+
+## 2026-07-02 MP010 replay checkpoint
+
+Current best offline real D3D12 replay image:
+
+- `C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-ab1e-zero-elide.bmp`
+
+This is recognizable BO2-derived MP menu/background output, not synthetic
+diagnostic geometry. The replay submits captured BO2 draw calls through the real
+D3D12 backend with diagnostic shader fallback disabled, using captured
+vertex/index payloads, decoded texture sidecars, captured render state, manual
+or cached native shaders, and D3D12 PSOs. It is still not complete native scene
+rendering: the image is grayscale/incorrect, many utility draws are skipped, and
+the next visible AB1E glyph-atlas class is blocked on Xenos
+interpolator/register semantics.
+
+Verification command:
+
+```powershell
+C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_010\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-live-mp010-ab1e-zero-elide.bmp --no-summary
+```
+
+Latest verified result after the AB1E zero-texture utility classifier:
+
+- `180` real D3D12 draws submitted across `8` shader pairs.
+- `diagnostic_pipelines=0`.
+- `196` captured texture SRVs were bound.
+- `unsupported_texture_attempts=0`.
+- `depth_target_bound=yes`.
+- `depth_enabled_draws=38`, `depth_write_draws=38`,
+  `stencil_enabled_draws=56`.
+- `forced_depth_only_zero_color_draws=56`.
+- Color output SHA-256:
+  `4D11C18AFD29F24DFF62FBA97EB5FC07BD64ABAFF56FD41016EE8BEEFAE25BF6`.
+
+The `VS=0x1E6883FCCDE1F688 / PS=0xA4A965C189287B99` group is now replayed only
+as depth/stencil-affecting zero-color work. Its PSO color write mask is forced
+to zero so the pass can update depth/stencil without painting placeholder black
+triangles into the color target.
+
+Current AB1E finding:
+
+- `VS=0xAB1E86137A0240E8` semantic IR exports only position (`oPos`) from
+  captured XY screen vertices.
+- `PS=0xEDC17DCC3FFDB040` and `PS=0xFF01D28E1EF3A880` read interpolator
+  registers (`r0`/`r1`) for texture/color data that the current AB1E vertex
+  translation does not prove.
+- The `AB1E/EDC1` draws in MP010 bind a decoded all-zero `1x1` texture with
+  blend control `0x010B0706`; with source alpha zero, they preserve the
+  destination. These are now classified as ignored zero-texture no-output
+  utility draws, not as scene-ready rendering.
+- The `AB1E/FF01` draws bind a real `512x1024` glyph atlas. They remain blocked
+  because inventing UVs from screen position would fake output instead of
+  decoding the actual Xenos interpolator/register path.
+
+Next correctness target:
+
+- Decode the implicit AB1E input/interpolator/register semantics for the
+  `AB1E/FF01` glyph-atlas draw class, then replay it without synthetic UV or
+  color assumptions.
 
 ## 2026-07-01 MP replay real-output checkpoint
 

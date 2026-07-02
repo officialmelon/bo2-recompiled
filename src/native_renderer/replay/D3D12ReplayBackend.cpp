@@ -1259,6 +1259,42 @@ bool IsKnownNoRasterNoFetchDraw(const ReplayDrawState &state) {
   return state.vertex_shader.hash == 0xDDED7E538422AE73ull;
 }
 
+bool TextureDecodesAllZeroRgba(const TextureFetchRecord &fetch) {
+  std::vector<uint8_t> rgba;
+  std::string error;
+  if (!DecodeTextureRgba8(fetch, rgba, error) || rgba.empty()) {
+    return false;
+  }
+  return std::all_of(rgba.begin(), rgba.end(),
+                     [](uint8_t value) { return value == 0; });
+}
+
+bool IsKnownZeroTextureNoOutputDraw(const ReplayDrawState &state) {
+  if (state.vertex_shader.hash != 0xAB1E86137A0240E8ull ||
+      state.pixel_shader.hash != 0xEDC17DCC3FFDB040ull) {
+    return false;
+  }
+  const PM4DrawRecord &draw = state.draw;
+  if (draw.texture_fetches.size() != 1 || !draw.render_state.present) {
+    return false;
+  }
+  const RenderStateRecord &render_state = draw.render_state;
+  if (render_state.depth_write_enable || render_state.stencil_enable) {
+    return false;
+  }
+  const uint32_t blend_control =
+      render_state.rb_blendcontrol.empty() ? 0 : render_state.rb_blendcontrol[0];
+  if ((render_state.rb_color_mask & 0xF) == 0 || blend_control != 0x010B0706u) {
+    return false;
+  }
+  return TextureDecodesAllZeroRgba(draw.texture_fetches.front());
+}
+
+bool IsKnownIgnoredUtilityDraw(const ReplayDrawState &state) {
+  return IsKnownNoRasterNoFetchDraw(state) ||
+         IsKnownZeroTextureNoOutputDraw(state);
+}
+
 bool IsLikelyFullscreenUtilityPass(const ReplayDrawState &state,
                                    const PreparedRealDraw &prepared) {
   if (prepared.vertices.empty() || prepared.vertexless) {
@@ -1808,7 +1844,7 @@ bool PrepareFrameRealReplayPlan(const ReplayCapture &capture,
 
   for (std::size_t draw_index = begin; draw_index < end; ++draw_index) {
     const ReplayDrawState &state = capture.draws[draw_index];
-    if (IsNoSideEffectNoFetchDraw(state)) {
+    if (IsKnownIgnoredUtilityDraw(state)) {
       ++plan.elided_noop_draw_count;
       continue;
     }
@@ -4378,7 +4414,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       if (!MatchesShaderPairFilter(state, options)) {
         continue;
       }
-      if (IsNoSideEffectNoFetchDraw(state)) {
+      if (IsKnownIgnoredUtilityDraw(state)) {
         ++frame_plan.elided_noop_draw_count;
         continue;
       }
@@ -5483,10 +5519,14 @@ void PrintD3D12RealBackendGaps(const ReplayCapture &capture,
     const std::string geometry_reason =
         DescribeRealDrawGeometrySupport(capture, i, true);
     if (!geometry_reason.empty()) {
-      if (IsKnownNoRasterNoFetchDraw(state)) {
+      if (IsKnownIgnoredUtilityDraw(state)) {
         ++ignored_utility;
         ++stats.ignored_utility;
-        ++ready_class_counts["ignored utility/no-raster no-fetch draw"];
+        if (IsKnownZeroTextureNoOutputDraw(state)) {
+          ++ready_class_counts["ignored utility/zero-texture no-output draw"];
+        } else {
+          ++ready_class_counts["ignored utility/no-raster no-fetch draw"];
+        }
         continue;
       }
       ++blocker_counts["geometry: " + geometry_reason];

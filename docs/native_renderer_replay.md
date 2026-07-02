@@ -1,10 +1,18 @@
 # Native Renderer Replay
 
-Last updated: 2026-06-30
+Last updated: 2026-07-02
 
 `native_render_replay.exe` is the first offline replay executable for the BO2 native renderer work. It reads the JSONL written by `native_renderer_capture_path`, reconstructs frame/draw/shader/constant state, and reports enough state per draw to drive backend bring-up without booting the game for every iteration.
 
 The tool also has D3D12 replay backends. `d3d12-diagnostic` renders an offscreen BMP from replayed draw events using BO2-owned D3D12 commands, including a small HLSL shader pipeline and synthetic triangle draws. `d3d12` now renders the first supported captured indexed draw with real replayed vertex/index data and either a hash-keyed manual HLSL override pair or an explicitly requested diagnostic native shader. Neither path is a full BO2 scene renderer yet.
+
+The real D3D12 gap report intentionally separates scene-candidate draws from
+known utility/no-output work. As of the MP010 audit, `AB1E/EDC1` fullscreen
+draws with a decoded all-zero texture and blend control `0x010B0706` are
+reported as ignored zero-texture no-output utility draws. The related
+`AB1E/FF01` glyph-atlas draws remain blocked until Xenos interpolator/register
+semantics are decoded; the replay backend must not synthesize UVs just to make
+the atlas visible.
 
 ## Build
 
