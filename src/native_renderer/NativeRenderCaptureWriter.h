@@ -41,7 +41,7 @@ class NativeRenderCaptureWriter {
                             uint64_t pso_entries,
                             uint64_t diagnostic_pipelines,
                             uint64_t input_layout_variants,
-                            std::string_view error);
+                            bool noop_utility_frame, std::string_view error);
 
  private:
   bool BeginEvent(std::string_view type);

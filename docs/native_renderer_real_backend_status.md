@@ -1575,3 +1575,53 @@ Output:
 The image now shows readable BO2 menu glyphs and the selected `XBOX LIVE`
 entry is orange. This is still offline replay evidence, not a claim that live
 native rendering is complete.
+
+## 2026-07-02 live no-op utility frame telemetry
+
+Live `native_d3d12` now distinguishes true unsupported-frame failures from
+frames whose selected command bucket contains only known ignored/no-output
+utility draws. `RunD3D12LiveFrameBackend` returns success for that narrow
+no-op case and records `noop_utility_frame=true` in `live_d3d12_submit`.
+Frames with unsupported scene work, missing PSOs, or unsupported captured
+textures still fail/skip through the existing strict paths.
+
+Build validation:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 native_render_replay default.exe"
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default_mp\out\build\win-clang-msvc-amd64-relwithdebinfo-msvctarget"" -j12 default_mp.exe"
+```
+
+Both builds exited `0`. The default build reached `267` Ninja steps and the MP
+build reached `6` steps.
+
+Fresh live MP capture:
+
+```powershell
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_013\events.jsonl --native_renderer_capture_limit 6500 --native_renderer_capture_flush_interval 64 --native_renderer_verbose true --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+The process was stopped after `120s` with capture data written. Validation:
+
+```text
+Validation OK: 6500 events, 23 frames, 1288 draws
+```
+
+Aggregated live-submit counters:
+
+```text
+live_submit_events=23
+attempted=22
+success=22
+failed=0
+noop_utility_frames=9
+total_submitted_draws=119
+max_submitted_draws=24
+diagnostic_pipelines_sum=0
+```
+
+The no-op path removes false failed-frame accounting, but it also makes the
+current live flicker easier to explain: live mode is still presenting a mix of
+partial real frames and no-op utility-only frames instead of preserving or
+compositing a stable last-good native frame. That is still live-renderer
+incomplete work, not completion.

@@ -1910,6 +1910,7 @@ struct FrameRealReplayPlan {
   std::size_t frame_draw_count = 0;
   std::size_t skipped_draw_count = 0;
   std::size_t elided_noop_draw_count = 0;
+  bool noop_utility_frame = false;
   bool used_pre_frame_bucket = false;
   bool used_sequence_frame_bucket = false;
   uint64_t sequence_begin = 0;
@@ -2055,6 +2056,11 @@ bool PrepareFrameRealReplayPlan(const ReplayCapture &capture,
   }
 
   if (plan.supported_draws.empty()) {
+    if (plan.frame_draw_count > 0 && plan.elided_noop_draw_count > 0 &&
+        plan.skipped_draw_count == 0) {
+      plan.noop_utility_frame = true;
+      return true;
+    }
     error = "selected frame has no draw with complete geometry currently "
             "supported by D3D12 real replay";
     return false;
@@ -4651,6 +4657,30 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     if (!PrepareFrameRealReplayPlan(capture, options, frame_plan, error)) {
       return false;
     }
+    if (frame_plan.noop_utility_frame) {
+      D3D12LiveSubmitBinding *live_binding =
+          options.live_submit ? options.live_binding : nullptr;
+      if (live_binding) {
+        live_binding->submitted_draws = 0;
+        live_binding->shader_pair_count = 0;
+        live_binding->pso_entries = 0;
+        live_binding->pso_cache_hits = 0;
+        live_binding->pso_cache_misses = 0;
+        live_binding->diagnostic_pipelines = 0;
+        live_binding->input_layout_variants = 0;
+        live_binding->noop_utility_frame = true;
+      }
+      if (!options.live_submit) {
+        std::cout << "D3D12 frame replay plan frame="
+                  << frame_plan.frame_index
+                  << " frame_draws=" << frame_plan.frame_draw_count
+                  << " geometry_supported=0"
+                  << " noop_elided=" << frame_plan.elided_noop_draw_count
+                  << " skipped=0 submitted_supported_draws=0"
+                  << " noop_utility_frame=yes\n";
+      }
+      return true;
+    }
     prepared = frame_plan.supported_draws.front();
     prepared_draws = frame_plan.supported_draws;
   } else if (options.skip_unsupported && !options.draw_index) {
@@ -5030,6 +5060,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
               << " noop_elided=" << frame_plan.elided_noop_draw_count
               << " skipped=" << frame_plan.skipped_draw_count
               << " submitted_supported_draws=" << prepared_draws.size()
+              << " noop_utility_frame="
+              << (frame_plan.noop_utility_frame ? "yes" : "no")
               << " skip_unsupported="
               << (options.skip_unsupported ? "yes" : "no") << "\n";
     if (frame_plan.used_pre_frame_bucket) {

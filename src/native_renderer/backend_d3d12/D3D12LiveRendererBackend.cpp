@@ -293,6 +293,7 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
                                 last_submit_stats_.pso_entries,
                                 last_submit_stats_.diagnostic_pipelines,
                                 last_submit_stats_.input_layout_variants,
+                                last_submit_stats_.noop_utility_frame,
                                 last_error_);
 
   EndCommandFrame(frame_index);
@@ -374,14 +375,16 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
   last_submit_stats_.pso_entries = binding.pso_entries;
   last_submit_stats_.diagnostic_pipelines = binding.diagnostic_pipelines;
   last_submit_stats_.input_layout_variants = binding.input_layout_variants;
+  last_submit_stats_.noop_utility_frame = binding.noop_utility_frame;
   if (verbose_ || submitted_frames_ < 5 || ShouldLogHighFrequencyEvent(frame_index)) {
     REXLOG_INFO(
         "BO2 native D3D12 live frame {} submitted real_draws={} "
         "shader_pairs={} pso_entries={} diagnostic_pipelines={} "
-        "input_layout_variants={}",
+        "input_layout_variants={} noop_utility_frame={}",
         frame_index, binding.submitted_draws, binding.shader_pair_count,
         binding.pso_entries, binding.diagnostic_pipelines,
-        binding.input_layout_variants);
+        binding.input_layout_variants,
+        binding.noop_utility_frame ? "yes" : "no");
   }
   return true;
 #endif

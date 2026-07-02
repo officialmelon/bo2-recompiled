@@ -59,6 +59,7 @@ class D3D12LiveRendererBackend final : public RendererBackend {
     uint64_t pso_entries = 0;
     uint64_t diagnostic_pipelines = 0;
     uint64_t input_layout_variants = 0;
+    bool noop_utility_frame = false;
   };
 
   FrameStats& ActiveStats();

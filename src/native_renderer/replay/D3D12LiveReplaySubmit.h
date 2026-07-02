@@ -35,6 +35,7 @@ struct D3D12LiveSubmitBinding {
   uint64_t pso_cache_hits = 0;
   uint64_t diagnostic_pipelines = 0;
   uint64_t input_layout_variants = 0;
+  bool noop_utility_frame = false;
 };
 
 D3D12LiveReplaySession *CreateD3D12LiveReplaySession();
