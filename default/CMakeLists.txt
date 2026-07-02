@@ -44,6 +44,9 @@ set(NATIVE_RENDERER_SOURCES
     ../src/native_renderer/HostDetour.cpp
     ../src/native_renderer/backend_null/NullRendererBackend.cpp
     ../src/native_renderer/backend_d3d12/D3D12LiveRendererBackend.cpp
+    ../src/native_renderer/backend_d3d12/D3D12LiveFrameBuilder.cpp
+    ../src/native_renderer/replay/NativeRenderReplay.cpp
+    ../src/native_renderer/replay/D3D12ReplayBackend.cpp
     ../src/native_renderer/shader_translation/ShaderTranslation.cpp
 )
 
@@ -77,6 +80,17 @@ set(DEFAULT_SOURCES
     ${NATIVE_RENDERER_SOURCES}
 )
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    foreach(REXGLUE_GENERATED_SOURCE ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES})
+        get_filename_component(REXGLUE_GENERATED_NAME "${REXGLUE_GENERATED_SOURCE}" NAME)
+        if(REXGLUE_GENERATED_NAME MATCHES "^default_recomp\\.[0-9]+\\.cpp$")
+            set_source_files_properties("${REXGLUE_GENERATED_SOURCE}" PROPERTIES
+                COMPILE_OPTIONS "/Od;/Ob0;/bigobj"
+            )
+        endif()
+    endforeach()
+endif()
+
 if(WIN32)
     add_executable(default WIN32 ${DEFAULT_SOURCES})
 elseif(ANDROID)
@@ -107,19 +121,28 @@ endif()
 target_compile_features(native_shader_inspect PRIVATE cxx_std_23)
 if(WIN32)
     target_compile_definitions(native_shader_inspect PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(native_shader_inspect PRIVATE bcrypt d3dcompiler)
+    target_link_libraries(native_shader_inspect PRIVATE bcrypt d3dcompiler ws2_32)
 endif()
 target_link_libraries(native_shader_inspect PRIVATE rexcore rexfilesystem)
 
 rexglue_setup_target(default)
 
+target_include_directories(default PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../src/native_renderer/replay"
+)
+
 if(WIN32)
     set(REXGLUE_CHRONO_COMPAT_INCLUDE "${CMAKE_CURRENT_LIST_DIR}/../src/rexglue_compat/chrono_clock_time_conversion.h")
     target_include_directories(default BEFORE PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src/rexglue_compat")
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
-        target_compile_options(default PRIVATE "/FI${REXGLUE_CHRONO_COMPAT_INCLUDE}" /utf-8)
+        target_compile_options(default PRIVATE
+            "/FI${REXGLUE_CHRONO_COMPAT_INCLUDE}"
+            /utf-8
+            /Zc:preprocessor
+            /Zc:char8_t-
+        )
     else()
         target_compile_options(default PRIVATE -include "${REXGLUE_CHRONO_COMPAT_INCLUDE}")
     endif()
-    target_link_libraries(default PRIVATE d3d12)
+    target_link_libraries(default PRIVATE d3d12 d3dcompiler dxgi)
 endif()
