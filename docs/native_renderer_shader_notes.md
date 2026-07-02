@@ -274,10 +274,15 @@ Fresh MP probe evidence:
   `r5=8`; the old draw-candidate probe builder treated `r5` as the primary
   address and therefore tried to snapshot guest address `0x00000008`.
 - The draw-candidate probe builder now chooses `r4` as the primary address when
-  `r5` is not a guest pointer and `r4` is. The follow-up MP076 capture validates
-  as `5000 events, 20 frames, 1024 draws`, but did not hit shader-record probe
-  hooks in that bounded window, so a longer or better-triggered probe run is
-  still needed to prove the new `sub_82117D20` snapshot output.
+  `r5` is not a guest pointer and `r4` is. MP076 validated as `5000 events,
+  20 frames, 1024 draws`, but did not hit shader-record probe hooks in that
+  bounded window.
+- MP077 extended the same run to `9000` events. It validates as `9000 events,
+  30 frames, 1750 draws` and contains `17` shader-record probes. The
+  `sub_82117D20` probes now correctly report `primary=0x06CD5000` and
+  `primary=0x06CEC000` from `r4`, but those reads still return `missing=yes`.
+  The next blocker is therefore guest address mapping/readback for this low
+  shader-code address range, not register selection.
 
 Ghidra evidence for the matching runtime path:
 
