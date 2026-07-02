@@ -3898,18 +3898,32 @@ PreparedCapturedConstants BuildCapturedConstants(
   PreparedCapturedConstants prepared;
   if (!draw_state.draw.float_constants_missing &&
       !draw_state.draw.float_constant_dwords.empty()) {
-    const uint32_t copy_count = std::min<uint32_t>(
+    const uint32_t raw_count = std::min<uint32_t>(
         static_cast<uint32_t>(draw_state.draw.float_constant_dwords.size()),
         kCapturedConstantDwordCount);
-    for (uint32_t i = 0; i < copy_count; ++i) {
-      prepared.dwords[i] = draw_state.draw.float_constant_dwords[i];
+    // ReXGlue stores ALU constants in the raw Xenos register-file layout.
+    // BO2 PM4 upload indices are byte-like offsets, so semantic cN starts at
+    // raw dword N * 8. Repack to the native HLSL float4 constant buffer.
+    uint32_t packed_count = 0;
+    for (uint32_t constant_index = 0;
+         constant_index < kCapturedFloat4ConstantCount; ++constant_index) {
+      const uint32_t source_dword = constant_index * 8u;
+      if (source_dword + 3u >= raw_count) {
+        break;
+      }
+      const uint32_t target_dword = constant_index * 4u;
+      prepared.dwords[target_dword + 0] =
+          draw_state.draw.float_constant_dwords[source_dword + 0];
+      prepared.dwords[target_dword + 1] =
+          draw_state.draw.float_constant_dwords[source_dword + 1];
+      prepared.dwords[target_dword + 2] =
+          draw_state.draw.float_constant_dwords[source_dword + 2];
+      prepared.dwords[target_dword + 3] =
+          draw_state.draw.float_constant_dwords[source_dword + 3];
+      prepared.present[constant_index] = true;
+      packed_count = target_dword + 4u;
     }
-    const uint32_t present_count = std::min<uint32_t>(
-        kCapturedFloat4ConstantCount, (copy_count + 3u) / 4u);
-    for (uint32_t i = 0; i < present_count; ++i) {
-      prepared.present[i] = true;
-    }
-    prepared.count = copy_count;
+    prepared.count = packed_count;
   }
   std::vector<const PM4ConstantRecord *> records;
   records.reserve(draw_state.bound_constants.size());

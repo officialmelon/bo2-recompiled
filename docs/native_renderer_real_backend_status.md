@@ -2517,8 +2517,9 @@ ReXGlue now copies the full Xenos ALU float constant file (`c0..c511`, 2048
 dwords) into each native draw trace event. The BO2 capture writer stores this
 snapshot as `resources/float_constants_*.bin` sidecars instead of inline JSON
 so captures do not produce giant draw lines. Replay loads those sidecars and
-seeds the D3D12 constant buffer from the draw snapshot before applying explicit
-PM4 constant uploads.
+repacks the raw Xenos register-file layout (`cN` at raw dword `N * 8`) into
+the native D3D12/HLSL `float4 captured_constants[]` layout before applying
+explicit PM4 constant uploads.
 
 Validation:
 
