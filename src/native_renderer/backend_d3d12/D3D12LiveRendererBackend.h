@@ -1,9 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
+#include <condition_variable>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include "../NativeRenderCaptureWriter.h"
 #include "../RendererBackend.h"
@@ -74,6 +78,7 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   bool WaitForGpu();
   bool EnsureSwapChain(uint32_t width, uint32_t height);
   bool EnsureNativeWindow(uint32_t width, uint32_t height);
+  void NativeWindowThreadMain(uint32_t width, uint32_t height);
   bool RefreshSwapChainBackBuffer(std::string& error);
   bool SubmitLiveFrame(uint64_t frame_index);
   void PumpNativeWindowMessages();
@@ -112,6 +117,12 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   replay::D3D12LiveReplaySession* replay_session_ = nullptr;
   HWND window_handle_ = nullptr;
   bool owns_window_ = false;
+  std::thread window_thread_;
+  std::mutex window_mutex_;
+  std::condition_variable window_cv_;
+  std::atomic<bool> window_thread_stop_ = false;
+  bool window_ready_ = false;
+  bool window_failed_ = false;
   HANDLE fence_event_ = nullptr;
   uint64_t fence_value_ = 0;
   uint32_t swap_width_ = 0;

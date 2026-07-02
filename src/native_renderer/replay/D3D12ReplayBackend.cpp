@@ -2934,7 +2934,9 @@ void CreateSampler(ID3D12Device *device, const TextureFetchRecord *fetch,
     break;
   }
   sampler.MinLOD = 0.0f;
-  sampler.MaxLOD = D3D12_FLOAT32_MAX;
+  // Captured texture upload currently materializes only the base level.
+  // Clamp sampling to mip 0 until packed mip capture/decode/upload is wired.
+  sampler.MaxLOD = 0.0f;
   device->CreateSampler(&sampler, descriptor);
 }
 

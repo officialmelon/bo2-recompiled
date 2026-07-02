@@ -2052,3 +2052,57 @@ D3D12 real replay color readback: bytes=3686400 nonzero=3686400
 
 Output:
 `C:\Users\braxt\bo2-recompiled\native-renderer-mp024-low-scene-present.bmp`.
+
+Texture sampler LOD clamp:
+
+The D3D12 replay/live resource path still uploads captured textures as a single
+base mip (`MipLevels=1`). Several BO2 texture fetch records carry nonzero
+Xenos mip filter/range state, so allowing an unbounded native D3D12 sampler LOD
+can sample in ways that do not match the currently materialized resource. The
+sampler now clamps `MaxLOD` to `0.0f` until packed mip capture/decode/upload is
+implemented. This is not a complete texture solution; it is a guardrail for the
+current base-mip-only renderer path while the remaining texture work continues.
+
+MP028/MP029 live stability update:
+
+Two stability issues were separated:
+
+- The native D3D12 render window was created on the game thread, so long
+  synchronous replay/capture work could starve the window message pump and make
+  Windows mark the native output window as Not Responding. The owned native
+  D3D12 window now runs on a small host window thread with its own message loop.
+- The machine hit `no space on device` while flushing `default_mp` logs. That
+  made capture/log/crash evidence unreliable until generated renderer artifacts
+  were cleaned up.
+
+After the window-thread change, a captured MP028 run stayed responsive until
+around the capture/log pressure point and produced a valid native D3D12 menu
+frame:
+
+```text
+Validation OK: 5000 events, 20 frames, 1022 draws
+D3D12 real backend gap report:
+  draws=1022 geometry_ok=165 shader_ok=165 texture_ok=165 ready=165
+  utility_ready=12 depth_only_zero_color_ready=46
+  scene_candidate_ready=107 ignored_utility=857
+```
+
+Output evidence:
+`C:\Users\braxt\bo2-recompiled\native-renderer-live-mp028-screen-12s.bmp`.
+
+With capture disabled, MP029 stayed `Responding=True` for the full 45 second
+watchdog window and was killed intentionally by the guard. This indicates the
+window-thread patch fixes the primary Windows Not Responding behavior, while
+capture/log volume and remaining live present/retained-frame behavior still need
+more work.
+
+Remaining visual issues:
+
+- Some live frames still present black/stale output even though replay telemetry
+  reports retained-frame copies on noop utility buckets.
+- Texture quality is still incomplete. The sampler LOD clamp only prevents
+  base-mip-only resources from sampling nonexistent native mips; it does not
+  implement packed mip upload.
+- Animated/atlas textures can appear as the whole texture stretched into the
+  draw. That points at missing Xenos shader/constant UV transform semantics and
+  atlas-frame selection, not a 720p/1080p resolution problem.

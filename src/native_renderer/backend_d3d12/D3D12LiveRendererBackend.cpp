@@ -1,5 +1,7 @@
 #include "D3D12LiveRendererBackend.h"
 
+#include <chrono>
+
 #include <rex/logging.h>
 
 #include "../DebugRenderLog.h"
@@ -10,6 +12,14 @@ namespace {
 #if defined(_WIN32)
 LRESULT CALLBACK NativeD3D12WindowProc(HWND hwnd, UINT message, WPARAM wparam,
                                        LPARAM lparam) {
+  if (message == WM_CLOSE) {
+    DestroyWindow(hwnd);
+    return 0;
+  }
+  if (message == WM_DESTROY) {
+    PostQuitMessage(0);
+    return 0;
+  }
   return DefWindowProcW(hwnd, message, wparam, lparam);
 }
 
@@ -167,10 +177,19 @@ void D3D12LiveRendererBackend::Shutdown() {
   rtv_heap_.Reset();
   swap_chain_.Reset();
   dxgi_factory_.Reset();
-  if (owns_window_ && window_handle_) {
-    DestroyWindow(window_handle_);
+  window_thread_stop_.store(true);
+  if (window_handle_) {
+    PostMessageW(window_handle_, WM_CLOSE, 0, 0);
+  }
+  if (window_thread_.joinable()) {
+    window_thread_.join();
+  }
+  {
+    std::scoped_lock lock(window_mutex_);
     window_handle_ = nullptr;
     owns_window_ = false;
+    window_ready_ = false;
+    window_failed_ = false;
   }
   if (fence_event_) {
     CloseHandle(fence_event_);
@@ -312,8 +331,9 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
 
 #if defined(_WIN32)
   if (swapchain_ready_ && swap_chain_) {
+    PumpNativeWindowMessages();
     if (present_native_frame) {
-      swap_chain_->Present(1, 0);
+      swap_chain_->Present(0, 0);
     }
     PumpNativeWindowMessages();
   }
@@ -364,6 +384,7 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
     last_error_ = replay_error;
     return false;
   }
+  PumpNativeWindowMessages();
 
   replay::D3D12LiveSubmitBinding binding{};
   binding.device = device_.Get();
@@ -384,6 +405,7 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
                       : replay_error;
     return false;
   }
+  PumpNativeWindowMessages();
   last_submit_stats_.submitted_draws = binding.submitted_draws;
   last_submit_stats_.shader_pair_count = binding.shader_pair_count;
   last_submit_stats_.pso_entries = binding.pso_entries;
@@ -494,6 +516,36 @@ bool D3D12LiveRendererBackend::EnsureNativeWindow(uint32_t width,
     return true;
   }
 
+  {
+    std::scoped_lock lock(window_mutex_);
+    window_ready_ = false;
+    window_failed_ = false;
+  }
+  window_thread_stop_.store(false);
+  window_thread_ =
+      std::thread(&D3D12LiveRendererBackend::NativeWindowThreadMain, this,
+                  width, height);
+
+  std::unique_lock lock(window_mutex_);
+  if (!window_cv_.wait_for(lock, std::chrono::seconds(5), [this] {
+        return window_ready_ || window_failed_;
+      })) {
+    last_error_ = "Timed out creating native_d3d12 render window";
+    window_thread_stop_.store(true);
+    return false;
+  }
+  if (window_failed_ || !window_handle_) {
+    last_error_ = "CreateWindowExW failed for native_d3d12 render window";
+    window_thread_stop_.store(true);
+    return false;
+  }
+  return true;
+#endif
+}
+
+void D3D12LiveRendererBackend::NativeWindowThreadMain(uint32_t width,
+                                                      uint32_t height) {
+#if defined(_WIN32)
   const HINSTANCE instance = GetModuleHandleW(nullptr);
   constexpr const wchar_t *kClassName = L"BO2NativeD3D12RenderWindow";
   WNDCLASSEXW wc{};
@@ -511,19 +563,48 @@ bool D3D12LiveRendererBackend::EnsureNativeWindow(uint32_t width,
     title += L" - ";
     title += WidenAscii(app_name_);
   }
-  window_handle_ = CreateWindowExW(
+  HWND hwnd = CreateWindowExW(
       0, kClassName, title.c_str(), WS_OVERLAPPEDWINDOW | WS_VISIBLE,
       CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left,
       rect.bottom - rect.top, nullptr, nullptr, instance, nullptr);
-  if (!window_handle_) {
-    last_error_ = "CreateWindowExW failed for native_d3d12 render window";
-    return false;
+  if (!hwnd) {
+    {
+      std::scoped_lock lock(window_mutex_);
+      window_failed_ = true;
+    }
+    window_cv_.notify_all();
+    return;
   }
-  owns_window_ = true;
-  ShowWindow(window_handle_, SW_SHOW);
-  UpdateWindow(window_handle_);
-  PumpNativeWindowMessages();
-  return true;
+  {
+    std::scoped_lock lock(window_mutex_);
+    window_handle_ = hwnd;
+    owns_window_ = true;
+    window_ready_ = true;
+  }
+  window_cv_.notify_all();
+  ShowWindow(hwnd, SW_SHOW);
+  UpdateWindow(hwnd);
+
+  MSG msg{};
+  while (!window_thread_stop_.load()) {
+    const BOOL result = GetMessageW(&msg, nullptr, 0, 0);
+    if (result <= 0) {
+      break;
+    }
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
+  HWND cleanup_hwnd = nullptr;
+  {
+    std::scoped_lock lock(window_mutex_);
+    cleanup_hwnd = window_handle_;
+    window_handle_ = nullptr;
+    owns_window_ = false;
+    window_ready_ = false;
+  }
+  if (cleanup_hwnd && IsWindow(cleanup_hwnd)) {
+    DestroyWindow(cleanup_hwnd);
+  }
 #endif
 }
 
@@ -661,7 +742,35 @@ bool D3D12LiveRendererBackend::WaitForGpu() {
                  static_cast<uint32_t>(hr));
     return false;
   }
-  WaitForSingleObject(fence_event_, INFINITE);
+  constexpr DWORD kWaitSliceMs = 16;
+  constexpr DWORD kWaitTimeoutMs = 2000;
+  DWORD waited_ms = 0;
+  while (fence_->GetCompletedValue() < signal_value) {
+    const DWORD result =
+        MsgWaitForMultipleObjects(1, &fence_event_, FALSE, kWaitSliceMs,
+                                  QS_ALLINPUT);
+    if (result == WAIT_OBJECT_0) {
+      return true;
+    }
+    if (result == WAIT_OBJECT_0 + 1) {
+      PumpNativeWindowMessages();
+      continue;
+    }
+    if (result == WAIT_TIMEOUT) {
+      waited_ms += kWaitSliceMs;
+      if (waited_ms >= kWaitTimeoutMs) {
+        last_error_ = "Timed out waiting for native_d3d12 GPU fence";
+        REXLOG_ERROR("BO2 native D3D12 fence wait timed out after {} ms",
+                     waited_ms);
+        return false;
+      }
+      continue;
+    }
+    last_error_ = "native_d3d12 GPU fence wait failed";
+    REXLOG_ERROR("BO2 native D3D12 fence wait failed result={:#010x}",
+                 result);
+    return false;
+  }
   return true;
 #endif
 }
