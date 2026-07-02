@@ -2363,3 +2363,50 @@ still real renderer gaps: some frames have no currently supported complete
 geometry, shader constants for atlas/animated texture coordinate selection are
 missing from native state, and the live path is still serialized around GPU
 fences rather than using a proper frame/resource ring.
+
+MP049 draw-probe update:
+
+The MP generated-function detour scanner now handles the shorter RelWithDebInfo
+prologues used by the generated PPC bodies. This allows direct generated-body
+hooks to install for the current MP draw packet helpers instead of relying only
+on dispatcher replacement.
+
+Shader-record probe mode now also records bounded snapshots for MP draw packet
+helpers. The first-level draw argument block comes from `r5`, and the probe
+follows the nested pointer at dword `16` when present. This captures the live
+draw-side state needed to continue mapping material/pass constants used by
+atlas and animated texture coordinate shaders.
+
+Validation:
+
+```text
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default_mp\out\build\win-clang-msvc-amd64-relwithdebinfo-msvctarget"" -j12 default_mp.exe"
+```
+
+Result: exit `0`.
+
+```text
+default_mp.exe --native_renderer_mode=native_d3d12 --native_renderer_capture_path=C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_049_draw_probe_nested\events.jsonl --native_renderer_capture_limit=9000 --native_renderer_capture_flush_interval=64 --native_renderer_shader_record_probe_mode=on --native_renderer_verbose=false --native_renderer_live_allow_diagnostic_shader=false --native_renderer_skip_unsupported_draws=true
+```
+
+Result: responsive through `15` seconds; watchdog stopped the process after the
+capture reached its event cap.
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_049_draw_probe_nested\events.jsonl --validate --no-summary
+```
+
+Result: `Validation OK: 9000 events, 30 frames, 1722 draws`.
+
+Probe evidence:
+
+```text
+shader_record_probe: 34
+probe[0] sub_82117BC8 r5=0x7026FCB0 primary=0x7026FCB0 secondary=0x7026FD60
+```
+
+The secondary block contains repeated runtime/XEX pointers including
+`0x827C0C98`, `0x827C11E4`, `0x84766B00`, `0x848D0000`, and `0x8490B81C`.
+The currently active Ghidra program did not resolve the MP addresses, so the
+next reverse-engineering step is to switch Ghidra to the MP/XEX program and map
+those fields to material/pass or draw-state structures.

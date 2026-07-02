@@ -50,6 +50,37 @@ bool MakeWritable(uint8_t* patch, size_t patch_size, DWORD* old_protect,
   return false;
 }
 
+size_t CommonGeneratedInstructionSize(const uint8_t* patch) {
+  if (patch[0] == 0x53 || patch[0] == 0x55 || patch[0] == 0x56 ||
+      patch[0] == 0x57) {
+    return 1;
+  }
+  if (patch[0] == 0x41 &&
+      (patch[1] == 0x54 || patch[1] == 0x55 || patch[1] == 0x56 ||
+       patch[1] == 0x57)) {
+    return 2;
+  }
+  if (patch[0] == 0x48 && patch[1] == 0x83 && patch[2] == 0xEC) {
+    return 4;
+  }
+  if (patch[0] == 0x48 && patch[1] == 0x81 && patch[2] == 0xEC) {
+    return 7;
+  }
+  if (patch[0] == 0x48 && patch[1] == 0x89) {
+    return 3;
+  }
+  if (patch[0] == 0x48 && patch[1] == 0x8B) {
+    return 7;
+  }
+  if (patch[0] == 0x41 && patch[1] == 0xBF) {
+    return 6;
+  }
+  if (patch[0] == 0x0F && patch[1] == 0x29) {
+    return 5;
+  }
+  return 0;
+}
+
 size_t GeneratedFunctionPatchSize(const uint8_t* patch, const char* name) {
   constexpr uint8_t kLegacyGeneratedPrologue[kAbsoluteJumpSize] = {
       0x41, 0x56, 0x56, 0x57, 0x53, 0x48, 0x83, 0xEC, 0x28, 0x48, 0x89, 0xD6,
@@ -65,6 +96,20 @@ size_t GeneratedFunctionPatchSize(const uint8_t* patch, const char* name) {
       patch[7] == 0x24 && patch[9] == 0x48 && patch[10] == 0x89 &&
       patch[11] == 0x4C && patch[12] == 0x24) {
     return 14;
+  }
+
+  size_t patch_size = 0;
+  while (patch_size < kAbsoluteJumpSize) {
+    const size_t instruction_size =
+        CommonGeneratedInstructionSize(patch + patch_size);
+    if (!instruction_size) {
+      patch_size = 0;
+      break;
+    }
+    patch_size += instruction_size;
+  }
+  if (patch_size >= kAbsoluteJumpSize) {
+    return patch_size;
   }
 
   REXLOG_ERROR(
@@ -96,6 +141,43 @@ bool InstallHostDetour(PPCFunc* target, PPCFunc* replacement, const char* name) 
   (void)target;
   (void)replacement;
   REXLOG_WARN("BO2 native renderer host detour for {} is not implemented on this platform", name);
+  return false;
+#endif
+}
+
+bool InstallImportThunkDetour(PPCFunc* target, PPCFunc* replacement,
+                              const char* name) {
+#if REX_PLATFORM_WIN32
+  auto* thunk = reinterpret_cast<uint8_t*>(reinterpret_cast<void*>(target));
+  if (thunk[0] != 0xFF || thunk[1] != 0x25) {
+    REXLOG_ERROR(
+        "BO2 native renderer import-thunk detour for {} expected FF 25 thunk; "
+        "bytes={}",
+        name, FormatBytes(thunk, 8));
+    return false;
+  }
+
+  const int32_t rel32 = *reinterpret_cast<const int32_t*>(thunk + 2);
+  auto** slot = reinterpret_cast<PPCFunc**>(thunk + 6 + rel32);
+  DWORD old_protect = 0;
+  if (!MakeWritable(reinterpret_cast<uint8_t*>(slot), sizeof(*slot),
+                    &old_protect, name)) {
+    return false;
+  }
+
+  *slot = replacement;
+  DWORD unused_protect = 0;
+  VirtualProtect(slot, sizeof(*slot), old_protect, &unused_protect);
+  REXLOG_INFO("BO2 native renderer installed import-thunk detour for {}",
+              name);
+  return true;
+#else
+  (void)target;
+  (void)replacement;
+  REXLOG_WARN(
+      "BO2 native renderer import-thunk detour for {} is not implemented on "
+      "this platform",
+      name);
   return false;
 #endif
 }

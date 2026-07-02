@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <filesystem>
 #include <string>
 
 #if defined(_WIN32)
@@ -31,6 +32,17 @@ REXCVAR_DEFINE_STRING(native_renderer_mode, "emulated", "Renderer",
                       "Renderer mode: emulated, native, native_null, native_d3d12");
 REXCVAR_DEFINE_BOOL(native_renderer_verbose, true, "Renderer",
                     "Enable verbose native renderer logging");
+REXCVAR_DEFINE_STRING(native_renderer_shader_cache_root, "shader_work/cache",
+                      "Renderer",
+                      "Root directory for native D3D12 shader cache index/HLSL");
+REXCVAR_DEFINE_STRING(native_renderer_shader_override_root,
+                      "shader_work/native_overrides", "Renderer",
+                      "Root directory for native shader override manifests");
+REXCVAR_DEFINE_BOOL(native_renderer_skip_unsupported_draws, true, "Renderer",
+                    "Skip unsupported PM4 draws in native_d3d12 live mode");
+REXCVAR_DEFINE_BOOL(
+    native_renderer_live_allow_diagnostic_shader, false, "Renderer",
+    "Allow native_d3d12 live mode to present diagnostic shader fallback output");
 REXCVAR_DEFINE_STRING(native_renderer_shader_record_probe_mode, "off", "Renderer",
                       "Shader/material record probe capture: off, on");
 REXCVAR_DEFINE_UINT32(native_renderer_shader_record_probe_dwords, 32, "Renderer",
@@ -60,6 +72,34 @@ RendererBackendKind BackendForMode(RendererMode mode) {
       return RendererBackendKind::D3D12Live;
   }
   return RendererBackendKind::None;
+}
+
+std::filesystem::path ResolveProjectRelativePath(std::filesystem::path path) {
+  if (path.empty() || path.is_absolute()) {
+    return path;
+  }
+
+  std::error_code ec;
+  const std::filesystem::path cwd = std::filesystem::current_path(ec);
+  if (!ec) {
+    const std::filesystem::path cwd_relative = cwd / path;
+    if (std::filesystem::exists(cwd_relative, ec) && !ec) {
+      return std::filesystem::absolute(cwd_relative, ec);
+    }
+
+    for (std::filesystem::path probe = cwd; !probe.empty();
+         probe = probe.parent_path()) {
+      const std::filesystem::path candidate = probe / path;
+      if (std::filesystem::exists(candidate, ec) && !ec) {
+        return std::filesystem::absolute(candidate, ec);
+      }
+      if (probe == probe.root_path() || probe == probe.parent_path()) {
+        break;
+      }
+    }
+  }
+
+  return path;
 }
 
 uint32_t ReadGuestArg(PPCContext& ctx, uint8_t* base, std::size_t arg) {
@@ -114,11 +154,18 @@ bool LooksLikeGuestPointer(uint32_t address) {
 
 bool IsShaderRecordProbeAddress(uint32_t address) {
   switch (address) {
+    // Single-player packet emitters.
     case 0x8258CCE8:
     case 0x8258CE40:
     case 0x82597DF8:
     case 0x82597F50:
     case 0x82598140:
+    // Multiplayer packet emitters mapped from the matching XEX build.
+    case 0x82117BC8:
+    case 0x82117D20:
+    case 0x8212D478:
+    case 0x8212E280:
+    case 0x8212EB40:
       return true;
     default:
       return false;
@@ -214,6 +261,52 @@ ShaderRecordProbeInfo BuildShaderRecordProbe(
   return probe;
 }
 
+ShaderRecordProbeInfo BuildShaderRecordProbe(
+    const DrawPacketCandidateInfo& draw) {
+  ShaderRecordProbeInfo probe{};
+  probe.event_index = draw.event_index;
+  probe.function_address = draw.function_address;
+  probe.function_name = draw.function_name;
+  probe.link_register = draw.link_register;
+  probe.r3 = draw.r3;
+  probe.r4 = draw.r4;
+  probe.r5 = draw.r5;
+  probe.r6 = draw.r6;
+  probe.r7 = draw.r7;
+  probe.r8 = draw.r8;
+  probe.r31 = draw.r31;
+  probe.command_buffer_object = draw.command_buffer_object;
+  probe.write_begin = draw.write_begin;
+  probe.write_end = draw.write_end;
+  probe.write_limit_begin = draw.write_limit;
+  probe.write_limit_end = draw.write_limit;
+
+  probe.primary_address = draw.r5;
+  probe.primary_dword_count_hint =
+      LooksLikeGuestPointer(draw.r6)
+          ? static_cast<uint32_t>(ShaderRecordProbeInfo::kMaxRecordDwords)
+          : draw.r6;
+  CaptureDwordSnapshot(probe.primary_address, probe.primary_dword_count_hint,
+                       probe.primary_dwords, probe.primary_dword_count,
+                       probe.primary_truncated, probe.primary_missing);
+
+  if (probe.primary_dword_count > 16 &&
+      LooksLikeGuestPointer(probe.primary_dwords[16])) {
+    probe.secondary_address = probe.primary_dwords[16];
+    CaptureDwordSnapshot(probe.secondary_address,
+                         ShaderRecordProbeInfo::kMaxRecordDwords,
+                         probe.secondary_dwords, probe.secondary_dword_count,
+                         probe.secondary_truncated, probe.secondary_missing);
+  } else if (LooksLikeGuestPointer(draw.r7) && draw.r7 != draw.r5) {
+    probe.secondary_address = draw.r7;
+    CaptureDwordSnapshot(probe.secondary_address,
+                         ShaderRecordProbeInfo::kMaxRecordDwords,
+                         probe.secondary_dwords, probe.secondary_dword_count,
+                         probe.secondary_truncated, probe.secondary_missing);
+  }
+  return probe;
+}
+
 }  // namespace
 
 const char* ToString(RendererMode mode) {
@@ -269,11 +362,24 @@ void NativeRenderer::ConfigureForApp(std::string_view app_name) {
   config_.mode = ParseRendererMode(REXCVAR_GET(native_renderer_mode));
   config_.backend = BackendForMode(config_.mode);
   config_.verbose = REXCVAR_GET(native_renderer_verbose);
+  config_.shader_cache_root = ResolveProjectRelativePath(
+      std::filesystem::path(REXCVAR_GET(native_renderer_shader_cache_root)));
+  config_.shader_override_root = ResolveProjectRelativePath(
+      std::filesystem::path(REXCVAR_GET(native_renderer_shader_override_root)));
+  config_.skip_unsupported_draws =
+      REXCVAR_GET(native_renderer_skip_unsupported_draws);
+  config_.allow_live_diagnostic_shader =
+      REXCVAR_GET(native_renderer_live_allow_diagnostic_shader);
   configured_ = true;
 
   REXLOG_INFO("BO2 native renderer mode={} backend={} verbose={} app={}",
               ToString(config_.mode), ToString(config_.backend), config_.verbose,
               config_.app_name);
+  if (config_.mode != RendererMode::Emulated) {
+    REXLOG_INFO("BO2 native renderer paths shader_cache={} shader_overrides={}",
+                config_.shader_cache_root.string(),
+                config_.shader_override_root.string());
+  }
 
   if (ShouldInstallHooks()) {
     EnsureBackend();
@@ -308,6 +414,37 @@ VdSwapInfo NativeRenderer::OnVdSwapBegin(PPCContext& ctx, uint8_t* base) {
   backend_->BeginFrame(frame_index);
   backend_->SubmitVdSwap(frame_index, swap);
   return swap;
+}
+
+bool NativeRenderer::CanForwardVdSwap(const VdSwapInfo& swap) const {
+  uint32_t ignored = 0;
+  if (!swap.command_buffer ||
+      !ReadGuestU32Checked(swap.command_buffer, ignored)) {
+    REXLOG_WARN("BO2 native renderer suppressing VdSwap: bad command buffer {:#010x}",
+                swap.command_buffer);
+    return false;
+  }
+  for (uint32_t offset = 0; offset < 24; offset += 4) {
+    if (!ReadGuestU32Checked(swap.fetch_constant + offset, ignored)) {
+      REXLOG_WARN(
+          "BO2 native renderer suppressing VdSwap: bad fetch constant {:#010x} "
+          "offset={}",
+          swap.fetch_constant, offset);
+      return false;
+    }
+  }
+  const uint32_t scalar_ptrs[] = {
+      swap.frontbuffer_ptr, swap.texture_format_ptr, swap.color_space_ptr,
+      swap.width_ptr, swap.height_ptr,
+  };
+  for (uint32_t address : scalar_ptrs) {
+    if (!ReadGuestU32Checked(address, ignored)) {
+      REXLOG_WARN("BO2 native renderer suppressing VdSwap: bad scalar pointer {:#010x}",
+                  address);
+      return false;
+    }
+  }
+  return true;
 }
 
 void NativeRenderer::OnVdSwapEnd(const VdSwapInfo& swap, bool command_buffer_written) {
@@ -359,6 +496,9 @@ void NativeRenderer::OnDrawPacketCandidateEnd(DrawPacketCandidateInfo& draw) {
   }
   CaptureDrawPacketWrites(draw);
   backend_->SubmitDrawPacketCandidate(draw);
+  if (ShaderRecordProbesEnabled() && IsShaderRecordProbeAddress(draw.function_address)) {
+    backend_->SubmitShaderRecordProbe(BuildShaderRecordProbe(draw));
+  }
 
   if (draw.has_draw_indx_2) {
     RenderCommand command{};
