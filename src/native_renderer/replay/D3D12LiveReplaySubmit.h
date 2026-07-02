@@ -45,6 +45,7 @@ struct D3D12LiveSubmitBinding {
   std::vector<std::pair<std::string, uint64_t>> unsupported_reasons;
   bool presentable_frame = false;
   bool noop_utility_frame = false;
+  bool retained_color_ready = false;
   bool copied_retained_frame = false;
 };
 

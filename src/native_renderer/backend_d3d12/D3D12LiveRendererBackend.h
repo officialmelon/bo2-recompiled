@@ -63,6 +63,8 @@ class D3D12LiveRendererBackend final : public RendererBackend {
     uint64_t submitted_draws = 0;
     uint64_t shader_pair_count = 0;
     uint64_t pso_entries = 0;
+    uint64_t pso_cache_misses = 0;
+    uint64_t pso_cache_hits = 0;
     uint64_t diagnostic_pipelines = 0;
     uint64_t input_layout_variants = 0;
     uint64_t scene_candidate_draws = 0;
@@ -73,6 +75,7 @@ class D3D12LiveRendererBackend final : public RendererBackend {
     std::vector<std::pair<std::string, uint64_t>> unsupported_reasons;
     bool presentable_frame = false;
     bool noop_utility_frame = false;
+    bool retained_color_ready = false;
     bool copied_retained_frame = false;
   };
   struct LiveDiagnostics {
@@ -80,9 +83,12 @@ class D3D12LiveRendererBackend final : public RendererBackend {
     uint64_t frames_submitted = 0;
     uint64_t frames_presentable = 0;
     uint64_t frames_retained_copy = 0;
+    uint64_t frames_retained_blocked = 0;
     uint64_t frames_not_presentable = 0;
     uint64_t skipped_draws = 0;
     uint64_t elided_noop_draws = 0;
+    uint64_t pso_cache_misses = 0;
+    uint64_t pso_cache_hits = 0;
     uint64_t diagnostic_pipelines = 0;
     std::map<std::string, uint64_t> unsupported_reasons;
   };

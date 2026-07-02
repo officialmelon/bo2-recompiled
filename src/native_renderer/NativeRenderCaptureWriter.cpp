@@ -1186,10 +1186,14 @@ void NativeRenderCaptureWriter::WriteLiveD3D12Submit(
     bool attempted, bool success, uint64_t submitted_frames,
     uint64_t failed_frames, uint64_t submitted_draws,
     uint64_t shader_pair_count, uint64_t pso_entries,
+    uint64_t pso_cache_misses, uint64_t pso_cache_hits,
     uint64_t diagnostic_pipelines, uint64_t input_layout_variants,
     uint64_t scene_candidate_draws, uint64_t depth_only_draws,
-    uint64_t utility_draws, bool presentable_frame,
-    bool noop_utility_frame, bool copied_retained_frame, bool presented,
+    uint64_t utility_draws, uint64_t skipped_draws,
+    uint64_t elided_noop_draws,
+    const std::vector<std::pair<std::string, uint64_t>>& unsupported_reasons,
+    bool presentable_frame, bool noop_utility_frame,
+    bool retained_color_ready, bool copied_retained_frame, bool presented,
     std::string_view error) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("live_d3d12_submit")) {
@@ -1205,13 +1209,36 @@ void NativeRenderCaptureWriter::WriteLiveD3D12Submit(
   WriteU64Field("submitted_draws", submitted_draws);
   WriteU64Field("shader_pair_count", shader_pair_count);
   WriteU64Field("pso_entries", pso_entries);
+  WriteU64Field("pso_cache_misses", pso_cache_misses);
+  WriteU64Field("pso_cache_hits", pso_cache_hits);
   WriteU64Field("diagnostic_pipelines", diagnostic_pipelines);
   WriteU64Field("input_layout_variants", input_layout_variants);
   WriteU64Field("scene_candidate_draws", scene_candidate_draws);
   WriteU64Field("depth_only_draws", depth_only_draws);
   WriteU64Field("utility_draws", utility_draws);
+  WriteU64Field("skipped_draws", skipped_draws);
+  WriteU64Field("elided_noop_draws", elided_noop_draws);
+  uint64_t unsupported_reason_total = 0;
+  for (const auto &[reason, count] : unsupported_reasons) {
+    (void)reason;
+    unsupported_reason_total += count;
+  }
+  WriteU64Field("unsupported_reason_total", unsupported_reason_total);
+  WriteFieldPrefix("unsupported_reasons");
+  file_ << '[';
+  for (std::size_t i = 0; i < unsupported_reasons.size(); ++i) {
+    if (i != 0) {
+      file_ << ',';
+    }
+    file_ << "{\"reason\":\"" << EscapeJson(unsupported_reasons[i].first)
+          << "\",\"count\":" << unsupported_reasons[i].second << '}';
+  }
+  file_ << ']';
   WriteBoolField("presentable_frame", presentable_frame);
   WriteBoolField("noop_utility_frame", noop_utility_frame);
+  WriteBoolField("retained_color_ready", retained_color_ready);
+  WriteBoolField("retained_color_blocked",
+                 !presentable_frame && !retained_color_ready);
   WriteBoolField("copied_retained_frame", copied_retained_frame);
   WriteBoolField("presented", presented);
   if (!error.empty()) {

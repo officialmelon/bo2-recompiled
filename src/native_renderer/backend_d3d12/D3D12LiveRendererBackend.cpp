@@ -320,13 +320,19 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
                                 last_submit_stats_.submitted_draws,
                                 last_submit_stats_.shader_pair_count,
                                 last_submit_stats_.pso_entries,
+                                last_submit_stats_.pso_cache_misses,
+                                last_submit_stats_.pso_cache_hits,
                                 last_submit_stats_.diagnostic_pipelines,
                                 last_submit_stats_.input_layout_variants,
                                 last_submit_stats_.scene_candidate_draws,
                                 last_submit_stats_.depth_only_draws,
                                 last_submit_stats_.utility_draws,
+                                last_submit_stats_.skipped_draws,
+                                last_submit_stats_.elided_noop_draws,
+                                last_submit_stats_.unsupported_reasons,
                                 last_submit_stats_.presentable_frame,
                                 last_submit_stats_.noop_utility_frame,
+                                last_submit_stats_.retained_color_ready,
                                 last_submit_stats_.copied_retained_frame,
                                 present_native_frame,
                                 last_error_);
@@ -420,6 +426,8 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
   last_submit_stats_.submitted_draws = binding.submitted_draws;
   last_submit_stats_.shader_pair_count = binding.shader_pair_count;
   last_submit_stats_.pso_entries = binding.pso_entries;
+  last_submit_stats_.pso_cache_misses = binding.pso_cache_misses;
+  last_submit_stats_.pso_cache_hits = binding.pso_cache_hits;
   last_submit_stats_.diagnostic_pipelines = binding.diagnostic_pipelines;
   last_submit_stats_.input_layout_variants = binding.input_layout_variants;
   last_submit_stats_.scene_candidate_draws = binding.scene_candidate_draws;
@@ -430,20 +438,26 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
   last_submit_stats_.unsupported_reasons = binding.unsupported_reasons;
   last_submit_stats_.presentable_frame = binding.presentable_frame;
   last_submit_stats_.noop_utility_frame = binding.noop_utility_frame;
+  last_submit_stats_.retained_color_ready = binding.retained_color_ready;
   last_submit_stats_.copied_retained_frame = binding.copied_retained_frame;
   if (verbose_ || submitted_frames_ < 5 || ShouldLogHighFrequencyEvent(frame_index)) {
     REXLOG_INFO(
         "BO2 native D3D12 live frame {} submitted real_draws={} "
-        "shader_pairs={} pso_entries={} diagnostic_pipelines={} "
+        "shader_pairs={} pso_entries={} pso_misses={} pso_hits={} "
+        "diagnostic_pipelines={} "
         "input_layout_variants={} scene_draws={} depth_only_draws={} "
-        "utility_draws={} presentable_frame={} noop_utility_frame={} "
+        "utility_draws={} skipped_draws={} elided_noop_draws={} "
+        "presentable_frame={} noop_utility_frame={} retained_ready={} "
         "copied_retained_frame={}",
         frame_index, binding.submitted_draws, binding.shader_pair_count,
-        binding.pso_entries, binding.diagnostic_pipelines,
-        binding.input_layout_variants, binding.scene_candidate_draws,
+        binding.pso_entries, binding.pso_cache_misses, binding.pso_cache_hits,
+        binding.diagnostic_pipelines, binding.input_layout_variants,
+        binding.scene_candidate_draws,
         binding.depth_only_draws, binding.utility_draws,
+        binding.skipped_draws, binding.elided_noop_draws,
         binding.presentable_frame ? "yes" : "no",
         binding.noop_utility_frame ? "yes" : "no",
+        binding.retained_color_ready ? "yes" : "no",
         binding.copied_retained_frame ? "yes" : "no");
   }
   return true;
@@ -469,8 +483,14 @@ void D3D12LiveRendererBackend::RecordLiveSubmitDiagnostics(
   if (last_submit_stats_.copied_retained_frame) {
     ++live_diagnostics_.frames_retained_copy;
   }
+  if (!last_submit_stats_.presentable_frame &&
+      !last_submit_stats_.retained_color_ready) {
+    ++live_diagnostics_.frames_retained_blocked;
+  }
   live_diagnostics_.skipped_draws += last_submit_stats_.skipped_draws;
   live_diagnostics_.elided_noop_draws += last_submit_stats_.elided_noop_draws;
+  live_diagnostics_.pso_cache_misses += last_submit_stats_.pso_cache_misses;
+  live_diagnostics_.pso_cache_hits += last_submit_stats_.pso_cache_hits;
   live_diagnostics_.diagnostic_pipelines +=
       last_submit_stats_.diagnostic_pipelines;
   for (const auto &[reason, count] : last_submit_stats_.unsupported_reasons) {
@@ -512,13 +532,15 @@ void D3D12LiveRendererBackend::MaybeLogLiveDiagnostics(
   REXLOG_INFO(
       "BO2 native D3D12 diagnostics frames_attempted={} submitted={} "
       "presented_or_retained={} not_presentable={} retained_copies={} "
-      "skipped_draws={} elided_noop_draws={} diagnostic_pipelines={} "
-      "top_unsupported=[{}]",
+      "retained_blocked={} skipped_draws={} elided_noop_draws={} "
+      "pso_misses={} pso_hits={} diagnostic_pipelines={} top_unsupported=[{}]",
       live_diagnostics_.frames_attempted, live_diagnostics_.frames_submitted,
       live_diagnostics_.frames_presentable,
       live_diagnostics_.frames_not_presentable,
-      live_diagnostics_.frames_retained_copy, live_diagnostics_.skipped_draws,
-      live_diagnostics_.elided_noop_draws,
+      live_diagnostics_.frames_retained_copy,
+      live_diagnostics_.frames_retained_blocked,
+      live_diagnostics_.skipped_draws, live_diagnostics_.elided_noop_draws,
+      live_diagnostics_.pso_cache_misses, live_diagnostics_.pso_cache_hits,
       live_diagnostics_.diagnostic_pipelines, top_reasons.str());
 }
 

@@ -6,6 +6,8 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "RenderCommand.h"
 #include "RendererTypes.h"
@@ -38,14 +40,18 @@ class NativeRenderCaptureWriter {
                             bool success, uint64_t submitted_frames,
                             uint64_t failed_frames, uint64_t submitted_draws,
                             uint64_t shader_pair_count,
-                            uint64_t pso_entries,
+                            uint64_t pso_entries, uint64_t pso_cache_misses,
+                            uint64_t pso_cache_hits,
                             uint64_t diagnostic_pipelines,
                             uint64_t input_layout_variants,
                             uint64_t scene_candidate_draws,
                             uint64_t depth_only_draws,
-                            uint64_t utility_draws,
+                            uint64_t utility_draws, uint64_t skipped_draws,
+                            uint64_t elided_noop_draws,
+                            const std::vector<std::pair<std::string, uint64_t>>&
+                                unsupported_reasons,
                             bool presentable_frame,
-                            bool noop_utility_frame,
+                            bool noop_utility_frame, bool retained_color_ready,
                             bool copied_retained_frame, bool presented,
                             std::string_view error);
 

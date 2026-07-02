@@ -2666,3 +2666,35 @@ native_render_replay.exe --capture native_captures\live_d3d12_mp_069_live_rt_cac
 
 Result: bounded live run stayed responsive through the watchdog window and the
 capture validates: `Validation OK: 7000 events, 24 frames, 1344 draws`.
+
+## 2026-07-02 Phase 0 live diagnostics
+
+The live D3D12 submit event now serializes the counters needed to measure
+silent failures instead of guessing from the window:
+
+* `skipped_draws`
+* `elided_noop_draws`
+* `pso_cache_misses`
+* `pso_cache_hits`
+* `unsupported_reason_total`
+* `unsupported_reasons[]`
+* `retained_color_ready`
+* `retained_color_blocked`
+
+The periodic live log also includes PSO cache hit/miss totals, retained-blocked
+frame count, skipped draw count, elided noop count, and the top unsupported
+reason summary. This keeps Phase 0 low-noise: per-frame JSONL records are
+machine-readable and the text log stays aggregated.
+
+Validation:
+
+```text
+default_mp.exe --native_renderer_mode=native_d3d12 --native_renderer_capture_path=native_captures\live_d3d12_mp_071_phase0_retained_ready\events.jsonl --native_renderer_capture_limit=4500 --native_renderer_capture_flush_interval=64 --native_renderer_verbose=true --native_renderer_live_allow_diagnostic_shader=false --native_renderer_skip_unsupported_draws=true
+native_render_replay.exe --capture native_captures\live_d3d12_mp_071_phase0_retained_ready\events.jsonl --validate --no-summary
+```
+
+Result: bounded live run stayed responsive and the capture validates:
+`Validation OK: 4500 events, 18 frames, 901 draws`. The parsed submit events
+show frames `1-3` as `retained_color_blocked=true`, frame `4` as the first
+presented native seed, and later frames as `retained_color_ready=true` with
+per-frame PSO cache and elided-draw counters populated.

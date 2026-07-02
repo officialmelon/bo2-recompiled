@@ -4978,6 +4978,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         live_binding->input_layout_variants = 0;
         CopyFramePlanDiagnosticsToLiveBinding(frame_plan, *live_binding);
         live_binding->noop_utility_frame = true;
+        live_binding->retained_color_ready =
+            options.live_session &&
+            reinterpret_cast<D3D12LiveReplaySessionStorage *>(
+                options.live_session)
+                ->has_presentable_color;
         if (options.live_session) {
           CopyRetainedColorToLiveTarget(
               reinterpret_cast<D3D12LiveReplaySessionStorage *>(
@@ -5019,6 +5024,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         early_live_binding->presentable_frame = false;
         early_live_binding->noop_utility_frame =
             draw_classes.depth_only == 0 && draw_classes.utility > 0;
+        early_live_binding->retained_color_ready =
+            options.live_session &&
+            reinterpret_cast<D3D12LiveReplaySessionStorage *>(
+                options.live_session)
+                ->has_presentable_color;
         if (options.live_session) {
           CopyRetainedColorToLiveTarget(
               reinterpret_cast<D3D12LiveReplaySessionStorage *>(
@@ -5818,6 +5828,8 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
                                frame_plan.frame_draw_count,
                                live_session &&
                                    live_session->has_presentable_color);
+    live_binding->retained_color_ready =
+        live_session && live_session->has_presentable_color;
   }
   if (log_backend) {
     std::cout << "D3D12 real replay PSO cache: entries=" << pipelines->size()
