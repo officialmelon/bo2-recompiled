@@ -2106,3 +2106,51 @@ Remaining visual issues:
 - Animated/atlas textures can appear as the whole texture stretched into the
   draw. That points at missing Xenos shader/constant UV transform semantics and
   atlas-frame selection, not a 720p/1080p resolution problem.
+
+MP032/MP033 persistent live state update:
+
+The live D3D12 frame builder now treats shaders and constants as persistent GPU
+register state instead of clearing them at every swap. BO2 frequently uploads
+only changed ranges, so per-swap clearing could drop atlas/animation constants
+and make native frames alternate between valid UI/background output and missing
+or black elements. Pending out-of-frame shader/constant work is merged into the
+next frame and then the pending bucket is hard-reset so stale pending draws are
+not replayed repeatedly.
+
+Validation:
+
+```text
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default_mp\out\build\win-clang-msvc-amd64-relwithdebinfo-msvctarget"" -j12 default_mp.exe"
+```
+
+Result: exit `0`, linked `default_mp.exe`.
+
+No-capture live run:
+
+```text
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_verbose false --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+Result: `Responding=True` at every 3 second sample for 25 seconds; the process
+was killed by the watchdog, not by a native-renderer crash. Visual sequence
+captures at 8s, 13s, and 18s all showed the BO2 MP menu in the native D3D12
+window. The 8s and 13s BMPs had identical SHA-256
+`E3ABD883FFCBF11DED80BE4903ECD8F21EB400C9209DFE75A3B0E17CEE9C4497`; the 18s
+BMP had SHA-256 `24BC12C4497C338A15D3DCF2043CCC012FC080714EFF67D31A8B7BBB30107408`
+and still showed a valid menu frame rather than a black frame.
+
+Current output evidence:
+`C:\Users\braxt\bo2-recompiled\native-renderer-live-mp032-persistent-state-12s.bmp`
+and `C:\Users\braxt\bo2-recompiled\native-renderer-live-mp033-seq-18s.bmp`.
+
+Remaining texture blocker after this fix:
+
+The sampled MP028 capture proves the affected textured shaders are still missing
+some constant ranges in native capture/replay. For example, runtime pixel shader
+`0x8645E8BA65E424B2` reads `c72`, `c73`, `c232-c235`, and `c252-c255`, but the
+captured PM4 constants around menu/effect draws only include ranges beginning at
+indices `1008`, `1904`, `1952`, and `2032`. Persistent live state fixes dropped
+per-frame constants, but it does not invent ranges the capture never observes.
+The next texture-specific task is to trace the XEX constant emitters and
+ReXGlue CP constant events until those missing ranges are captured or their
+initial/static source is identified.

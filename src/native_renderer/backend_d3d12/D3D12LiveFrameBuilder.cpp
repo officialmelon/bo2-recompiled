@@ -204,6 +204,17 @@ replay::PM4DrawRecord ConvertDraw(const PM4DrawInfo &draw) {
 
 void D3D12LiveFrameBuilder::BeginFrame(uint64_t frame_index) {
   frame_index_ = frame_index;
+  // Shader and constant registers are persistent GPU state. BO2 often updates
+  // only the ranges that changed for a frame, so clearing them at swap
+  // boundaries makes live native rendering lose atlas/animation constants and
+  // causes intermittent no-output draws.
+  constants_seen_in_frame_ = 0;
+  recent_constants_.clear();
+  draws_.clear();
+}
+
+void D3D12LiveFrameBuilder::ResetState() {
+  frame_index_ = 0;
   vertex_shader_ = {};
   pixel_shader_ = {};
   constants_seen_total_ = 0;
@@ -223,11 +234,21 @@ void D3D12LiveFrameBuilder::AbsorbPending(D3D12LiveFrameBuilder& pending,
   if (pending.pixel_shader_.hash != 0) {
     pixel_shader_ = pending.pixel_shader_;
   }
-  constants_seen_total_ = pending.constants_seen_total_;
-  constants_seen_in_frame_ = pending.constants_seen_in_frame_;
-  last_constant_seq_ = pending.last_constant_seq_;
-  recent_constants_ = pending.recent_constants_;
-  bound_constants_ = pending.bound_constants_;
+  constants_seen_total_ += pending.constants_seen_total_;
+  constants_seen_in_frame_ += pending.constants_seen_total_;
+  if (pending.last_constant_seq_ != 0) {
+    last_constant_seq_ = pending.last_constant_seq_;
+  }
+  recent_constants_.insert(recent_constants_.end(),
+                           pending.recent_constants_.begin(),
+                           pending.recent_constants_.end());
+  if (recent_constants_.size() > 8) {
+    recent_constants_.erase(recent_constants_.begin(),
+                            recent_constants_.end() - 8);
+  }
+  for (const auto &[key, constant] : pending.bound_constants_) {
+    bound_constants_[key] = constant;
+  }
 
   draws_.reserve(draws_.size() + pending.draws_.size());
   for (replay::ReplayDrawState draw : pending.draws_) {
@@ -236,7 +257,7 @@ void D3D12LiveFrameBuilder::AbsorbPending(D3D12LiveFrameBuilder& pending,
     draw.frame_id = frame_index;
     draws_.push_back(std::move(draw));
   }
-  pending.BeginFrame(0);
+  pending.ResetState();
 }
 
 void D3D12LiveFrameBuilder::BindShader(const PM4ShaderInfo &shader,

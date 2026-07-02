@@ -15,6 +15,7 @@ namespace bo2::native {
 class D3D12LiveFrameBuilder {
  public:
   void BeginFrame(uint64_t frame_index);
+  void ResetState();
   void AbsorbPending(D3D12LiveFrameBuilder& pending, uint64_t frame_index);
   void BindShader(const PM4ShaderInfo &shader, uint64_t seq);
   void BindConstants(const PM4ConstantInfo &constants, uint64_t seq);
