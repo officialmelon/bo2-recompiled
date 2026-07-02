@@ -60,6 +60,29 @@ implemented by shader constants and atlas UV math, the remaining fix belongs in
 Xenos shader lowering. This change only prevents stale native texture reuse
 when the captured texture bytes actually change.
 
+## 2026-07-02 texture swizzle decode checkpoint
+
+The D3D12 texture decoder now applies the captured Xenos texture fetch swizzle
+when converting decoded texture payloads to RGBA8 SRVs. The replay frontbuffer
+decoder already had this component mapping, but the D3D12 real replay texture
+upload path had duplicated decode logic and assumed raw RGBA order.
+
+Validation:
+
+- Built `native_render_replay.exe` and RelWithDebInfo `default_mp.exe` with
+  parallel Ninja (`-j12`), exit `0`.
+- Replay validation on
+  `native_captures\live_d3d12_mp_074_sticky_present_target_telemetry\events.jsonl`
+  passed: `Validation OK: 4500 events, 18 frames, 897 draws`.
+- Real D3D12 replay remained behavior preserving on that capture: `121`
+  supported draws across `8` shader pairs and the output SHA-256 matched the
+  previous checkpoint because the submitted captured textures use identity
+  swizzle, primarily `0x0688`.
+
+This removes one known source of wrong native color/channel output for future
+captures or shader pairs with non-identity fetch swizzles. It does not fix
+atlas UV animation or approximate shader color math.
+
 ## 2026-07-02 live D3D12 pacing checkpoint
 
 The live `native_d3d12` backend no longer performs a full `WaitForGpu()` drain

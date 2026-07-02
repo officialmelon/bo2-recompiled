@@ -2274,17 +2274,43 @@ void DecodeRgb565(uint16_t value, uint8_t color[3]) {
   color[2] = static_cast<uint8_t>((b << 3) | (b >> 2));
 }
 
-void StoreRgba(std::vector<uint8_t> &rgba, uint32_t width, uint32_t height,
-               uint32_t x, uint32_t y, uint8_t r, uint8_t g, uint8_t b,
-               uint8_t a) {
+uint8_t ApplyTextureSwizzleComponent(const std::array<uint8_t, 4> &rgba,
+                                     uint32_t swizzle,
+                                     uint32_t component_index) {
+  const uint32_t component = (swizzle >> (3 * component_index)) & 0b111;
+  switch (component) {
+  case 0:
+  case 1:
+  case 2:
+  case 3:
+    return rgba[component];
+  case 4:
+    return 0;
+  case 5:
+    return 0xFF;
+  default:
+    return 0;
+  }
+}
+
+void WriteSwizzledPixel(std::vector<uint8_t> &rgba, std::size_t pixel,
+                        const std::array<uint8_t, 4> &raw,
+                        uint32_t swizzle) {
+  rgba[pixel * 4 + 0] = ApplyTextureSwizzleComponent(raw, swizzle, 0);
+  rgba[pixel * 4 + 1] = ApplyTextureSwizzleComponent(raw, swizzle, 1);
+  rgba[pixel * 4 + 2] = ApplyTextureSwizzleComponent(raw, swizzle, 2);
+  rgba[pixel * 4 + 3] = ApplyTextureSwizzleComponent(raw, swizzle, 3);
+}
+
+void StoreSwizzledRgba(std::vector<uint8_t> &rgba, uint32_t width,
+                       uint32_t height, uint32_t x, uint32_t y,
+                       const std::array<uint8_t, 4> &raw,
+                       uint32_t swizzle) {
   if (x >= width || y >= height) {
     return;
   }
   const std::size_t pixel = static_cast<std::size_t>(y) * width + x;
-  rgba[pixel * 4 + 0] = r;
-  rgba[pixel * 4 + 1] = g;
-  rgba[pixel * 4 + 2] = b;
-  rgba[pixel * 4 + 3] = a;
+  WriteSwizzledPixel(rgba, pixel, raw, swizzle);
 }
 
 void DecodeDxtColorBlock(const std::vector<uint8_t> &bytes,
@@ -2449,8 +2475,11 @@ bool DecodeBlockCompressedTextureRgba8(const TextureFetchRecord &fetch,
       for (uint32_t py = 0; py < 4; ++py) {
         for (uint32_t px = 0; px < 4; ++px) {
           const uint32_t i = py * 4 + px;
-          StoreRgba(rgba, fetch.width, fetch.height, bx * 4 + px, by * 4 + py,
-                    colors[i][0], colors[i][1], colors[i][2], colors[i][3]);
+          StoreSwizzledRgba(rgba, fetch.width, fetch.height, bx * 4 + px,
+                            by * 4 + py,
+                            {colors[i][0], colors[i][1], colors[i][2],
+                             colors[i][3]},
+                            fetch.swizzle);
         }
       }
     }
@@ -2564,10 +2593,8 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
 
       if (fetch.format == 2) {
         const uint8_t value = fetch.payload_bytes[source_offset];
-        rgba[pixel * 4 + 0] = value;
-        rgba[pixel * 4 + 1] = value;
-        rgba[pixel * 4 + 2] = value;
-        rgba[pixel * 4 + 3] = value;
+        WriteSwizzledPixel(rgba, pixel, {value, value, value, value},
+                           fetch.swizzle);
         continue;
       } else if (fetch.format == 7 || fetch.format == 54) {
         const uint32_t word =
@@ -2577,10 +2604,12 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
         const uint32_t g = (word >> 10) & 0x3FFu;
         const uint32_t b = (word >> 20) & 0x3FFu;
         const uint32_t a = (word >> 30) & 0x3u;
-        rgba[pixel * 4 + 0] = static_cast<uint8_t>((r * 255u + 511u) / 1023u);
-        rgba[pixel * 4 + 1] = static_cast<uint8_t>((g * 255u + 511u) / 1023u);
-        rgba[pixel * 4 + 2] = static_cast<uint8_t>((b * 255u + 511u) / 1023u);
-        rgba[pixel * 4 + 3] = static_cast<uint8_t>((a * 255u + 1u) / 3u);
+        WriteSwizzledPixel(rgba, pixel,
+                           {static_cast<uint8_t>((r * 255u + 511u) / 1023u),
+                            static_cast<uint8_t>((g * 255u + 511u) / 1023u),
+                            static_cast<uint8_t>((b * 255u + 511u) / 1023u),
+                            static_cast<uint8_t>((a * 255u + 1u) / 3u)},
+                           fetch.swizzle);
         continue;
       } else if (fetch.format == 23) {
         const uint32_t word =
@@ -2591,10 +2620,10 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
         const uint8_t depth8 =
             static_cast<uint8_t>((depth24 * 255ull + 0x7FFFFFull) /
                                  0xFFFFFFull);
-        rgba[pixel * 4 + 0] = depth8;
-        rgba[pixel * 4 + 1] = depth8;
-        rgba[pixel * 4 + 2] = depth8;
-        rgba[pixel * 4 + 3] = static_cast<uint8_t>(stencil);
+        WriteSwizzledPixel(rgba, pixel,
+                           {depth8, depth8, depth8,
+                            static_cast<uint8_t>(stencil)},
+                           fetch.swizzle);
         continue;
       } else if (fetch.format == 26) {
         const uint16_t r = GpuSwap16(
@@ -2609,10 +2638,12 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
         const uint16_t a = GpuSwap16(
             LoadLittleEndian16(fetch.payload_bytes, source_offset + 6),
             fetch.endian);
-        rgba[pixel * 4 + 0] = static_cast<uint8_t>((r >> 8) & 0xFF);
-        rgba[pixel * 4 + 1] = static_cast<uint8_t>((g >> 8) & 0xFF);
-        rgba[pixel * 4 + 2] = static_cast<uint8_t>((b >> 8) & 0xFF);
-        rgba[pixel * 4 + 3] = static_cast<uint8_t>((a >> 8) & 0xFF);
+        WriteSwizzledPixel(rgba, pixel,
+                           {static_cast<uint8_t>((r >> 8) & 0xFF),
+                            static_cast<uint8_t>((g >> 8) & 0xFF),
+                            static_cast<uint8_t>((b >> 8) & 0xFF),
+                            static_cast<uint8_t>((a >> 8) & 0xFF)},
+                           fetch.swizzle);
         continue;
       } else if (fetch.format == 28) {
         const uint16_t r = GpuSwap16(
@@ -2621,10 +2652,9 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
         const uint16_t g = GpuSwap16(
             LoadLittleEndian16(fetch.payload_bytes, source_offset + 2),
             fetch.endian);
-        rgba[pixel * 4 + 0] = static_cast<uint8_t>((r >> 8) & 0xFF);
-        rgba[pixel * 4 + 1] = static_cast<uint8_t>((g >> 8) & 0xFF);
-        rgba[pixel * 4 + 2] = static_cast<uint8_t>((r >> 8) & 0xFF);
-        rgba[pixel * 4 + 3] = 255;
+        const uint8_t r8 = static_cast<uint8_t>((r >> 8) & 0xFF);
+        const uint8_t g8 = static_cast<uint8_t>((g >> 8) & 0xFF);
+        WriteSwizzledPixel(rgba, pixel, {r8, g8, r8, 255}, fetch.swizzle);
         continue;
       } else if (fetch.format == 38) {
         const uint32_t raw_r = GpuSwap32(
@@ -2643,19 +2673,23 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
         const float g = std::clamp(FloatFromBits(raw_g), 0.0f, 1.0f);
         const float b = std::clamp(FloatFromBits(raw_b), 0.0f, 1.0f);
         const float a = std::clamp(FloatFromBits(raw_a), 0.0f, 1.0f);
-        rgba[pixel * 4 + 0] = static_cast<uint8_t>(r * 255.0f);
-        rgba[pixel * 4 + 1] = static_cast<uint8_t>(g * 255.0f);
-        rgba[pixel * 4 + 2] = static_cast<uint8_t>(b * 255.0f);
-        rgba[pixel * 4 + 3] = static_cast<uint8_t>(a * 255.0f);
+        WriteSwizzledPixel(rgba, pixel,
+                           {static_cast<uint8_t>(r * 255.0f),
+                            static_cast<uint8_t>(g * 255.0f),
+                            static_cast<uint8_t>(b * 255.0f),
+                            static_cast<uint8_t>(a * 255.0f)},
+                           fetch.swizzle);
         continue;
       }
       const uint32_t word =
           GpuSwap32(LoadLittleEndian32(fetch.payload_bytes, source_offset),
                     fetch.endian);
-      rgba[pixel * 4 + 0] = static_cast<uint8_t>(word & 0xFF);
-      rgba[pixel * 4 + 1] = static_cast<uint8_t>((word >> 8) & 0xFF);
-      rgba[pixel * 4 + 2] = static_cast<uint8_t>((word >> 16) & 0xFF);
-      rgba[pixel * 4 + 3] = static_cast<uint8_t>((word >> 24) & 0xFF);
+      WriteSwizzledPixel(rgba, pixel,
+                         {static_cast<uint8_t>(word & 0xFF),
+                          static_cast<uint8_t>((word >> 8) & 0xFF),
+                          static_cast<uint8_t>((word >> 16) & 0xFF),
+                          static_cast<uint8_t>((word >> 24) & 0xFF)},
+                         fetch.swizzle);
     }
   }
   if (rgba.empty()) {
