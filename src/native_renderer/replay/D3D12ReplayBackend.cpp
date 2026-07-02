@@ -4642,7 +4642,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   }
 
   const ReplaySurfaceSize size = ChooseSurfaceSize(capture);
-  const D3D12LiveSubmitBinding *live_binding =
+  D3D12LiveSubmitBinding *live_binding =
       options.live_submit ? options.live_binding : nullptr;
   const bool live_submit =
       live_binding && live_binding->device && live_binding->command_list &&
@@ -5215,6 +5215,19 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   std::set<uint64_t> submitted_input_layouts;
   for (const UploadedRealDraw &uploaded : uploaded_draws) {
     submitted_input_layouts.insert(uploaded.prepared.input_layout_signature);
+  }
+  if (live_submit) {
+    live_binding->submitted_draws =
+        static_cast<uint64_t>(uploaded_draws.size());
+    live_binding->shader_pair_count =
+        static_cast<uint64_t>(submitted_pairs.size());
+    live_binding->pso_entries = static_cast<uint64_t>(pipelines->size());
+    live_binding->pso_cache_misses = static_cast<uint64_t>(pso_cache_misses);
+    live_binding->pso_cache_hits = static_cast<uint64_t>(pso_cache_hits);
+    live_binding->diagnostic_pipelines =
+        static_cast<uint64_t>(diagnostic_pipeline_count);
+    live_binding->input_layout_variants =
+        static_cast<uint64_t>(submitted_input_layouts.size());
   }
   std::cout << "D3D12 real replay PSO cache: entries=" << pipelines->size()
             << " misses=" << pso_cache_misses << " hits=" << pso_cache_hits

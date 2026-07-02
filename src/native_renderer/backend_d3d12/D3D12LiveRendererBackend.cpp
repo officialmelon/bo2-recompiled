@@ -5,15 +5,64 @@
 #include "../DebugRenderLog.h"
 
 namespace bo2::native {
+namespace {
+
+#if defined(_WIN32)
+LRESULT CALLBACK NativeD3D12WindowProc(HWND hwnd, UINT message, WPARAM wparam,
+                                       LPARAM lparam) {
+  return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
+BOOL CALLBACK FindProcessWindowProc(HWND hwnd, LPARAM lparam) {
+  DWORD window_pid = 0;
+  GetWindowThreadProcessId(hwnd, &window_pid);
+  if (window_pid != GetCurrentProcessId()) {
+    return TRUE;
+  }
+  if (!IsWindowVisible(hwnd)) {
+    return TRUE;
+  }
+  if (GetWindow(hwnd, GW_OWNER) != nullptr) {
+    return TRUE;
+  }
+  auto* out = reinterpret_cast<HWND*>(lparam);
+  *out = hwnd;
+  return FALSE;
+}
+
+HWND FindProcessWindowHandle() {
+  HWND found = nullptr;
+  EnumWindows(FindProcessWindowProc, reinterpret_cast<LPARAM>(&found));
+  return found;
+}
+
+std::wstring WidenAscii(std::string_view text) {
+  std::wstring wide;
+  wide.reserve(text.size());
+  for (char ch : text) {
+    wide.push_back(static_cast<wchar_t>(static_cast<unsigned char>(ch)));
+  }
+  return wide;
+}
+#endif
+
+}  // namespace
 
 bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
   verbose_ = config.verbose;
+  skip_unsupported_draws_ = config.skip_unsupported_draws;
+  allow_diagnostic_shader_ = config.allow_live_diagnostic_shader;
   app_name_ = config.app_name;
+  shader_cache_root_ = config.shader_cache_root;
+  shader_override_root_ = config.shader_override_root;
   last_error_.clear();
-  reported_live_render_gap_ = false;
   frame_stats_ = {};
   pending_stats_ = {};
+  last_submit_stats_ = {};
   in_frame_ = false;
+  submitted_frames_ = 0;
+  failed_frames_ = 0;
+  frame_pending_draws_ = 0;
 
 #if !defined(_WIN32)
   last_error_ = "native_d3d12 live backend requires Windows";
@@ -37,6 +86,14 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
   if (FAILED(hr)) {
     last_error_ = "CreateCommandQueue failed for native_d3d12 live backend";
     REXLOG_ERROR("BO2 native D3D12 command queue init failed hr={:#010x}",
+                 static_cast<uint32_t>(hr));
+    return false;
+  }
+
+  hr = CreateDXGIFactory1(IID_PPV_ARGS(&dxgi_factory_));
+  if (FAILED(hr)) {
+    last_error_ = "CreateDXGIFactory1 failed for native_d3d12 live backend";
+    REXLOG_ERROR("BO2 native D3D12 DXGI factory init failed hr={:#010x}",
                  static_cast<uint32_t>(hr));
     return false;
   }
@@ -81,6 +138,8 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
     return false;
   }
 
+  replay_session_ = replay::CreateD3D12LiveReplaySession();
+
   if (!capture_.Initialize(config)) {
     last_error_ = "failed to initialize native_d3d12 capture stream";
     return false;
@@ -88,8 +147,10 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
 
   REXLOG_INFO(
       "BO2 native D3D12 live backend initialized for {} "
-      "(strict mode: no diagnostic fallback)",
-      app_name_);
+      "(shader_cache={} skip_unsupported={} diagnostic_shader={})",
+      app_name_, shader_cache_root_.string(),
+      skip_unsupported_draws_ ? "yes" : "no",
+      allow_diagnostic_shader_ ? "yes" : "no");
   return true;
 #endif
 }
@@ -98,6 +159,19 @@ void D3D12LiveRendererBackend::Shutdown() {
   WaitForGpu();
   capture_.Shutdown();
 #if defined(_WIN32)
+  if (replay_session_) {
+    replay::DestroyD3D12LiveReplaySession(replay_session_);
+    replay_session_ = nullptr;
+  }
+  color_target_.Reset();
+  rtv_heap_.Reset();
+  swap_chain_.Reset();
+  dxgi_factory_.Reset();
+  if (owns_window_ && window_handle_) {
+    DestroyWindow(window_handle_);
+    window_handle_ = nullptr;
+    owns_window_ = false;
+  }
   if (fence_event_) {
     CloseHandle(fence_event_);
     fence_event_ = nullptr;
@@ -108,13 +182,17 @@ void D3D12LiveRendererBackend::Shutdown() {
   command_queue_.Reset();
   device_.Reset();
 #endif
-  REXLOG_INFO("BO2 native D3D12 live backend shutdown for {}", app_name_);
+  REXLOG_INFO("BO2 native D3D12 live backend shutdown for {} (submitted={} failed={})",
+              app_name_, submitted_frames_, failed_frames_);
 }
 
 void D3D12LiveRendererBackend::BeginFrame(uint64_t frame_index) {
   frame_stats_ = pending_stats_;
   pending_stats_ = {};
   in_frame_ = true;
+  frame_builder_.BeginFrame(frame_index);
+  frame_pending_draws_ = pending_frame_builder_.draw_count();
+  frame_builder_.AbsorbPending(pending_frame_builder_, frame_index);
   capture_.WriteBeginFrame(frame_index);
   BeginCommandFrame(frame_index);
   if (verbose_ && ShouldLogHighFrequencyEvent(frame_index)) {
@@ -137,6 +215,10 @@ void D3D12LiveRendererBackend::SubmitVdSwap(uint64_t frame_index,
 void D3D12LiveRendererBackend::SubmitCommandBufferSnapshot(
     uint64_t frame_index, const CommandBufferSnapshot &snapshot) {
   capture_.WriteCommandBufferSnapshot(frame_index, snapshot);
+  if (snapshot.width > 0 && snapshot.height > 0) {
+    frame_width_ = snapshot.width;
+    frame_height_ = snapshot.height;
+  }
 }
 
 void D3D12LiveRendererBackend::SubmitDrawPacketCandidate(
@@ -157,18 +239,20 @@ void D3D12LiveRendererBackend::SubmitPM4Packet(const PM4PacketInfo &packet) {
 void D3D12LiveRendererBackend::SubmitPM4Draw(const PM4DrawInfo &draw) {
   ++ActiveStats().draws;
   capture_.WritePM4Draw(draw);
-  SetUnsupportedLiveRenderErrorOnce();
+  ActiveFrameBuilder().AddDraw(draw, draw.event_index);
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Shader(const PM4ShaderInfo &shader) {
   ++ActiveStats().shaders;
   capture_.WritePM4Shader(shader);
+  ActiveFrameBuilder().BindShader(shader, shader.event_index);
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Constants(
     const PM4ConstantInfo &constants) {
   ++ActiveStats().constants;
   capture_.WritePM4Constants(constants);
+  ActiveFrameBuilder().BindConstants(constants, constants.event_index);
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Swap(const PM4SwapInfo &swap) {
@@ -183,35 +267,279 @@ void D3D12LiveRendererBackend::SubmitRenderCommand(
 
 void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
   capture_.WriteEndFrame(frame_index);
+
+  const uint64_t frame_draws = frame_builder_.draw_count();
+  last_submit_stats_ = {};
+  bool attempted_submit = frame_draws > 0;
+  bool submit_success = false;
+  if (attempted_submit) {
+    last_error_.clear();
+    if (!SubmitLiveFrame(frame_index)) {
+      ++failed_frames_;
+      if (verbose_) {
+        REXLOG_WARN("BO2 native D3D12 live frame {} submit failed: {}",
+                    frame_index, last_error_);
+      }
+    } else {
+      ++submitted_frames_;
+      submit_success = true;
+    }
+  }
+  capture_.WriteLiveD3D12Submit(frame_index, frame_pending_draws_, frame_draws,
+                                attempted_submit, submit_success,
+                                submitted_frames_, failed_frames_,
+                                last_submit_stats_.submitted_draws,
+                                last_submit_stats_.shader_pair_count,
+                                last_submit_stats_.pso_entries,
+                                last_submit_stats_.diagnostic_pipelines,
+                                last_submit_stats_.input_layout_variants,
+                                last_error_);
+
   EndCommandFrame(frame_index);
-  if (!verbose_ && !reported_live_render_gap_) {
-    in_frame_ = false;
-    return;
-  }
 
-  if (ShouldLogHighFrequencyEvent(frame_index) || !reported_live_render_gap_) {
-    REXLOG_WARN(
-        "BO2 native D3D12 frame {} captured packets={} draws={} shaders={} "
-        "constants={} swaps={} but live draw submission is still fail-closed "
-        "until replay translation is factored into the live path",
+#if defined(_WIN32)
+  if (swapchain_ready_ && swap_chain_) {
+    swap_chain_->Present(1, 0);
+    PumpNativeWindowMessages();
+  }
+#endif
+
+  if (verbose_ && ShouldLogHighFrequencyEvent(frame_index)) {
+    REXLOG_INFO(
+        "BO2 native D3D12 frame {} end packets={} draws={} shaders={} "
+        "constants={} swaps={} submitted_frames={} failed_frames={}",
         frame_index, frame_stats_.packets, frame_stats_.draws,
-        frame_stats_.shaders, frame_stats_.constants, frame_stats_.swaps);
+        frame_stats_.shaders, frame_stats_.constants, frame_stats_.swaps,
+        submitted_frames_, failed_frames_);
   }
-  reported_live_render_gap_ = true;
   in_frame_ = false;
-}
-
-void D3D12LiveRendererBackend::SetUnsupportedLiveRenderErrorOnce() {
-  if (!last_error_.empty()) {
-    return;
-  }
-  last_error_ =
-      "native_d3d12 live draw submission is not implemented yet; offline "
-      "D3D12 replay remains the authoritative real renderer path";
 }
 
 D3D12LiveRendererBackend::FrameStats &D3D12LiveRendererBackend::ActiveStats() {
   return in_frame_ ? frame_stats_ : pending_stats_;
+}
+
+D3D12LiveFrameBuilder &D3D12LiveRendererBackend::ActiveFrameBuilder() {
+  return in_frame_ ? frame_builder_ : pending_frame_builder_;
+}
+
+replay::ReplayCliOptions D3D12LiveRendererBackend::BuildReplayOptions() const {
+  replay::ReplayCliOptions options{};
+  options.shader_cache_root = shader_cache_root_;
+  options.shader_override_root = shader_override_root_;
+  options.skip_unsupported = skip_unsupported_draws_;
+  options.allow_diagnostic_shader = allow_diagnostic_shader_;
+  options.frame_index = 0;
+  return options;
+}
+
+bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
+#if !defined(_WIN32)
+  (void)frame_index;
+  return false;
+#else
+  const uint32_t width = std::max<uint32_t>(frame_width_, 64u);
+  const uint32_t height = std::max<uint32_t>(frame_height_, 64u);
+  if (!EnsureSwapChain(width, height)) {
+    return false;
+  }
+
+  std::string replay_error;
+  if (!RefreshSwapChainBackBuffer(replay_error)) {
+    last_error_ = replay_error;
+    return false;
+  }
+
+  replay::D3D12LiveSubmitBinding binding{};
+  binding.device = device_.Get();
+  binding.queue = command_queue_.Get();
+  binding.command_list = command_list_.Get();
+  binding.color_target = color_target_.Get();
+  binding.rtv_heap = rtv_heap_.Get();
+  binding.rtv_descriptor_index = swap_chain_->GetCurrentBackBufferIndex();
+  binding.width = width;
+  binding.height = height;
+  binding.session = replay_session_;
+
+  const replay::ReplayCapture capture = frame_builder_.BuildCapture(frame_index);
+  if (!replay::RunD3D12LiveFrameBackend(capture, BuildReplayOptions(), binding,
+                                        replay_error)) {
+    last_error_ = replay_error.empty()
+                      ? "RunD3D12LiveFrameBackend failed without details"
+                      : replay_error;
+    return false;
+  }
+  last_submit_stats_.submitted_draws = binding.submitted_draws;
+  last_submit_stats_.shader_pair_count = binding.shader_pair_count;
+  last_submit_stats_.pso_entries = binding.pso_entries;
+  last_submit_stats_.diagnostic_pipelines = binding.diagnostic_pipelines;
+  last_submit_stats_.input_layout_variants = binding.input_layout_variants;
+  if (verbose_ || submitted_frames_ < 5 || ShouldLogHighFrequencyEvent(frame_index)) {
+    REXLOG_INFO(
+        "BO2 native D3D12 live frame {} submitted real_draws={} "
+        "shader_pairs={} pso_entries={} diagnostic_pipelines={} "
+        "input_layout_variants={}",
+        frame_index, binding.submitted_draws, binding.shader_pair_count,
+        binding.pso_entries, binding.diagnostic_pipelines,
+        binding.input_layout_variants);
+  }
+  return true;
+#endif
+}
+
+bool D3D12LiveRendererBackend::EnsureSwapChain(uint32_t width,
+                                               uint32_t height) {
+#if !defined(_WIN32)
+  (void)width;
+  (void)height;
+  return false;
+#else
+  if (!EnsureNativeWindow(width, height)) {
+    return false;
+  }
+
+  if (swapchain_ready_ && swap_width_ == width && swap_height_ == height) {
+    return true;
+  }
+
+  if (swap_chain_) {
+    WaitForGpu();
+    swap_chain_.Reset();
+    rtv_heap_.Reset();
+    color_target_.Reset();
+  }
+
+  DXGI_SWAP_CHAIN_DESC1 desc{};
+  desc.Width = width;
+  desc.Height = height;
+  desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  desc.SampleDesc.Count = 1;
+  desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+  desc.BufferCount = 2;
+  desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+  desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+  desc.Scaling = DXGI_SCALING_STRETCH;
+
+  Microsoft::WRL::ComPtr<IDXGISwapChain1> swap_chain1;
+  HRESULT hr = dxgi_factory_->CreateSwapChainForHwnd(
+      command_queue_.Get(), window_handle_, &desc, nullptr, nullptr,
+      &swap_chain1);
+  if (FAILED(hr)) {
+    last_error_ = "CreateSwapChainForHwnd failed for native_d3d12 live backend hr=" +
+                  std::to_string(static_cast<uint32_t>(hr));
+    REXLOG_ERROR("BO2 native D3D12 swapchain create failed hr={:#010x}",
+                 static_cast<uint32_t>(hr));
+    return false;
+  }
+  hr = swap_chain1.As(&swap_chain_);
+  if (FAILED(hr)) {
+    last_error_ = "IDXGISwapChain1::As(IDXGISwapChain3) failed";
+    return false;
+  }
+
+  dxgi_factory_->MakeWindowAssociation(window_handle_,
+                                       DXGI_MWA_NO_ALT_ENTER);
+
+  D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc{};
+  rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+  rtv_heap_desc.NumDescriptors = desc.BufferCount;
+  hr = device_->CreateDescriptorHeap(&rtv_heap_desc, IID_PPV_ARGS(&rtv_heap_));
+  if (FAILED(hr)) {
+    last_error_ = "CreateDescriptorHeap(RTV) failed for native_d3d12 swapchain";
+    return false;
+  }
+
+  swap_width_ = width;
+  swap_height_ = height;
+  swapchain_ready_ = true;
+  return true;
+#endif
+}
+
+bool D3D12LiveRendererBackend::EnsureNativeWindow(uint32_t width,
+                                                  uint32_t height) {
+#if !defined(_WIN32)
+  (void)width;
+  (void)height;
+  return false;
+#else
+  if (window_handle_) {
+    return true;
+  }
+
+  const HINSTANCE instance = GetModuleHandleW(nullptr);
+  constexpr const wchar_t *kClassName = L"BO2NativeD3D12RenderWindow";
+  WNDCLASSEXW wc{};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = NativeD3D12WindowProc;
+  wc.hInstance = instance;
+  wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+  wc.lpszClassName = kClassName;
+  RegisterClassExW(&wc);
+
+  RECT rect{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+  AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+  std::wstring title = L"BO2 Native D3D12";
+  if (!app_name_.empty()) {
+    title += L" - ";
+    title += WidenAscii(app_name_);
+  }
+  window_handle_ = CreateWindowExW(
+      0, kClassName, title.c_str(), WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+      CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left,
+      rect.bottom - rect.top, nullptr, nullptr, instance, nullptr);
+  if (!window_handle_) {
+    last_error_ = "CreateWindowExW failed for native_d3d12 render window";
+    return false;
+  }
+  owns_window_ = true;
+  ShowWindow(window_handle_, SW_SHOW);
+  UpdateWindow(window_handle_);
+  PumpNativeWindowMessages();
+  return true;
+#endif
+}
+
+bool D3D12LiveRendererBackend::RefreshSwapChainBackBuffer(std::string &error) {
+#if !defined(_WIN32)
+  (void)error;
+  return false;
+#else
+  if (!swap_chain_ || !rtv_heap_) {
+    error = "swapchain not ready for native_d3d12 back buffer refresh";
+    return false;
+  }
+
+  const UINT back_buffer_index = swap_chain_->GetCurrentBackBufferIndex();
+  color_target_.Reset();
+  HRESULT hr =
+      swap_chain_->GetBuffer(back_buffer_index, IID_PPV_ARGS(&color_target_));
+  if (FAILED(hr)) {
+    error = "IDXGISwapChain3::GetBuffer failed for native_d3d12 live backend";
+    return false;
+  }
+
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv =
+      rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+  const UINT rtv_descriptor_size =
+      device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+  rtv.ptr += static_cast<SIZE_T>(back_buffer_index) * rtv_descriptor_size;
+  device_->CreateRenderTargetView(color_target_.Get(), nullptr, rtv);
+  return true;
+#endif
+}
+
+void D3D12LiveRendererBackend::PumpNativeWindowMessages() {
+#if defined(_WIN32)
+  if (!owns_window_ || !window_handle_) {
+    return;
+  }
+  MSG msg{};
+  while (PeekMessageW(&msg, window_handle_, 0, 0, PM_REMOVE)) {
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
+#endif
 }
 
 bool D3D12LiveRendererBackend::BeginCommandFrame(uint64_t frame_index) {

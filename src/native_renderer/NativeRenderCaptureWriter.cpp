@@ -19,6 +19,8 @@ namespace bo2::native {
 
 namespace {
 
+constexpr uint32_t kInlineVertexPayloadLimit = 4096;
+
 std::string EscapeJson(std::string_view value) {
   std::string out;
   out.reserve(value.size() + 8);
@@ -671,9 +673,22 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
     fetch_bool("payload_missing", fetch.payload_missing);
     const uint32_t payload_count = std::min<uint32_t>(
         fetch.payload_byte_count, fetch.payload_bytes.size());
+    std::string payload_resource_path;
+    const bool payload_sidecar =
+        payload_count > kInlineVertexPayloadLimit &&
+        WriteBinaryResource("vertex_payload", fetch.payload_bytes.data(),
+                            payload_count, payload_resource_path);
+    if (payload_sidecar) {
+      fetch_u64("payload_resource_byte_count", payload_count);
+      fetch_prefix();
+      file_ << "\"payload_resource_path\":\""
+            << EscapeJson(payload_resource_path) << '"';
+    }
     fetch_prefix();
     file_ << "\"payload_bytes\":[";
-    for (uint32_t j = 0; j < payload_count; ++j) {
+    const uint32_t inline_payload_count =
+        payload_sidecar ? 0 : payload_count;
+    for (uint32_t j = 0; j < inline_payload_count; ++j) {
       if (j) {
         file_ << ',';
       }
@@ -1085,6 +1100,35 @@ void NativeRenderCaptureWriter::WriteRenderCommand(
   WriteU64Field("arg1", command.arg1);
   WriteU64Field("arg2", command.arg2);
   WriteU64Field("arg3", command.arg3);
+  EndEvent();
+}
+
+void NativeRenderCaptureWriter::WriteLiveD3D12Submit(
+    uint64_t frame_index, uint64_t pending_draws, uint64_t frame_draws,
+    bool attempted, bool success, uint64_t submitted_frames,
+    uint64_t failed_frames, uint64_t submitted_draws,
+    uint64_t shader_pair_count, uint64_t pso_entries,
+    uint64_t diagnostic_pipelines, uint64_t input_layout_variants,
+    std::string_view error) {
+  std::scoped_lock lock(mutex_);
+  if (!BeginEvent("live_d3d12_submit")) {
+    return;
+  }
+  WriteU64Field("frame", frame_index);
+  WriteU64Field("pending_draws", pending_draws);
+  WriteU64Field("frame_draws", frame_draws);
+  WriteBoolField("attempted", attempted);
+  WriteBoolField("success", success);
+  WriteU64Field("submitted_frames", submitted_frames);
+  WriteU64Field("failed_frames", failed_frames);
+  WriteU64Field("submitted_draws", submitted_draws);
+  WriteU64Field("shader_pair_count", shader_pair_count);
+  WriteU64Field("pso_entries", pso_entries);
+  WriteU64Field("diagnostic_pipelines", diagnostic_pipelines);
+  WriteU64Field("input_layout_variants", input_layout_variants);
+  if (!error.empty()) {
+    WriteStringField("error", error);
+  }
   EndEvent();
 }
 

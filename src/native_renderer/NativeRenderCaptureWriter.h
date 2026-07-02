@@ -33,6 +33,15 @@ class NativeRenderCaptureWriter {
   void WritePM4Constants(const PM4ConstantInfo& constants);
   void WritePM4Swap(const PM4SwapInfo& swap);
   void WriteRenderCommand(const RenderCommand& command);
+  void WriteLiveD3D12Submit(uint64_t frame_index, uint64_t pending_draws,
+                            uint64_t frame_draws, bool attempted,
+                            bool success, uint64_t submitted_frames,
+                            uint64_t failed_frames, uint64_t submitted_draws,
+                            uint64_t shader_pair_count,
+                            uint64_t pso_entries,
+                            uint64_t diagnostic_pipelines,
+                            uint64_t input_layout_variants,
+                            std::string_view error);
 
  private:
   bool BeginEvent(std::string_view type);
