@@ -859,6 +859,59 @@ uint32_t GuestColorBaseForDraw(const ReplayDrawState &state) {
 
 uint32_t ChoosePresentedGuestColorBase(
     const std::vector<PreparedRealDraw> &draws, const ReplayCapture &capture) {
+  struct BaseScore {
+    std::size_t scene_draws = 0;
+    std::size_t total_draws = 0;
+    std::size_t depth_base_matches = 0;
+    std::size_t last_draw_index = 0;
+  };
+
+  std::map<uint32_t, BaseScore> scores;
+  std::set<uint32_t> non_depth_bases;
+  for (auto it = draws.rbegin(); it != draws.rend(); ++it) {
+    if (it->draw_index >= capture.draws.size()) {
+      continue;
+    }
+    const ReplayDrawState &state = capture.draws[it->draw_index];
+    const uint32_t base = GuestColorBaseForDraw(state);
+    if (base == 0) {
+      continue;
+    }
+    BaseScore &score = scores[base];
+    ++score.total_draws;
+    score.last_draw_index = std::max<std::size_t>(score.last_draw_index,
+                                                  it->draw_index);
+    if (state.draw.render_state.present &&
+        state.draw.render_state.depth_base == base) {
+      ++score.depth_base_matches;
+    } else {
+      non_depth_bases.insert(base);
+    }
+    if (!it->force_depth_only_color_mask) {
+      ++score.scene_draws;
+    }
+  }
+
+  uint32_t best_base = 0;
+  BaseScore best_score{};
+  for (const auto &[base, score] : scores) {
+    if (!non_depth_bases.empty() && !non_depth_bases.contains(base)) {
+      continue;
+    }
+    if (best_base == 0 || score.scene_draws > best_score.scene_draws ||
+        (score.scene_draws == best_score.scene_draws &&
+         score.total_draws > best_score.total_draws) ||
+        (score.scene_draws == best_score.scene_draws &&
+         score.total_draws == best_score.total_draws &&
+         score.last_draw_index > best_score.last_draw_index)) {
+      best_base = base;
+      best_score = score;
+    }
+  }
+  if (best_base != 0) {
+    return best_base;
+  }
+
   for (auto it = draws.rbegin(); it != draws.rend(); ++it) {
     if (it->draw_index >= capture.draws.size()) {
       continue;

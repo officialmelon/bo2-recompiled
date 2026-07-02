@@ -1897,11 +1897,23 @@ max_scene_draws=25
 diagnostic_pipelines_sum=0
 ```
 
-Known caveat from the same run: whole-capture offline replay of MP020 selected
-a final guest color base that read back black (`nonzero=0`). MP019 remains the
-reliable post-fix visual regression artifact. This target-selection issue is
-separate from the live submit telemetry and needs follow-up in the replay
-present/frontbuffer selection logic.
+Follow-up target-selection fix: whole-capture offline replay of MP020 initially
+selected a late depth/utility-like guest color base (`0x260`) and read back
+black (`nonzero=0`). The D3D12 replay target chooser now scores submitted draw
+color bases and prefers the dominant scene-candidate target while excluding
+depth-base matches when a better color target exists.
+
+Post-fix MP020 replay:
+
+```text
+D3D12 real replay submitted 278 supported draw(s) across 9 shader pair(s)
+D3D12 real replay draw classes: scene_candidate=199 depth_only=63 utility=16
+D3D12 real replay offline render targets: count=3 presented_guest_color_base=0x530
+D3D12 real replay color readback: bytes=3686400 nonzero=3685950
+```
+
+Output:
+`C:\Users\braxt\bo2-recompiled\native-renderer-mp020-target-select-fix.bmp`.
 
 Remaining live issues:
 
@@ -1910,7 +1922,5 @@ Remaining live issues:
 * Live present scheduling still alternates presentable buckets with
   non-presented utility/noop buckets. The accumulated target reduces black
   flip-discard loss, but this is not a full command-stream scheduler.
-* The replay target-selection logic can still choose a black final target for
-  some captures, as seen with MP020.
 * Several shader effects are still manual approximations, especially the
   multi-texture background/effect pairs.
