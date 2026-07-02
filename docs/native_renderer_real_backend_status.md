@@ -1700,3 +1700,89 @@ Remaining issues visible from these counters:
 * The renderer still needs real mip payload upload, better sampler LOD
   handling, and fewer fallback descriptors before live output can be called
   complete.
+
+## 2026-07-02 live accumulated color target
+
+User-observed live failure after the present gate: different parts of the
+same image flickered independently. Examples included the background going
+black while text remained visible, or the top-right version text disappearing
+while other UI stayed visible. This showed that live `native_d3d12` was still
+presenting partial render buckets directly into DXGI flip-discard backbuffers.
+Because a flip-discard backbuffer does not preserve previous contents, any
+bucket missing the background/UI subpass could present black or stale regions.
+
+The live D3D12 replay path now owns a persistent session color target:
+
+* successful native draw batches execute even if they are not presentable
+* draw batches render into the persistent accumulated target, not directly
+  into the swapchain backbuffer
+* non-presentable partial buckets are not copied to the swapchain
+* presentable buckets copy the accumulated target to the current swapchain
+  backbuffer and then present
+* `live_d3d12_submit` now records draw classes:
+  `scene_candidate_draws`, `depth_only_draws`, `utility_draws`,
+  and `presentable_frame`
+
+This is still a partial live renderer. It is a stability fix for partial
+frame flicker, not a claim that the native renderer is complete.
+
+Build validation:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default_mp\out\build\win-clang-msvc-amd64-relwithdebinfo-msvctarget"" -j12 default_mp.exe"
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 native_render_replay default.exe"
+```
+
+Both builds exited `0`.
+
+Fresh live MP capture:
+
+```powershell
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_019\events.jsonl --native_renderer_capture_limit 6500 --native_renderer_capture_flush_interval 64 --native_renderer_verbose true --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+The process stayed alive until the `120s` guard stopped it. Validation:
+
+```text
+Validation OK: 6500 events, 25 frames, 1317 draws
+```
+
+Aggregated live-submit counters:
+
+```text
+live_submit_events=24
+attempted=23
+success=23
+failed=0
+noop_utility_frames=11
+presentable=6
+presented=6
+not_presented=18
+total_submitted_draws=111
+total_scene_draws=73
+total_depth_draws=30
+total_utility_draws=8
+diagnostic_pipelines_sum=0
+```
+
+Offline replay of the same capture:
+
+```text
+D3D12 real replay submitted 232 supported draw(s) across 8 shader pair(s)
+D3D12 real replay bound 282 captured texture SRV(s), 1574 fallback texture SRV(s)
+D3D12 real replay draw classes: scene_candidate=159 depth_only=58 utility=15
+D3D12 real replay color readback: bytes=3686400 nonzero=3685950
+```
+
+Output:
+`C:\Users\braxt\bo2-recompiled\native-renderer-live-mp019-accumulation-regression.bmp`.
+
+Remaining live issues:
+
+* The live renderer still submits only a subset of the game command stream per
+  bucket, so a true full-frame scheduler/compositor is still needed.
+* Texture quality/weirdness remains unresolved. The generated mip experiment
+  was not kept because it did not address the reported issue and would add
+  CPU work to live replay.
+* The native renderer still relies on many fallback texture/sampler slots, and
+  several shader/material semantics are still manually approximated.

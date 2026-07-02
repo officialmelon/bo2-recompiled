@@ -4298,6 +4298,12 @@ struct D3D12LiveReplaySessionStorage {
   std::vector<UploadedRealDraw> retained_draw_resources;
   ComPtr<ID3D12DescriptorHeap> retained_srv_heap;
   ComPtr<ID3D12DescriptorHeap> retained_sampler_heap;
+  ComPtr<ID3D12Resource> color_accum_target;
+  ComPtr<ID3D12DescriptorHeap> color_accum_rtv_heap;
+  D3D12_CPU_DESCRIPTOR_HANDLE color_accum_rtv{};
+  uint32_t color_accum_width = 0;
+  uint32_t color_accum_height = 0;
+  bool color_accum_ready = false;
   ComPtr<ID3D12Resource> depth_target;
   ComPtr<ID3D12DescriptorHeap> dsv_heap;
   D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
@@ -4810,13 +4816,66 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   clear_value.Color[2] = 0.022f;
   clear_value.Color[3] = 1.0f;
   if (live_submit) {
-    target = live_binding->color_target;
-    rtv_heap = live_binding->rtv_heap;
-    const UINT rtv_descriptor_size =
-        device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    rtv = rtv_heap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += static_cast<SIZE_T>(live_binding->rtv_descriptor_index) *
-               rtv_descriptor_size;
+    if (!live_session) {
+      error = "native D3D12 live replay requires a live session for "
+              "persistent color accumulation";
+      return false;
+    }
+    if (!live_session->color_accum_ready ||
+        live_session->color_accum_width != width ||
+        live_session->color_accum_height != height) {
+      D3D12_RESOURCE_DESC texture_desc{};
+      texture_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+      texture_desc.Width = width;
+      texture_desc.Height = height;
+      texture_desc.DepthOrArraySize = 1;
+      texture_desc.MipLevels = 1;
+      texture_desc.Format = format;
+      texture_desc.SampleDesc.Count = 1;
+      texture_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+      texture_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+      D3D12_HEAP_PROPERTIES default_heap{};
+      default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+      default_heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+      default_heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+      default_heap.CreationNodeMask = 1;
+      default_heap.VisibleNodeMask = 1;
+
+      if (!CheckHr(device->CreateCommittedResource(
+                       &default_heap, D3D12_HEAP_FLAG_NONE, &texture_desc,
+                       D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
+                       IID_PPV_ARGS(&live_session->color_accum_target)),
+                   "ID3D12Device::CreateCommittedResource(live accumulated "
+                   "color target)",
+                   error)) {
+        return false;
+      }
+
+      D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc{};
+      rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+      rtv_heap_desc.NumDescriptors = 1;
+      if (!CheckHr(device->CreateDescriptorHeap(
+                       &rtv_heap_desc,
+                       IID_PPV_ARGS(&live_session->color_accum_rtv_heap)),
+                   "ID3D12Device::CreateDescriptorHeap(live accumulated RTV)",
+                   error)) {
+        return false;
+      }
+      live_session->color_accum_rtv =
+          live_session->color_accum_rtv_heap->GetCPUDescriptorHandleForHeapStart();
+      device->CreateRenderTargetView(live_session->color_accum_target.Get(),
+                                     nullptr,
+                                     live_session->color_accum_rtv);
+      live_session->color_accum_width = width;
+      live_session->color_accum_height = height;
+      live_session->color_accum_ready = true;
+      list->ClearRenderTargetView(live_session->color_accum_rtv,
+                                  clear_value.Color, 0, nullptr);
+    }
+    target = live_session->color_accum_target;
+    rtv_heap = live_session->color_accum_rtv_heap;
+    rtv = live_session->color_accum_rtv;
   } else {
     D3D12ReplayRenderTarget *presented_target = nullptr;
     if (!CreateReplayRenderTarget(device.Get(), offline_render_targets,
@@ -5313,8 +5372,21 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
               << "\n";
   }
   std::set<uint64_t> submitted_input_layouts;
+  std::size_t scene_candidate_draws = 0;
+  std::size_t depth_only_draws = 0;
+  std::size_t utility_draws = 0;
   for (const UploadedRealDraw &uploaded : uploaded_draws) {
     submitted_input_layouts.insert(uploaded.prepared.input_layout_signature);
+    const ReplayDrawState &state = capture.draws[uploaded.prepared.draw_index];
+    if (uploaded.prepared.force_depth_only_color_mask) {
+      ++depth_only_draws;
+    } else if (IsAb1eA4ZeroColorFillDraw(
+                   state, uploaded.prepared.vertices,
+                   uploaded.prepared.input_layout_mask)) {
+      ++utility_draws;
+    } else {
+      ++scene_candidate_draws;
+    }
   }
   if (live_submit) {
     live_binding->submitted_draws =
@@ -5328,6 +5400,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         static_cast<uint64_t>(diagnostic_pipeline_count);
     live_binding->input_layout_variants =
         static_cast<uint64_t>(submitted_input_layouts.size());
+    live_binding->scene_candidate_draws =
+        static_cast<uint64_t>(scene_candidate_draws);
+    live_binding->depth_only_draws = static_cast<uint64_t>(depth_only_draws);
+    live_binding->utility_draws = static_cast<uint64_t>(utility_draws);
+    live_binding->presentable_frame = scene_candidate_draws >= 6;
   }
   std::cout << "D3D12 real replay PSO cache: entries=" << pipelines->size()
             << " misses=" << pso_cache_misses << " hits=" << pso_cache_hits
@@ -5347,6 +5424,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
             << exact_sampler_clamp_count
             << ", clamp_addressing_fallbacks="
             << fallback_sampler_clamp_count << "\n";
+  std::cout << "D3D12 real replay draw classes: scene_candidate="
+            << scene_candidate_draws << " depth_only=" << depth_only_draws
+            << " utility=" << utility_draws << "\n";
   std::size_t depth_enabled_draws = 0;
   std::size_t depth_write_draws = 0;
   std::size_t stencil_enabled_draws = 0;
@@ -5413,17 +5493,6 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   D3D12_RECT scissor =
       ScissorRectFromRenderState(first_pipeline_render_state, width, height);
 
-  if (live_submit) {
-    D3D12_RESOURCE_BARRIER to_render_target{};
-    to_render_target.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    to_render_target.Transition.pResource = target.Get();
-    to_render_target.Transition.Subresource =
-        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    to_render_target.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    to_render_target.Transition.StateAfter =
-        D3D12_RESOURCE_STATE_RENDER_TARGET;
-    list->ResourceBarrier(1, &to_render_target);
-  }
   bool seeded_color_target = false;
   ComPtr<ID3D12Resource> captured_color_target_upload;
   std::string captured_color_target_reason;
@@ -5455,7 +5524,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
                 << captured_color_target_reason << "\n";
     }
   }
-  if (!seeded_color_target) {
+  if (!seeded_color_target && !live_submit) {
     list->ClearRenderTargetView(rtv, clear_value.Color, 0, nullptr);
   }
   if (!live_submit) {
@@ -5571,15 +5640,44 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   }
 
   if (live_submit) {
-    D3D12_RESOURCE_BARRIER present_barrier{};
-    present_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    present_barrier.Transition.pResource = target.Get();
-    present_barrier.Transition.Subresource =
-        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    present_barrier.Transition.StateBefore =
-        D3D12_RESOURCE_STATE_RENDER_TARGET;
-    present_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    list->ResourceBarrier(1, &present_barrier);
+    if (live_binding->presentable_frame) {
+      D3D12_RESOURCE_BARRIER copy_barriers[2]{};
+      copy_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      copy_barriers[0].Transition.pResource = target.Get();
+      copy_barriers[0].Transition.Subresource =
+          D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      copy_barriers[0].Transition.StateBefore =
+          D3D12_RESOURCE_STATE_RENDER_TARGET;
+      copy_barriers[0].Transition.StateAfter =
+          D3D12_RESOURCE_STATE_COPY_SOURCE;
+      copy_barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      copy_barriers[1].Transition.pResource = live_binding->color_target;
+      copy_barriers[1].Transition.Subresource =
+          D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      copy_barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+      copy_barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+      list->ResourceBarrier(2, copy_barriers);
+
+      list->CopyResource(live_binding->color_target, target.Get());
+
+      D3D12_RESOURCE_BARRIER restore_barriers[2]{};
+      restore_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      restore_barriers[0].Transition.pResource = target.Get();
+      restore_barriers[0].Transition.Subresource =
+          D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      restore_barriers[0].Transition.StateBefore =
+          D3D12_RESOURCE_STATE_COPY_SOURCE;
+      restore_barriers[0].Transition.StateAfter =
+          D3D12_RESOURCE_STATE_RENDER_TARGET;
+      restore_barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      restore_barriers[1].Transition.pResource = live_binding->color_target;
+      restore_barriers[1].Transition.Subresource =
+          D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      restore_barriers[1].Transition.StateBefore =
+          D3D12_RESOURCE_STATE_COPY_DEST;
+      restore_barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+      list->ResourceBarrier(2, restore_barriers);
+    }
     if (live_session) {
       live_session->retained_draw_resources = std::move(uploaded_draws);
       live_session->retained_srv_heap = srv_heap;

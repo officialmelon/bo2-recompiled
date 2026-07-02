@@ -41,6 +41,10 @@ class NativeRenderCaptureWriter {
                             uint64_t pso_entries,
                             uint64_t diagnostic_pipelines,
                             uint64_t input_layout_variants,
+                            uint64_t scene_candidate_draws,
+                            uint64_t depth_only_draws,
+                            uint64_t utility_draws,
+                            bool presentable_frame,
                             bool noop_utility_frame, bool presented,
                             std::string_view error);
 

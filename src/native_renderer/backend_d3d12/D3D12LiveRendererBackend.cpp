@@ -285,8 +285,10 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
       submit_success = true;
     }
   }
-  const bool present_native_frame =
+  const bool execute_native_frame =
       submit_success && last_submit_stats_.submitted_draws > 0;
+  const bool present_native_frame =
+      submit_success && last_submit_stats_.presentable_frame;
   capture_.WriteLiveD3D12Submit(frame_index, frame_pending_draws_, frame_draws,
                                 attempted_submit, submit_success,
                                 submitted_frames_, failed_frames_,
@@ -295,11 +297,15 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
                                 last_submit_stats_.pso_entries,
                                 last_submit_stats_.diagnostic_pipelines,
                                 last_submit_stats_.input_layout_variants,
+                                last_submit_stats_.scene_candidate_draws,
+                                last_submit_stats_.depth_only_draws,
+                                last_submit_stats_.utility_draws,
+                                last_submit_stats_.presentable_frame,
                                 last_submit_stats_.noop_utility_frame,
                                 present_native_frame,
                                 last_error_);
 
-  EndCommandFrame(frame_index, present_native_frame);
+  EndCommandFrame(frame_index, execute_native_frame);
 
 #if defined(_WIN32)
   if (swapchain_ready_ && swap_chain_) {
@@ -380,15 +386,22 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
   last_submit_stats_.pso_entries = binding.pso_entries;
   last_submit_stats_.diagnostic_pipelines = binding.diagnostic_pipelines;
   last_submit_stats_.input_layout_variants = binding.input_layout_variants;
+  last_submit_stats_.scene_candidate_draws = binding.scene_candidate_draws;
+  last_submit_stats_.depth_only_draws = binding.depth_only_draws;
+  last_submit_stats_.utility_draws = binding.utility_draws;
+  last_submit_stats_.presentable_frame = binding.presentable_frame;
   last_submit_stats_.noop_utility_frame = binding.noop_utility_frame;
   if (verbose_ || submitted_frames_ < 5 || ShouldLogHighFrequencyEvent(frame_index)) {
     REXLOG_INFO(
         "BO2 native D3D12 live frame {} submitted real_draws={} "
         "shader_pairs={} pso_entries={} diagnostic_pipelines={} "
-        "input_layout_variants={} noop_utility_frame={}",
+        "input_layout_variants={} scene_draws={} depth_only_draws={} "
+        "utility_draws={} presentable_frame={} noop_utility_frame={}",
         frame_index, binding.submitted_draws, binding.shader_pair_count,
         binding.pso_entries, binding.diagnostic_pipelines,
-        binding.input_layout_variants,
+        binding.input_layout_variants, binding.scene_candidate_draws,
+        binding.depth_only_draws, binding.utility_draws,
+        binding.presentable_frame ? "yes" : "no",
         binding.noop_utility_frame ? "yes" : "no");
   }
   return true;
