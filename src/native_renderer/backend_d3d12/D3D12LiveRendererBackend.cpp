@@ -286,9 +286,11 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
     }
   }
   const bool execute_native_frame =
-      submit_success && last_submit_stats_.submitted_draws > 0;
+      submit_success && (last_submit_stats_.submitted_draws > 0 ||
+                         last_submit_stats_.copied_retained_frame);
   const bool present_native_frame =
-      submit_success && last_submit_stats_.presentable_frame;
+      submit_success && (last_submit_stats_.presentable_frame ||
+                         last_submit_stats_.copied_retained_frame);
   capture_.WriteLiveD3D12Submit(frame_index, frame_pending_draws_, frame_draws,
                                 attempted_submit, submit_success,
                                 submitted_frames_, failed_frames_,
@@ -302,6 +304,7 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
                                 last_submit_stats_.utility_draws,
                                 last_submit_stats_.presentable_frame,
                                 last_submit_stats_.noop_utility_frame,
+                                last_submit_stats_.copied_retained_frame,
                                 present_native_frame,
                                 last_error_);
 
@@ -391,18 +394,21 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
   last_submit_stats_.utility_draws = binding.utility_draws;
   last_submit_stats_.presentable_frame = binding.presentable_frame;
   last_submit_stats_.noop_utility_frame = binding.noop_utility_frame;
+  last_submit_stats_.copied_retained_frame = binding.copied_retained_frame;
   if (verbose_ || submitted_frames_ < 5 || ShouldLogHighFrequencyEvent(frame_index)) {
     REXLOG_INFO(
         "BO2 native D3D12 live frame {} submitted real_draws={} "
         "shader_pairs={} pso_entries={} diagnostic_pipelines={} "
         "input_layout_variants={} scene_draws={} depth_only_draws={} "
-        "utility_draws={} presentable_frame={} noop_utility_frame={}",
+        "utility_draws={} presentable_frame={} noop_utility_frame={} "
+        "copied_retained_frame={}",
         frame_index, binding.submitted_draws, binding.shader_pair_count,
         binding.pso_entries, binding.diagnostic_pipelines,
         binding.input_layout_variants, binding.scene_candidate_draws,
         binding.depth_only_draws, binding.utility_draws,
         binding.presentable_frame ? "yes" : "no",
-        binding.noop_utility_frame ? "yes" : "no");
+        binding.noop_utility_frame ? "yes" : "no",
+        binding.copied_retained_frame ? "yes" : "no");
   }
   return true;
 #endif

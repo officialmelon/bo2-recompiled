@@ -40,6 +40,7 @@ struct D3D12LiveSubmitBinding {
   uint64_t utility_draws = 0;
   bool presentable_frame = false;
   bool noop_utility_frame = false;
+  bool copied_retained_frame = false;
 };
 
 D3D12LiveReplaySession *CreateD3D12LiveReplaySession();

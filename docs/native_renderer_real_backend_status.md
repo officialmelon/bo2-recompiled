@@ -1919,8 +1919,94 @@ Remaining live issues:
 
 * The native renderer is still not complete. It still supports only a subset of
   the captured shader pairs and resource/state semantics.
-* Live present scheduling still alternates presentable buckets with
-  non-presented utility/noop buckets. The accumulated target reduces black
-  flip-discard loss, but this is not a full command-stream scheduler.
+* Live present scheduling still receives presentable buckets interleaved with
+  utility/noop buckets. The live D3D12 path now suppresses per-frame replay
+  stdout and re-presents the retained accumulated native frame for noop utility
+  buckets after a real frame has been rendered. This reduces black flip-discard
+  gaps, but it is still not a full command-stream scheduler.
 * Several shader effects are still manual approximations, especially the
   multi-texture background/effect pairs.
+
+## 2026-07-02 Live retained-frame present update
+
+Resolution status:
+
+* The current host window and native render target are `1280x720`.
+* SP and MP launcher defaults set `video_mode_width=1280` and
+  `video_mode_height=720`.
+* D3D12 live/replay fallback dimensions are also `1280x720`.
+* Captured BO2 render state confirms the same target:
+  `surface_pitch=1280` and window scissor `0,0 -> 1280,720`.
+
+Change:
+
+* `RunD3D12RealReplayBackend` no longer prints the full D3D12 replay summary
+  for every live frame submission. Offline replay output is unchanged.
+* `D3D12LiveSubmitBinding` now reports `copied_retained_frame`.
+* For live noop utility buckets, the D3D12 replay backend copies the retained
+  accumulated native render target to the current swapchain backbuffer when a
+  retained target is available. The live backend executes and presents that
+  copy, while still recording whether the bucket was truly presentable.
+* `live_d3d12_submit` JSONL events now include `copied_retained_frame`.
+
+Build validation:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 native_render_replay default.exe"
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default_mp\out\build\win-clang-msvc-amd64-relwithdebinfo-msvctarget"" -j12 default_mp.exe"
+```
+
+The debug/default build and MP RelWithDebInfo build both completed. The MP
+incremental rebuild took about 10 seconds for the final schema update.
+
+MP021 pre-retained-copy evidence:
+
+```text
+exit=-1073741795 (0xC000001D)
+stdout=0 bytes
+stderr=0 bytes
+Validation OK: 7500 events, 26 frames, 1454 draws
+live_submit_events=26 attempted=25 success=25 failed=0
+presentable=6 presented=6 not_presented=20
+diagnostic_pipelines_sum=0
+```
+
+MP022 retained-copy evidence:
+
+```text
+exit=timeout_killed after 75s guard
+stdout=0 bytes
+stderr=0 bytes
+Validation OK: 7500 events, 27 frames, 1489 draws
+live_submit_events=27 attempted=26 success=26 failed=0
+presentable=7 presented=18 not_presented=9
+diagnostic_pipelines_sum=0
+```
+
+MP023 copied-retained telemetry:
+
+```text
+exit=timeout_killed after 45s guard
+stdout=0 bytes
+stderr=0 bytes
+Validation OK: 5000 events, 21 frames, 1043 draws
+live_submit_events=20 attempted=20 success=20 failed=0
+noop_utility_frames=6
+presentable=3
+copied_retained=5
+presented=8
+diagnostic_pipelines_sum=0
+```
+
+Fresh MP023 offline replay:
+
+```text
+D3D12 real replay submitted 131 supported draw(s) across 9 shader pair(s)
+D3D12 real replay PSO cache: entries=12 misses=12 hits=119 diagnostic_pipelines=0
+D3D12 real replay bound 142 captured texture SRV(s), 906 fallback texture SRV(s)
+D3D12 real replay draw classes: scene_candidate=78 depth_only=44 utility=9
+D3D12 real replay color readback: bytes=3686400 nonzero=3685914
+```
+
+Output:
+`C:\Users\braxt\bo2-recompiled\native-renderer-mp023-retained-present.bmp`.

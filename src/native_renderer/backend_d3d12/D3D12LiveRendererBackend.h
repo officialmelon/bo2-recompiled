@@ -64,6 +64,7 @@ class D3D12LiveRendererBackend final : public RendererBackend {
     uint64_t utility_draws = 0;
     bool presentable_frame = false;
     bool noop_utility_frame = false;
+    bool copied_retained_frame = false;
   };
 
   FrameStats& ActiveStats();

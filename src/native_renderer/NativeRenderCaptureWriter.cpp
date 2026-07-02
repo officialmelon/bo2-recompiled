@@ -1111,7 +1111,8 @@ void NativeRenderCaptureWriter::WriteLiveD3D12Submit(
     uint64_t diagnostic_pipelines, uint64_t input_layout_variants,
     uint64_t scene_candidate_draws, uint64_t depth_only_draws,
     uint64_t utility_draws, bool presentable_frame,
-    bool noop_utility_frame, bool presented, std::string_view error) {
+    bool noop_utility_frame, bool copied_retained_frame, bool presented,
+    std::string_view error) {
   std::scoped_lock lock(mutex_);
   if (!BeginEvent("live_d3d12_submit")) {
     return;
@@ -1133,6 +1134,7 @@ void NativeRenderCaptureWriter::WriteLiveD3D12Submit(
   WriteU64Field("utility_draws", utility_draws);
   WriteBoolField("presentable_frame", presentable_frame);
   WriteBoolField("noop_utility_frame", noop_utility_frame);
+  WriteBoolField("copied_retained_frame", copied_retained_frame);
   WriteBoolField("presented", presented);
   if (!error.empty()) {
     WriteStringField("error", error);

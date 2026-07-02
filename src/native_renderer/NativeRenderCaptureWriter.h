@@ -45,7 +45,8 @@ class NativeRenderCaptureWriter {
                             uint64_t depth_only_draws,
                             uint64_t utility_draws,
                             bool presentable_frame,
-                            bool noop_utility_frame, bool presented,
+                            bool noop_utility_frame,
+                            bool copied_retained_frame, bool presented,
                             std::string_view error);
 
  private:

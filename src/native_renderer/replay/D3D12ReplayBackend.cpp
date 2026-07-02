@@ -4728,6 +4728,62 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         live_binding->diagnostic_pipelines = 0;
         live_binding->input_layout_variants = 0;
         live_binding->noop_utility_frame = true;
+        if (options.live_session && live_binding->command_list &&
+            live_binding->color_target) {
+          auto *live_session =
+              reinterpret_cast<D3D12LiveReplaySessionStorage *>(
+                  options.live_session);
+          if (live_session->color_accum_ready &&
+              live_session->color_accum_target &&
+              live_session->color_accum_width == live_binding->width &&
+              live_session->color_accum_height == live_binding->height) {
+            D3D12_RESOURCE_BARRIER copy_barriers[2]{};
+            copy_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            copy_barriers[0].Transition.pResource =
+                live_session->color_accum_target.Get();
+            copy_barriers[0].Transition.Subresource =
+                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            copy_barriers[0].Transition.StateBefore =
+                D3D12_RESOURCE_STATE_RENDER_TARGET;
+            copy_barriers[0].Transition.StateAfter =
+                D3D12_RESOURCE_STATE_COPY_SOURCE;
+            copy_barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            copy_barriers[1].Transition.pResource = live_binding->color_target;
+            copy_barriers[1].Transition.Subresource =
+                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            copy_barriers[1].Transition.StateBefore =
+                D3D12_RESOURCE_STATE_PRESENT;
+            copy_barriers[1].Transition.StateAfter =
+                D3D12_RESOURCE_STATE_COPY_DEST;
+            live_binding->command_list->ResourceBarrier(2, copy_barriers);
+
+            live_binding->command_list->CopyResource(
+                live_binding->color_target,
+                live_session->color_accum_target.Get());
+
+            D3D12_RESOURCE_BARRIER restore_barriers[2]{};
+            restore_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            restore_barriers[0].Transition.pResource =
+                live_session->color_accum_target.Get();
+            restore_barriers[0].Transition.Subresource =
+                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            restore_barriers[0].Transition.StateBefore =
+                D3D12_RESOURCE_STATE_COPY_SOURCE;
+            restore_barriers[0].Transition.StateAfter =
+                D3D12_RESOURCE_STATE_RENDER_TARGET;
+            restore_barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            restore_barriers[1].Transition.pResource =
+                live_binding->color_target;
+            restore_barriers[1].Transition.Subresource =
+                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            restore_barriers[1].Transition.StateBefore =
+                D3D12_RESOURCE_STATE_COPY_DEST;
+            restore_barriers[1].Transition.StateAfter =
+                D3D12_RESOURCE_STATE_PRESENT;
+            live_binding->command_list->ResourceBarrier(2, restore_barriers);
+            live_binding->copied_retained_frame = true;
+          }
+        }
       }
       if (!options.live_submit) {
         std::cout << "D3D12 frame replay plan frame="
@@ -4804,6 +4860,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   const bool live_submit =
       live_binding && live_binding->device && live_binding->command_list &&
       live_binding->color_target && live_binding->rtv_heap;
+  const bool log_backend = !live_submit;
   D3D12LiveReplaySessionStorage *live_session = nullptr;
   if (live_submit && options.live_session) {
     live_session = reinterpret_cast<D3D12LiveReplaySessionStorage *>(
@@ -5165,7 +5222,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
 
   cache_index_write_count = pso_cache_misses - diagnostic_pipeline_count;
 
-  if (frame_replay) {
+  if (frame_replay && log_backend) {
     std::cout << "D3D12 frame replay plan frame=" << frame_plan.frame_index
               << " frame_draws=" << frame_plan.frame_draw_count
               << " geometry_supported=" << frame_plan.supported_draws.size()
@@ -5407,22 +5464,24 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     const ReplayDrawState &state = capture.draws[uploaded.prepared.draw_index];
     ++submitted_pairs[{state.vertex_shader.hash, state.pixel_shader.hash}];
   }
-  if (frame_replay) {
+  if (frame_replay && log_backend) {
     std::cout << "D3D12 real frame replay submitted " << uploaded_draws.size()
               << " supported draw(s) across " << submitted_pairs.size()
               << " shader pair(s)\n";
-  } else {
+  } else if (log_backend) {
     std::cout << "D3D12 real replay submitted " << uploaded_draws.size()
               << " supported draw(s) across " << submitted_pairs.size()
               << " shader pair(s)\n";
   }
-  for (const auto &[key, count] : submitted_pairs) {
-    std::cout << "  pair VS=" << FormatHex64(std::get<0>(key))
-              << " PS=" << FormatHex64(std::get<1>(key))
-              << " submitted=" << count << " captured="
-              << CountDrawsForShaderPair(capture, std::get<0>(key),
-                                         std::get<1>(key))
-              << "\n";
+  if (log_backend) {
+    for (const auto &[key, count] : submitted_pairs) {
+      std::cout << "  pair VS=" << FormatHex64(std::get<0>(key))
+                << " PS=" << FormatHex64(std::get<1>(key))
+                << " submitted=" << count << " captured="
+                << CountDrawsForShaderPair(capture, std::get<0>(key),
+                                           std::get<1>(key))
+                << "\n";
+    }
   }
   std::set<uint64_t> submitted_input_layouts;
   std::size_t scene_candidate_draws = 0;
@@ -5459,27 +5518,29 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     live_binding->utility_draws = static_cast<uint64_t>(utility_draws);
     live_binding->presentable_frame = scene_candidate_draws >= 6;
   }
-  std::cout << "D3D12 real replay PSO cache: entries=" << pipelines->size()
-            << " misses=" << pso_cache_misses << " hits=" << pso_cache_hits
-            << " diagnostic_pipelines=" << diagnostic_pipeline_count
-            << " cache_index_writes=" << cache_index_write_count
-            << " input_layout_variants=" << submitted_input_layouts.size()
-            << "\n";
-  std::cout << "D3D12 real replay bound " << captured_texture_count
-            << " captured texture SRV(s), " << fallback_texture_count
-            << " fallback texture SRV(s), unsupported_texture_attempts="
-            << unsupported_texture_count
-            << ", partial_texture_previews="
-            << partial_texture_preview_count << "\n";
-  std::cout << "D3D12 real replay bound " << captured_sampler_count
-            << " captured sampler descriptor(s), " << fallback_sampler_count
-            << " fallback sampler descriptor(s), exact_clamp_modes="
-            << exact_sampler_clamp_count
-            << ", clamp_addressing_fallbacks="
-            << fallback_sampler_clamp_count << "\n";
-  std::cout << "D3D12 real replay draw classes: scene_candidate="
-            << scene_candidate_draws << " depth_only=" << depth_only_draws
-            << " utility=" << utility_draws << "\n";
+  if (log_backend) {
+    std::cout << "D3D12 real replay PSO cache: entries=" << pipelines->size()
+              << " misses=" << pso_cache_misses << " hits=" << pso_cache_hits
+              << " diagnostic_pipelines=" << diagnostic_pipeline_count
+              << " cache_index_writes=" << cache_index_write_count
+              << " input_layout_variants=" << submitted_input_layouts.size()
+              << "\n";
+    std::cout << "D3D12 real replay bound " << captured_texture_count
+              << " captured texture SRV(s), " << fallback_texture_count
+              << " fallback texture SRV(s), unsupported_texture_attempts="
+              << unsupported_texture_count
+              << ", partial_texture_previews="
+              << partial_texture_preview_count << "\n";
+    std::cout << "D3D12 real replay bound " << captured_sampler_count
+              << " captured sampler descriptor(s), " << fallback_sampler_count
+              << " fallback sampler descriptor(s), exact_clamp_modes="
+              << exact_sampler_clamp_count
+              << ", clamp_addressing_fallbacks="
+              << fallback_sampler_clamp_count << "\n";
+    std::cout << "D3D12 real replay draw classes: scene_candidate="
+              << scene_candidate_draws << " depth_only=" << depth_only_draws
+              << " utility=" << utility_draws << "\n";
+  }
   std::size_t depth_enabled_draws = 0;
   std::size_t depth_write_draws = 0;
   std::size_t stencil_enabled_draws = 0;
@@ -5503,20 +5564,22 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       ++stencil_enabled_draws;
     }
   }
-  std::cout << "D3D12 real replay depth target format=D24_UNORM_S8_UINT"
-            << " depth_target_bound=" << (batch_uses_depth ? "yes" : "no")
-            << " depth_enabled_draws=" << depth_enabled_draws
-            << " depth_write_draws=" << depth_write_draws
-            << " stencil_enabled_draws=" << stencil_enabled_draws
-            << " forced_depth_only_zero_color_draws="
-            << forced_depth_only_zero_color_draws << "\n";
+  if (log_backend) {
+    std::cout << "D3D12 real replay depth target format=D24_UNORM_S8_UINT"
+              << " depth_target_bound=" << (batch_uses_depth ? "yes" : "no")
+              << " depth_enabled_draws=" << depth_enabled_draws
+              << " depth_write_draws=" << depth_write_draws
+              << " stencil_enabled_draws=" << stencil_enabled_draws
+              << " forced_depth_only_zero_color_draws="
+              << forced_depth_only_zero_color_draws << "\n";
+  }
   const ReplayDrawState &first_submitted_state =
       capture.draws[uploaded_draws.front().prepared.draw_index];
   const RenderStateRecord *first_pipeline_render_state =
       first_submitted_state.draw.render_state.present
           ? &first_submitted_state.draw.render_state
           : nullptr;
-  if (first_pipeline_render_state) {
+  if (first_pipeline_render_state && log_backend) {
     std::cout << "D3D12 real replay applied render state from draw "
               << first_submitted_state.draw_index << ": color_mask="
               << FormatHex32(first_pipeline_render_state->rb_color_mask)
@@ -5528,7 +5591,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
               << " stencil="
               << (first_pipeline_render_state->stencil_enable ? "yes" : "no")
               << "\n";
-  } else {
+  } else if (log_backend) {
     std::cout << "D3D12 real replay render state unavailable";
     if (!uploaded_draws.front().prepared.indexed &&
         first_submitted_state.draw.render_state.present) {
