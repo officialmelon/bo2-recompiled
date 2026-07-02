@@ -262,6 +262,23 @@ Current limitation:
   or the missing PM4 payload-to-container transform, then let D3D12 shader
   resolution prefer XenosRecomp-generated HLSL/DXIL over manual overrides.
 
+Fresh MP probe evidence:
+
+- `native_captures\live_d3d12_mp_075_shader_probe_xenosrecomp\events.jsonl`
+  was captured from RelWithDebInfo `default_mp.exe` in `native_d3d12` mode with
+  `native_renderer_shader_record_probe_mode=on`. It validates as
+  `5000 events, 19 frames, 976 draws` and contains `27` shader-record probe
+  events.
+- The MP `sub_82117BC8` probes use `r5/r7=0x7026FCB0` as the useful structured
+  record pointer. The MP `sub_82117D20` probe shows `r4=0x06CD5000` and
+  `r5=8`; the old draw-candidate probe builder treated `r5` as the primary
+  address and therefore tried to snapshot guest address `0x00000008`.
+- The draw-candidate probe builder now chooses `r4` as the primary address when
+  `r5` is not a guest pointer and `r4` is. The follow-up MP076 capture validates
+  as `5000 events, 20 frames, 1024 draws`, but did not hit shader-record probe
+  hooks in that bounded window, so a longer or better-triggered probe run is
+  still needed to prove the new `sub_82117D20` snapshot output.
+
 Ghidra evidence for the matching runtime path:
 
 - XEX `0x82597DF8` loads a pass-relative shader record from `r5 + ((r10 + 0x70) << 3)`, reads microcode size at record offset `0x36c`, reads microcode offset at record offset `0x368`, adds pass base `*(r5 + 0x20)`, then emits/copies the microcode payload into the command buffer.

@@ -409,11 +409,26 @@ ShaderRecordProbeInfo BuildShaderRecordProbe(
   probe.write_limit_begin = draw.write_limit;
   probe.write_limit_end = draw.write_limit;
 
-  probe.primary_address = draw.r5;
-  probe.primary_dword_count_hint =
-      LooksLikeGuestPointer(draw.r6)
-          ? static_cast<uint32_t>(ShaderRecordProbeInfo::kMaxRecordDwords)
-          : draw.r6;
+  const bool r5_is_pointer = LooksLikeGuestPointer(draw.r5);
+  const bool r4_is_pointer = LooksLikeGuestPointer(draw.r4);
+  probe.primary_address = r5_is_pointer ? draw.r5 : (r4_is_pointer ? draw.r4
+                                                                   : draw.r5);
+  if (r5_is_pointer) {
+    probe.primary_dword_count_hint =
+        LooksLikeGuestPointer(draw.r6)
+            ? static_cast<uint32_t>(ShaderRecordProbeInfo::kMaxRecordDwords)
+            : draw.r6;
+  } else if (r4_is_pointer) {
+    probe.primary_dword_count_hint =
+        LooksLikeGuestPointer(draw.r5)
+            ? static_cast<uint32_t>(ShaderRecordProbeInfo::kMaxRecordDwords)
+            : draw.r5;
+  } else {
+    probe.primary_dword_count_hint =
+        LooksLikeGuestPointer(draw.r6)
+            ? static_cast<uint32_t>(ShaderRecordProbeInfo::kMaxRecordDwords)
+            : draw.r6;
+  }
   CaptureDwordSnapshot(probe.primary_address, probe.primary_dword_count_hint,
                        probe.primary_dwords, probe.primary_dword_count,
                        probe.primary_truncated, probe.primary_missing);
