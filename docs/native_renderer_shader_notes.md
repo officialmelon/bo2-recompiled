@@ -188,6 +188,57 @@ Remaining shader architecture work:
 - make D3D12 replay consume shader-cache records produced by the shared
   translator/cache path without any D3D12-local shader special cases.
 
+## XenosRecomp integration checkpoint
+
+Evidence date: 2026-07-03
+
+The project now pins `hedge-dev/XenosRecomp` as a Git submodule:
+
+- `thirdparty/XenosRecomp`
+- Submodule commit: `990d03b28a27b50277ee5d8d942e1c5f873869d1`
+
+This is the correct long-term direction for shader work. XenosRecomp translates
+Xbox 360 shader containers to real HLSL instead of relying on BO2-specific
+handwritten shader replacements.
+
+Local build notes:
+
+- Native VS CMake/Ninja were required because the default PATH resolves CMake
+  from MSYS and rewrites `C:\...` paths incorrectly.
+- MSVC can build the tool when forced to include the project-local compatibility
+  shim `src/native_renderer/shader_translation/XenosRecompMsvcCompat.h`.
+- LLVM-MinGW configures, but its vendored `fmt` build currently fails with
+  Clang 22/libc++ visibility errors around `malloc/free`.
+
+Verified tool:
+
+- `out/build/xenosrecomp-win-msvc-compat/XenosRecomp/XenosRecomp.exe`
+
+`native_shader_inspect.exe` now has a bridge for this tool:
+
+```bat
+native_shader_inspect.exe ^
+  --shader shader_work\shaders\containers\pixel_34bf3f734648398a4cc35c9799c55dc262c2e880266ee0f04dc3a45ef333d40f.bin ^
+  --xenosrecomp out\build\xenosrecomp-win-msvc-compat\XenosRecomp\XenosRecomp.exe ^
+  --xenosrecomp-hlsl shader_work\cache\xenosrecomp_smoke\inspect_bridge_pixel.hlsl
+```
+
+Verified output:
+
+- `shader_work/cache/xenosrecomp_smoke/inspect_bridge_pixel.hlsl`
+- `shader_work/cache/xenosrecomp_smoke/inspect_bridge_pixel.hlsl.xenosrecomp.log`
+
+The generated HLSL contains a real translated Xenos pixel shader body with
+register declarations, color export, and alpha-test specialization logic.
+
+Current limitation:
+
+- Runtime shader hashes such as `0xEDC17DCC3FFDB040` and
+  `0xA4A965C189287B99` still do not directly match the static SHA-256
+  container/microcode index. The next renderer step is to add an explicit
+  runtime-to-container mapping path, then let D3D12 shader resolution prefer
+  XenosRecomp-generated HLSL/DXIL over manual overrides.
+
 Ghidra evidence for the matching runtime path:
 
 - XEX `0x82597DF8` loads a pass-relative shader record from `r5 + ((r10 + 0x70) << 3)`, reads microcode size at record offset `0x36c`, reads microcode offset at record offset `0x368`, adds pass base `*(r5 + 0x20)`, then emits/copies the microcode payload into the command buffer.

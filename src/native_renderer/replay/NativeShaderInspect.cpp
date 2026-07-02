@@ -68,6 +68,10 @@ struct CliOptions {
   std::filesystem::path hlsl_compile_cache_path;
   std::filesystem::path hlsl_dxc_compile_cache_path;
   std::filesystem::path translated_hlsl_dxc_compile_cache_path;
+  std::filesystem::path xenosrecomp_path;
+  std::filesystem::path xenosrecomp_header_path =
+      "thirdparty/XenosRecomp/XenosRecomp/shader_common.h";
+  std::filesystem::path xenosrecomp_hlsl_output_path;
   std::filesystem::path dxc_path;
   bool show_summary = false;
   bool find_hash = false;
@@ -213,6 +217,12 @@ void PrintHelp() {
             << "                     Compile diagnostic HLSL to DXIL with DXC\n"
             << "  --compile-translated-hlsl-dxc <path>\n"
             << "                     Compile limited translated HLSL to DXIL with DXC\n"
+            << "  --xenosrecomp <path>\n"
+            << "                     XenosRecomp.exe path for container-to-HLSL\n"
+            << "  --xenosrecomp-header <path>\n"
+            << "                     shader_common.h path for XenosRecomp\n"
+            << "  --xenosrecomp-hlsl <path>\n"
+            << "                     Run XenosRecomp on --shader and write HLSL\n"
             << "  --dxc-path <path>  DXC executable path for --compile-hlsl-dxc\n"
             << "  --top-shaders <n>  Runtime shader/pair print limit (default 20)\n"
             << "  --hash <value>     Hash or substring to find\n"
@@ -3209,6 +3219,90 @@ bool RunProcessCaptureOutput(const std::string &command_line,
 #endif
 }
 
+bool RunXenosRecompContainerToHlsl(const std::filesystem::path &xenosrecomp,
+                                   const std::filesystem::path &shader,
+                                   const std::filesystem::path &header,
+                                   const std::filesystem::path &output,
+                                   std::filesystem::path &log_path,
+                                   std::string &error) {
+#if defined(_WIN32)
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(xenosrecomp, ec) || ec) {
+    error = "XenosRecomp executable not found: " + xenosrecomp.string();
+    return false;
+  }
+  if (!std::filesystem::is_regular_file(shader, ec) || ec) {
+    error = "shader container not found: " + shader.string();
+    return false;
+  }
+  if (!std::filesystem::is_regular_file(header, ec) || ec) {
+    error = "XenosRecomp shader_common.h not found: " + header.string();
+    return false;
+  }
+
+  const std::filesystem::path parent = output.parent_path();
+  if (!parent.empty()) {
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      error = "could not create XenosRecomp output directory " +
+              parent.string() + ": " + ec.message();
+      return false;
+    }
+  }
+
+  log_path = output;
+  log_path += ".xenosrecomp.log";
+
+  const std::string command =
+      QuoteWindowsArg(xenosrecomp.string()) + " " +
+      QuoteWindowsArg(shader.string()) + " " + QuoteWindowsArg(output.string()) +
+      " " + QuoteWindowsArg(header.string());
+
+  ProcessResult process_result;
+  if (!RunProcessCaptureOutput(command, 15000, process_result, error)) {
+    return false;
+  }
+
+  std::ostringstream log;
+  log << "tool=" << xenosrecomp.string() << "\n"
+      << "shader=" << shader.string() << "\n"
+      << "header=" << header.string() << "\n"
+      << "output=" << output.string() << "\n"
+      << "timeout_ms=15000\n"
+      << "timed_out=" << (process_result.timed_out ? "true" : "false")
+      << "\n"
+      << "exit_code=" << process_result.exit_code << "\n"
+      << process_result.output;
+  if (!WriteTextFile(log_path, log.str(), error)) {
+    return false;
+  }
+
+  if (process_result.timed_out) {
+    error = "XenosRecomp timed out for " + shader.string() + "; see " +
+            log_path.string();
+    return false;
+  }
+  if (process_result.exit_code != 0) {
+    error = "XenosRecomp failed for " + shader.string() + "; see " +
+            log_path.string();
+    return false;
+  }
+  if (!std::filesystem::is_regular_file(output, ec) || ec) {
+    error = "XenosRecomp completed but did not write " + output.string();
+    return false;
+  }
+  return true;
+#else
+  (void)xenosrecomp;
+  (void)shader;
+  (void)header;
+  (void)output;
+  (void)log_path;
+  error = "--xenosrecomp-hlsl is only available on Windows";
+  return false;
+#endif
+}
+
 bool CompileRuntimeDiagnosticHlslWithDxc(
     const RuntimeShaderCapture &capture, uint64_t runtime_hash,
     const std::filesystem::path &cache_root,
@@ -4192,6 +4286,24 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.translated_hlsl_dxc_compile_cache_path = value;
+    } else if (arg == "--xenosrecomp") {
+      const char *value = require_value("--xenosrecomp");
+      if (!value) {
+        return 2;
+      }
+      cli.xenosrecomp_path = value;
+    } else if (arg == "--xenosrecomp-header") {
+      const char *value = require_value("--xenosrecomp-header");
+      if (!value) {
+        return 2;
+      }
+      cli.xenosrecomp_header_path = value;
+    } else if (arg == "--xenosrecomp-hlsl") {
+      const char *value = require_value("--xenosrecomp-hlsl");
+      if (!value) {
+        return 2;
+      }
+      cli.xenosrecomp_hlsl_output_path = value;
     } else if (arg == "--dxc-path") {
       const char *value = require_value("--dxc-path");
       if (!value) {
@@ -4233,7 +4345,8 @@ int main(int argc, char **argv) {
       !cli.translated_hlsl_output_path.empty() ||
       !cli.hlsl_compile_cache_path.empty() ||
       !cli.hlsl_dxc_compile_cache_path.empty() ||
-      !cli.translated_hlsl_dxc_compile_cache_path.empty();
+      !cli.translated_hlsl_dxc_compile_cache_path.empty() ||
+      !cli.xenosrecomp_hlsl_output_path.empty();
   if (!cli.show_summary && !cli.find_hash && !cli.list_runtime_shaders &&
       !cli.match_runtime_shaders && !cli.semantic_disassemble &&
       !file_inspection) {
@@ -4313,6 +4426,16 @@ int main(int argc, char **argv) {
                  "<events.jsonl> and --hash <runtime_shader_hash>\n";
     return 2;
   }
+  if (!cli.xenosrecomp_hlsl_output_path.empty()) {
+    if (cli.shader_path.empty()) {
+      std::cerr << "--xenosrecomp-hlsl requires --shader <container.bin>\n";
+      return 2;
+    }
+    if (cli.xenosrecomp_path.empty()) {
+      std::cerr << "--xenosrecomp-hlsl requires --xenosrecomp <XenosRecomp.exe>\n";
+      return 2;
+    }
+  }
 
   bool printed_anything = false;
   if (cli.dump_header) {
@@ -4321,6 +4444,20 @@ int main(int argc, char **argv) {
       std::cerr << error << "\n";
       return 1;
     }
+    printed_anything = true;
+  }
+  if (!cli.xenosrecomp_hlsl_output_path.empty()) {
+    std::filesystem::path log_path;
+    std::string error;
+    if (!RunXenosRecompContainerToHlsl(
+            cli.xenosrecomp_path, cli.shader_path, cli.xenosrecomp_header_path,
+            cli.xenosrecomp_hlsl_output_path, log_path, error)) {
+      std::cerr << error << "\n";
+      return 1;
+    }
+    std::cout << "xenosrecomp_hlsl="
+              << cli.xenosrecomp_hlsl_output_path.string() << "\n"
+              << "xenosrecomp_log=" << log_path.string() << "\n";
     printed_anything = true;
   }
   if (!cli.disasm_output_path.empty()) {
