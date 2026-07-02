@@ -2150,6 +2150,20 @@ bool CheckCapturedTextureSupport(const ReplayDrawState &state,
   return true;
 }
 
+void CopyFramePlanDiagnosticsToLiveBinding(
+    const FrameRealReplayPlan &frame_plan, D3D12LiveSubmitBinding &binding) {
+  binding.skipped_draws =
+      static_cast<uint64_t>(frame_plan.skipped_draw_count);
+  binding.elided_noop_draws =
+      static_cast<uint64_t>(frame_plan.elided_noop_draw_count);
+  binding.unsupported_reasons.clear();
+  binding.unsupported_reasons.reserve(frame_plan.unsupported_reasons.size());
+  for (const auto &[reason, count] : frame_plan.unsupported_reasons) {
+    binding.unsupported_reasons.emplace_back(
+        reason, static_cast<uint64_t>(count));
+  }
+}
+
 bool CreateUploadBuffer(ID3D12Device *device, const void *data,
                         uint64_t byte_size, ComPtr<ID3D12Resource> &resource,
                         std::string &error) {
@@ -4729,6 +4743,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         live_binding->pso_cache_misses = 0;
         live_binding->diagnostic_pipelines = 0;
         live_binding->input_layout_variants = 0;
+        CopyFramePlanDiagnosticsToLiveBinding(frame_plan, *live_binding);
         live_binding->noop_utility_frame = true;
         if (options.live_session && live_binding->command_list &&
             live_binding->color_target) {
@@ -5503,6 +5518,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     }
   }
   if (live_submit) {
+    CopyFramePlanDiagnosticsToLiveBinding(frame_plan, *live_binding);
     live_binding->submitted_draws =
         static_cast<uint64_t>(uploaded_draws.size());
     live_binding->shader_pair_count =

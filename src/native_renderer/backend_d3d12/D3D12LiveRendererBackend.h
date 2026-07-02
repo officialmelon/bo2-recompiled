@@ -4,10 +4,12 @@
 #include <atomic>
 #include <condition_variable>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include "../NativeRenderCaptureWriter.h"
 #include "../RendererBackend.h"
@@ -66,9 +68,23 @@ class D3D12LiveRendererBackend final : public RendererBackend {
     uint64_t scene_candidate_draws = 0;
     uint64_t depth_only_draws = 0;
     uint64_t utility_draws = 0;
+    uint64_t skipped_draws = 0;
+    uint64_t elided_noop_draws = 0;
+    std::vector<std::pair<std::string, uint64_t>> unsupported_reasons;
     bool presentable_frame = false;
     bool noop_utility_frame = false;
     bool copied_retained_frame = false;
+  };
+  struct LiveDiagnostics {
+    uint64_t frames_attempted = 0;
+    uint64_t frames_submitted = 0;
+    uint64_t frames_presentable = 0;
+    uint64_t frames_retained_copy = 0;
+    uint64_t frames_not_presentable = 0;
+    uint64_t skipped_draws = 0;
+    uint64_t elided_noop_draws = 0;
+    uint64_t diagnostic_pipelines = 0;
+    std::map<std::string, uint64_t> unsupported_reasons;
   };
 
   FrameStats& ActiveStats();
@@ -81,6 +97,12 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   void NativeWindowThreadMain(uint32_t width, uint32_t height);
   bool RefreshSwapChainBackBuffer(std::string& error);
   bool SubmitLiveFrame(uint64_t frame_index);
+  void RecordLiveSubmitDiagnostics(uint64_t frame_index,
+                                   bool attempted_submit,
+                                   bool submit_success,
+                                   bool present_native_frame);
+  void MaybeLogLiveDiagnostics(uint64_t frame_index,
+                               bool force = false) const;
   void PumpNativeWindowMessages();
   replay::ReplayCliOptions BuildReplayOptions() const;
 
@@ -95,6 +117,7 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   FrameStats frame_stats_;
   FrameStats pending_stats_;
   LiveSubmitStats last_submit_stats_;
+  LiveDiagnostics live_diagnostics_;
   bool in_frame_ = false;
   uint64_t frame_pending_draws_ = 0;
   uint32_t frame_width_ = 1280;

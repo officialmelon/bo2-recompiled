@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "NativeRenderReplay.h"
 
@@ -38,6 +40,9 @@ struct D3D12LiveSubmitBinding {
   uint64_t scene_candidate_draws = 0;
   uint64_t depth_only_draws = 0;
   uint64_t utility_draws = 0;
+  uint64_t skipped_draws = 0;
+  uint64_t elided_noop_draws = 0;
+  std::vector<std::pair<std::string, uint64_t>> unsupported_reasons;
   bool presentable_frame = false;
   bool noop_utility_frame = false;
   bool copied_retained_frame = false;

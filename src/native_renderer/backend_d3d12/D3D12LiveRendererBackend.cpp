@@ -1,6 +1,8 @@
 #include "D3D12LiveRendererBackend.h"
 
+#include <algorithm>
 #include <chrono>
+#include <sstream>
 
 #include <rex/logging.h>
 
@@ -69,6 +71,7 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
   frame_stats_ = {};
   pending_stats_ = {};
   last_submit_stats_ = {};
+  live_diagnostics_ = {};
   in_frame_ = false;
   submitted_frames_ = 0;
   failed_frames_ = 0;
@@ -201,6 +204,7 @@ void D3D12LiveRendererBackend::Shutdown() {
   command_queue_.Reset();
   device_.Reset();
 #endif
+  MaybeLogLiveDiagnostics(submitted_frames_ + failed_frames_, true);
   REXLOG_INFO("BO2 native D3D12 live backend shutdown for {} (submitted={} failed={})",
               app_name_, submitted_frames_, failed_frames_);
 }
@@ -326,6 +330,8 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
                                 last_submit_stats_.copied_retained_frame,
                                 present_native_frame,
                                 last_error_);
+  RecordLiveSubmitDiagnostics(frame_index, attempted_submit, submit_success,
+                              present_native_frame);
 
   EndCommandFrame(frame_index, execute_native_frame);
 
@@ -347,6 +353,7 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
         frame_stats_.shaders, frame_stats_.constants, frame_stats_.swaps,
         submitted_frames_, failed_frames_);
   }
+  MaybeLogLiveDiagnostics(frame_index);
   in_frame_ = false;
 }
 
@@ -414,6 +421,9 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
   last_submit_stats_.scene_candidate_draws = binding.scene_candidate_draws;
   last_submit_stats_.depth_only_draws = binding.depth_only_draws;
   last_submit_stats_.utility_draws = binding.utility_draws;
+  last_submit_stats_.skipped_draws = binding.skipped_draws;
+  last_submit_stats_.elided_noop_draws = binding.elided_noop_draws;
+  last_submit_stats_.unsupported_reasons = binding.unsupported_reasons;
   last_submit_stats_.presentable_frame = binding.presentable_frame;
   last_submit_stats_.noop_utility_frame = binding.noop_utility_frame;
   last_submit_stats_.copied_retained_frame = binding.copied_retained_frame;
@@ -434,6 +444,78 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
   }
   return true;
 #endif
+}
+
+void D3D12LiveRendererBackend::RecordLiveSubmitDiagnostics(
+    uint64_t frame_index, bool attempted_submit, bool submit_success,
+    bool present_native_frame) {
+  (void)frame_index;
+  if (!attempted_submit) {
+    return;
+  }
+  ++live_diagnostics_.frames_attempted;
+  if (submit_success) {
+    ++live_diagnostics_.frames_submitted;
+  }
+  if (present_native_frame) {
+    ++live_diagnostics_.frames_presentable;
+  } else {
+    ++live_diagnostics_.frames_not_presentable;
+  }
+  if (last_submit_stats_.copied_retained_frame) {
+    ++live_diagnostics_.frames_retained_copy;
+  }
+  live_diagnostics_.skipped_draws += last_submit_stats_.skipped_draws;
+  live_diagnostics_.elided_noop_draws += last_submit_stats_.elided_noop_draws;
+  live_diagnostics_.diagnostic_pipelines +=
+      last_submit_stats_.diagnostic_pipelines;
+  for (const auto &[reason, count] : last_submit_stats_.unsupported_reasons) {
+    live_diagnostics_.unsupported_reasons[reason] += count;
+  }
+}
+
+void D3D12LiveRendererBackend::MaybeLogLiveDiagnostics(
+    uint64_t frame_index, bool force) const {
+  if (!force && frame_index >= 5 && !ShouldLogHighFrequencyEvent(frame_index)) {
+    return;
+  }
+  if (live_diagnostics_.frames_attempted == 0) {
+    return;
+  }
+
+  std::vector<std::pair<std::string, uint64_t>> reasons(
+      live_diagnostics_.unsupported_reasons.begin(),
+      live_diagnostics_.unsupported_reasons.end());
+  std::sort(reasons.begin(), reasons.end(),
+            [](const auto &lhs, const auto &rhs) {
+              if (lhs.second != rhs.second) {
+                return lhs.second > rhs.second;
+              }
+              return lhs.first < rhs.first;
+            });
+  std::ostringstream top_reasons;
+  const std::size_t top_count = std::min<std::size_t>(3, reasons.size());
+  for (std::size_t i = 0; i < top_count; ++i) {
+    if (i != 0) {
+      top_reasons << " | ";
+    }
+    top_reasons << reasons[i].second << " x " << reasons[i].first;
+  }
+  if (top_count == 0) {
+    top_reasons << "none";
+  }
+
+  REXLOG_INFO(
+      "BO2 native D3D12 diagnostics frames_attempted={} submitted={} "
+      "presented_or_retained={} not_presentable={} retained_copies={} "
+      "skipped_draws={} elided_noop_draws={} diagnostic_pipelines={} "
+      "top_unsupported=[{}]",
+      live_diagnostics_.frames_attempted, live_diagnostics_.frames_submitted,
+      live_diagnostics_.frames_presentable,
+      live_diagnostics_.frames_not_presentable,
+      live_diagnostics_.frames_retained_copy, live_diagnostics_.skipped_draws,
+      live_diagnostics_.elided_noop_draws,
+      live_diagnostics_.diagnostic_pipelines, top_reasons.str());
 }
 
 bool D3D12LiveRendererBackend::EnsureSwapChain(uint32_t width,

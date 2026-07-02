@@ -2193,3 +2193,70 @@ Remaining texture work:
   `scripts/windows/audit_native_constant_coverage.ps1`.
 - Implement packed mip capture/upload instead of relying on the temporary base
   mip sampler clamp.
+
+MP036 Phase 0 diagnostics update:
+
+The live D3D12 path now exposes low-noise per-run diagnostics for frame and draw
+drop behavior. `D3D12LiveSubmitBinding` carries the replay planner's skipped
+draw count, noop-elided draw count, and grouped unsupported reasons back to the
+live backend. `D3D12LiveRendererBackend` aggregates:
+
+- attempted/submitted native frames
+- frames that were presentable or used a retained copy
+- non-presentable frames
+- retained-frame copies
+- skipped draws
+- noop-elided draws
+- diagnostic pipeline usage
+- top unsupported draw reasons
+
+Validation:
+
+```text
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default_mp\out\build\win-clang-msvc-amd64-relwithdebinfo-msvctarget"" -j12 default_mp.exe"
+```
+
+Result: exit `0`.
+
+```text
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 default native_render_replay"
+```
+
+Result: completed and linked `default.exe` plus `native_render_replay.exe`.
+
+Bounded live run:
+
+```text
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_verbose false --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+Result: `Responding=True` at every 3 second sample through 24 seconds; process
+was killed intentionally by the watchdog. The log
+`default_mp/out/build/win-clang-msvc-amd64-relwithdebinfo-msvctarget/logs/default_mp_045.log`
+contains diagnostics such as:
+
+```text
+BO2 native D3D12 diagnostics frames_attempted=7 submitted=7 presented_or_retained=4 not_presentable=3 retained_copies=1 skipped_draws=0 elided_noop_draws=148 diagnostic_pipelines=0 top_unsupported=[none]
+```
+
+This proves the currently visible flicker/drop pattern is not from diagnostic
+shader fallback in this run (`diagnostic_pipelines=0`). The measured live issue
+is alternating presentable scene frames with noop/retained-copy frames and some
+depth-only/non-presentable native submissions. Phase 1 should address the
+remaining frame pacing/full-stall problem, while Phase 2 still needs the
+ReXGlue translator integration for shader-complete rendering.
+
+Replay validation:
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_028\events.jsonl --validate --no-summary
+```
+
+Result: `Validation OK: 5000 events, 20 frames, 1022 draws`.
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_028\events.jsonl --backend d3d12 --d3d12-output native-renderer-mp036-diagnostics-replay.bmp --shader-override-root shader_work\native_overrides --skip-unsupported --d3d12-draws 512
+```
+
+Result: `165` supported real D3D12 draws, `0` diagnostic pipelines,
+`204` captured texture SRVs, and nonzero color/depth readbacks.
