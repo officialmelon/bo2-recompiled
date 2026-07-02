@@ -144,6 +144,15 @@ The first migrated rule is the MP UI/screen-space vertex shader:
 
 - `VS 0x3C4F6D40D699817B`
 
+The second migrated rule is the paired textured/color pixel shader:
+
+- `PS 0xEDC17DCC3FFDB040`
+
+This rule now matches parsed semantic operations (`tfetch2D r0` from `tf0`
+and `mul` into the color export) instead of raw disassembly substrings. The
+matcher accepts both `oC0` and `o0` export spelling because ReXGlue's analyzer
+prints color exports differently across output paths.
+
 `native_shader_inspect` now tries the shared translator before falling back to
 the older tool-local pattern rules. This preserves current coverage while rules
 are migrated incrementally out of the CLI. The new module deliberately does not
@@ -160,6 +169,11 @@ Validation:
   --hash 0x3C4F6D40D699817B --compile-translated-hlsl-dxc
   shader_work\cache-xenos-hlsl-translator-test` generated and compiled the
   migrated HLSL rule to DXIL.
+- `native_shader_inspect.exe --capture
+  native_captures\live_d3d12_mp_074_sticky_present_target_telemetry\events.jsonl
+  --hash 0xEDC17DCC3FFDB040 --compile-translated-hlsl-dxc
+  shader_work\cache-xenos-hlsl-ps-rule-test` generated and compiled the
+  migrated pixel-shader HLSL rule to DXIL.
 - Replay validation on the same capture passed:
   `Validation OK: 4500 events, 18 frames, 897 draws`.
 - Real D3D12 replay remained behavior-preserving: `121` supported draws across

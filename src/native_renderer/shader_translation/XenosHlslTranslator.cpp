@@ -81,6 +81,38 @@ bool TryTranslateScreenSpaceUiVertexShader(
   return true;
 }
 
+bool TryTranslateTexturedColorPixelShader(
+    const XenosHlslTranslationRequest& request,
+    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
+  if (request.runtime_stage != 1 ||
+      request.runtime_hash != 0xEDC17DCC3FFDB040ull ||
+      !HasOperation(operations, "tfetch2D", "r0", 0) ||
+      (!HasOperation(operations, "mul", "oC0") &&
+       !HasOperation(operations, "mul", "o0"))) {
+    return false;
+  }
+
+  (void)operations;
+  EmitTranslatedHeader(request, out);
+  out << "Texture2D native_texture0 : register(t0);\n";
+  out << "SamplerState native_sampler0 : register(s0);\n\n";
+  out << "struct PSInput\n";
+  out << "{\n";
+  out << "  float4 position : SV_Position;\n";
+  out << "  float4 color : COLOR0;\n";
+  out << "  float2 uv : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "float4 main(PSInput input) : SV_Target0\n";
+  out << "{\n";
+  out << "  // Xenos subset: tfetch2D r0, r0.xy, tf0 followed by mul o0,\n";
+  out << "  // r0, r1. The paired VS exports UV in o0 and color in o1.\n";
+  out << "  const float4 texel = native_texture0.Sample(native_sampler0,\n";
+  out << "                                             saturate(input.uv));\n";
+  out << "  return saturate(texel * input.color);\n";
+  out << "}\n";
+  return true;
+}
+
 }  // namespace
 
 const char* LimitedXenosHlslTranslatorVersion() {
@@ -93,6 +125,9 @@ bool TryTranslateLimitedXenosHlsl(const XenosHlslTranslationRequest& request,
       ParseDisassemblyOperations(request.disassembly);
 
   if (TryTranslateScreenSpaceUiVertexShader(request, operations, out)) {
+    return true;
+  }
+  if (TryTranslateTexturedColorPixelShader(request, operations, out)) {
     return true;
   }
 

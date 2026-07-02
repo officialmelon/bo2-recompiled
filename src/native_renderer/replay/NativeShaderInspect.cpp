@@ -2792,9 +2792,24 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     return true;
   }
 
+  std::ostringstream operation_summary;
+  for (std::size_t i = 0; i < std::min<std::size_t>(operations.size(), 6);
+       ++i) {
+    if (i) {
+      operation_summary << "; ";
+    }
+    operation_summary << operations[i].opcode;
+    if (!operations[i].operand_parts.empty()) {
+      operation_summary << " " << operations[i].operand_parts.front();
+    }
+  }
+
   error = "no limited translated-HLSL rule for " +
           std::string(StageName(runtime_shader.stage)) + " " +
-          Hex64(runtime_shader.hash);
+          Hex64(runtime_shader.hash) + " payload_dwords=" +
+          std::to_string(runtime_shader.first_payload_dwords.size()) +
+          " semantic_ops=" + std::to_string(operations.size()) +
+          " first_ops=[" + operation_summary.str() + "]";
   return false;
 }
 
