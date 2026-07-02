@@ -35,6 +35,31 @@ frame is renderable, many shader/resource combinations are still skipped or
 approximated, and the texture atlas/animation issues must be fixed in the real
 shader/resource translation path rather than by adding more D3D12-local hacks.
 
+## 2026-07-02 dynamic texture cache checkpoint
+
+The D3D12 texture upload cache now includes an FNV-1a hash of the captured
+texture payload bytes in its cache key. The previous key used guest base
+address, mip address, dimensions, format, tiling, and payload size/path, which
+could treat two different payloads at the same guest address as the same native
+texture. That is unsafe for BO2 UI/video/atlas textures that are updated
+in-place.
+
+Validation:
+
+- Built `native_render_replay.exe` and RelWithDebInfo `default_mp.exe` with
+  parallel Ninja (`-j12`), exit `0`.
+- Replay validation on
+  `native_captures\live_d3d12_mp_074_sticky_present_target_telemetry\events.jsonl`
+  passed: `Validation OK: 4500 events, 18 frames, 897 draws`.
+- Real D3D12 replay with diagnostic shaders disabled remained behavior
+  preserving on that capture: `121` supported draws across `8` shader pairs,
+  `diagnostic_pipelines=0`, and `128` texture upload cache entries.
+
+This does not solve every animated-texture problem by itself. If animation is
+implemented by shader constants and atlas UV math, the remaining fix belongs in
+Xenos shader lowering. This change only prevents stale native texture reuse
+when the captured texture bytes actually change.
+
 ## 2026-07-02 live D3D12 pacing checkpoint
 
 The live `native_d3d12` backend no longer performs a full `WaitForGpu()` drain

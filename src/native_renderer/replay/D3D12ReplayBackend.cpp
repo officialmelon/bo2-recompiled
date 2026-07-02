@@ -2163,6 +2163,12 @@ std::string TextureUploadCacheKey(const TextureFetchRecord *fetch,
     return "fallback:white-rgba8";
   }
 
+  uint64_t payload_hash = 14695981039346656037ull;
+  for (const uint8_t byte : fetch->payload_bytes) {
+    payload_hash ^= byte;
+    payload_hash *= 1099511628211ull;
+  }
+
   std::ostringstream key;
   key << "captured:"
       << "base=" << FormatHex32(fetch->base_address_bytes)
@@ -2172,7 +2178,8 @@ std::string TextureUploadCacheKey(const TextureFetchRecord *fetch,
       << ":format=" << fetch->format
       << ":endian=" << fetch->endian
       << ":tiled=" << (fetch->tiled ? 1 : 0)
-      << ":payload=" << fetch->payload_bytes.size();
+      << ":payload=" << fetch->payload_bytes.size()
+      << ":payload_hash=" << FormatHex64(payload_hash);
   if (!fetch->payload_resource_path.empty()) {
     key << ":resource=" << fetch->payload_resource_path;
   }
