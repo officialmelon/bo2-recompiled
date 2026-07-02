@@ -1373,3 +1373,62 @@ D3D12 real replay submitted 180 supported draw(s) across 8 shader pair(s)
 D3D12 real replay PSO cache: entries=10 misses=10 hits=170 diagnostic_pipelines=0 cache_index_writes=10 input_layout_variants=3
 D3D12 real replay offline render targets: count=3 presented_guest_color_base=0x530
 ```
+
+Fresh live MP validation after rebuilding `default_mp.exe`:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default_mp\out\build\win-clang-msvc-amd64-relwithdebinfo-msvctarget"" -j12 default_mp.exe"
+```
+
+Result: exit `0`, `8` Ninja steps, elapsed `21.9s`.
+
+Live run command:
+
+```powershell
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_011\events.jsonl --native_renderer_capture_limit 6500 --native_renderer_capture_flush_interval 64 --native_renderer_verbose true --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+The process was stopped after `120s`; the capture had already reached the
+configured event limit and validates:
+
+```text
+Validation OK: 6500 events, 24 frames, 1290 draws
+```
+
+Aggregated `live_d3d12_submit` proof counters from the capture:
+
+```text
+live_submit_events=24
+attempted=23
+success=15
+failed=8
+total_submitted_draws=99
+max_submitted_draws=18
+max_shader_pairs=6
+max_pso_entries=10
+diagnostic_pipelines_sum=0
+```
+
+This proves strict live MP `native_d3d12` is now submitting real D3D12 replay
+draws into the native backend for some frames, with no diagnostic pipelines.
+It is still not complete live scene rendering because several frames fail
+closed with `selected frame has no draw with complete geometry currently
+supported by D3D12 real replay`, and many submitted frames still only cover a
+subset of the captured frame.
+
+Offline replay of the same fresh capture:
+
+```powershell
+default\out\build\win-amd64-clangmsvc-debug\native_render_replay.exe --capture C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_011\events.jsonl --backend d3d12 --skip-unsupported --d3d12-output C:\Users\braxt\bo2-recompiled\native-renderer-live-mp011-replay.bmp --no-summary
+```
+
+Result:
+
+```text
+D3D12 real replay submitted 205 supported draw(s) across 8 shader pair(s)
+D3D12 real replay PSO cache: entries=10 misses=10 hits=195 diagnostic_pipelines=0 cache_index_writes=10 input_layout_variants=3
+D3D12 real replay offline render targets: count=3 presented_guest_color_base=0x530
+```
+
+Output:
+`C:\Users\braxt\bo2-recompiled\native-renderer-live-mp011-replay.bmp`.
