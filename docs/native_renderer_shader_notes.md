@@ -89,6 +89,43 @@ The microcode commands print big-endian dwords, recover embedded `pimp_technique
 
 Current IR schema `bo2shaderir.raw_xenos.v1` contains stage, source path, source filename, byte/dword counts, embedded shader/technique names, empty input/output/constant/sampler/texture arrays, and one `unknown` instruction node per raw big-endian dword. It is useful cacheable structure for decoder work, but it is not yet semantic IR capable of generating HLSL or SPIR-V.
 
+## Shader translation architecture checkpoint
+
+Evidence date: 2026-07-02
+
+The parsed Xenos semantic-disassembly operation model has been moved from the
+`native_shader_inspect` CLI into `src/native_renderer/shader_translation/`:
+
+- `XenosDisassembly.h`
+- `XenosDisassembly.cpp`
+
+This module owns:
+
+- parsed operation records (`ParsedShaderOperation`)
+- semantic disassembly parsing (`ParseDisassemblyOperations`)
+- operation predicates used by limited HLSL rules (`HasOperation`,
+  `CountOperations`, `DisassemblyContains`)
+- fetch-constant extraction and operation categorization
+
+The limited HLSL generator still lives in `NativeShaderInspect.cpp`, but it now
+uses the shared parser module. This is an architecture step toward a real
+`XenosShaderDecoder -> ShaderIR -> HlslGenerator` pipeline; it is not a claim
+that the current pattern-specific translator is complete.
+
+Validation:
+
+- Built `native_shader_inspect.exe`, `native_render_replay.exe`, and
+  RelWithDebInfo `default_mp.exe` with parallel Ninja (`-j12`), exit `0`.
+- `native_shader_inspect.exe --capture
+  native_captures\live_d3d12_mp_074_sticky_present_target_telemetry\events.jsonl
+  --hash 0x3C4F6D40D699817B --compile-translated-hlsl-dxc
+  shader_work\cache-xenos-disasm-extract-test` generated and compiled
+  `VS_0x3C4F6D40D699817B.translated.v8.dxc.hlsl` to DXIL.
+- Replay validation on the same capture passed:
+  `Validation OK: 4500 events, 18 frames, 897 draws`.
+- Real D3D12 replay remained behavior-preserving: `121` supported draws across
+  `8` shader pairs with `diagnostic_pipelines=0`.
+
 Ghidra evidence for the matching runtime path:
 
 - XEX `0x82597DF8` loads a pass-relative shader record from `r5 + ((r10 + 0x70) << 3)`, reads microcode size at record offset `0x36c`, reads microcode offset at record offset `0x368`, adds pass base `*(r5 + 0x20)`, then emits/copies the microcode payload into the command buffer.

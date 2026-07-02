@@ -47,17 +47,20 @@ set(NATIVE_RENDERER_SOURCES
     ../src/native_renderer/backend_d3d12/D3D12LiveFrameBuilder.cpp
     ../src/native_renderer/replay/NativeRenderReplay.cpp
     ../src/native_renderer/replay/D3D12ReplayBackend.cpp
+    ../src/native_renderer/shader_translation/XenosDisassembly.cpp
     ../src/native_renderer/shader_translation/ShaderTranslation.cpp
 )
 
 set(NATIVE_RENDER_REPLAY_SOURCES
     ../src/native_renderer/replay/NativeRenderReplay.cpp
     ../src/native_renderer/replay/D3D12ReplayBackend.cpp
+    ../src/native_renderer/shader_translation/XenosDisassembly.cpp
     ../src/native_renderer/shader_translation/ShaderTranslation.cpp
     ../src/native_renderer/replay/NativeRenderReplayTool.cpp
 )
 
 set(NATIVE_SHADER_INSPECT_SOURCES
+    ../src/native_renderer/shader_translation/XenosDisassembly.cpp
     ../src/native_renderer/replay/NativeShaderInspect.cpp
 )
 set(REXGLUE_SHADER_SOURCE_DIR "${ReXGlue_SOURCE_DIR}/src/graphics")
