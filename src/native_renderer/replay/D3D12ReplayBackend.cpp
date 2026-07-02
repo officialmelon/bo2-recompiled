@@ -1097,6 +1097,43 @@ void ExpandPointListToQuads(std::vector<RealReplayVertex> &vertices) {
   }
 }
 
+bool ExpandRectListToTriangles(std::vector<RealReplayVertex> &vertices,
+                               uint32_t source_vertex_count,
+                               uint32_t input_layout_mask) {
+  if (source_vertex_count == 0 || (source_vertex_count % 3) != 0 ||
+      source_vertex_count > vertices.size()) {
+    return false;
+  }
+
+  const std::vector<RealReplayVertex> rect_vertices(
+      vertices.begin(), vertices.begin() + source_vertex_count);
+  vertices.clear();
+  vertices.reserve((source_vertex_count / 3) * 6);
+  for (std::size_t i = 0; i < rect_vertices.size(); i += 3) {
+    const RealReplayVertex &v0 = rect_vertices[i + 0];
+    const RealReplayVertex &v1 = rect_vertices[i + 1];
+    const RealReplayVertex &v2 = rect_vertices[i + 2];
+    RealReplayVertex v3 = v0;
+    v3.position[1] = v2.position[1];
+    v3.position[2] = v2.position[2];
+    v3.position[3] = v2.position[3];
+    if ((input_layout_mask & kInputLayoutTexcoord0) != 0) {
+      v3.uv[1] = v2.uv[1];
+    }
+    if ((input_layout_mask & kInputLayoutTexcoord1) != 0) {
+      v3.uv1[1] = v2.uv1[1];
+    }
+
+    vertices.push_back(v0);
+    vertices.push_back(v1);
+    vertices.push_back(v2);
+    vertices.push_back(v0);
+    vertices.push_back(v2);
+    vertices.push_back(v3);
+  }
+  return true;
+}
+
 D3D12_PRIMITIVE_TOPOLOGY TopologyForPrimitive(uint32_t primitive_type) {
   switch (primitive_type) {
   case 1:
@@ -1346,6 +1383,7 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
   const D3D12_PRIMITIVE_TOPOLOGY topology =
       TopologyForPrimitive(draw.primitive_type);
   const bool point_list = topology == D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+  const bool rect_list = draw.primitive_type == 8 && !draw.indexed;
   if (!draw.indexed && !allow_non_indexed) {
     return false;
   }
@@ -1402,6 +1440,12 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
     if (point_list) {
       ExpandPointListToQuads(candidate.vertices);
       candidate.topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    } else if (rect_list) {
+      if (!ExpandRectListToTriangles(candidate.vertices, draw.index_count,
+                                     candidate.input_layout_mask)) {
+        continue;
+      }
+      candidate.topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     }
     if (draw.indexed) {
       const uint32_t max_index =
@@ -1423,8 +1467,8 @@ bool PrepareRealDrawAtIndex(const ReplayCapture &capture, std::size_t index,
       candidate.vertex_count = static_cast<uint32_t>(decoded_indices.size());
     } else {
       const uint32_t vertex_count =
-          point_list ? static_cast<uint32_t>(candidate.vertices.size())
-                     : draw.index_count;
+          (point_list || rect_list) ? static_cast<uint32_t>(candidate.vertices.size())
+                                    : draw.index_count;
       if (vertex_count > candidate.vertices.size()) {
         continue;
       }

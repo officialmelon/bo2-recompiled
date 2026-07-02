@@ -14,6 +14,11 @@ reported as ignored zero-texture no-output utility draws. The related
 semantics are decoded; the replay backend must not synthesize UVs just to make
 the atlas visible.
 
+Primitive type `8` is handled as an Xbox 360 rectangle-list source in real D3D12
+replay. Non-indexed 3-corner rect groups are expanded to two native triangle-list
+triangles before submission. This is a primitive conversion step only; it does
+not bypass shader semantic blockers.
+
 ## Build
 
 The tool is built from the `default` CMake project:
