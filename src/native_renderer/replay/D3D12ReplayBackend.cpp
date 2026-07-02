@@ -4425,6 +4425,7 @@ struct D3D12LiveReplaySessionStorage {
   uint32_t color_accum_width = 0;
   uint32_t color_accum_height = 0;
   bool color_accum_ready = false;
+  bool has_presentable_color = false;
   ComPtr<ID3D12Resource> depth_target;
   ComPtr<ID3D12DescriptorHeap> dsv_heap;
   D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
@@ -4803,6 +4804,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
               reinterpret_cast<D3D12LiveReplaySessionStorage *>(
                   options.live_session);
           if (live_session->color_accum_ready &&
+              live_session->has_presentable_color &&
               live_session->color_accum_target &&
               live_session->color_accum_width == live_binding->width &&
               live_session->color_accum_height == live_binding->height) {
@@ -5858,7 +5860,10 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   }
 
   if (live_submit) {
-    if (live_binding->presentable_frame) {
+    const bool copy_retained_frame =
+        !live_binding->presentable_frame && live_session &&
+        live_session->has_presentable_color && target;
+    if (live_binding->presentable_frame || copy_retained_frame) {
       D3D12_RESOURCE_BARRIER copy_barriers[2]{};
       copy_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
       copy_barriers[0].Transition.pResource = target.Get();
@@ -5895,6 +5900,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
           D3D12_RESOURCE_STATE_COPY_DEST;
       restore_barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
       list->ResourceBarrier(2, restore_barriers);
+      if (live_binding->presentable_frame && live_session) {
+        live_session->has_presentable_color = true;
+      } else if (copy_retained_frame) {
+        live_binding->copied_retained_frame = true;
+      }
     }
     if (live_session) {
       live_session->retained_draw_resources = std::move(uploaded_draws);

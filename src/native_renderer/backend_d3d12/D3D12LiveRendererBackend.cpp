@@ -339,7 +339,11 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
   if (swapchain_ready_ && swap_chain_) {
     PumpNativeWindowMessages();
     if (present_native_frame) {
-      swap_chain_->Present(0, 0);
+      const HRESULT hr = swap_chain_->Present(0, 0);
+      if (FAILED(hr)) {
+        REXLOG_ERROR("BO2 native D3D12 Present failed frame={} hr={:#010x}",
+                     frame_index, static_cast<uint32_t>(hr));
+      }
     }
     PumpNativeWindowMessages();
   }
@@ -669,12 +673,17 @@ void D3D12LiveRendererBackend::NativeWindowThreadMain(uint32_t width,
 
   MSG msg{};
   while (!window_thread_stop_.load()) {
-    const BOOL result = GetMessageW(&msg, nullptr, 0, 0);
-    if (result <= 0) {
-      break;
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+      if (msg.message == WM_QUIT) {
+        window_thread_stop_.store(true);
+        break;
+      }
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
     }
-    TranslateMessage(&msg);
-    DispatchMessageW(&msg);
+    if (!window_thread_stop_.load()) {
+      MsgWaitForMultipleObjects(0, nullptr, FALSE, 16, QS_ALLINPUT);
+    }
   }
   HWND cleanup_hwnd = nullptr;
   {

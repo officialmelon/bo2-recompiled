@@ -2299,3 +2299,67 @@ native_render_replay.exe --capture native_captures\live_d3d12_mp_028\events.json
 
 Result: `165` supported real D3D12 draws, `0` diagnostic pipelines,
 `204` captured texture SRVs, and nonzero color/depth readbacks.
+
+MP043 live retained-present stability update:
+
+The live D3D12 backend now avoids copying retained color before a real
+presentable color frame has been produced. Once a presentable frame exists,
+noop/utility frames can copy the persistent accumulated color target into the
+current swapchain buffer and mark `copied_retained_frame=yes`. This is intended
+to reduce the visible black-frame/dropout pattern without presenting an
+uninitialized early accumulation target.
+
+The native D3D12 render window thread now pumps its own message queue with a
+bounded wait instead of blocking indefinitely in `GetMessageW`. The present path
+also logs failed `IDXGISwapChain::Present` calls with the failing HRESULT.
+
+Validation:
+
+```text
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default_mp\out\build\win-clang-msvc-amd64-relwithdebinfo-msvctarget"" -j12 default_mp.exe"
+```
+
+Result: exit `0`.
+
+```text
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 native_render_replay.exe"
+```
+
+Result: exit `0`.
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_028\events.jsonl --validate --no-summary
+```
+
+Result: `Validation OK: 5000 events, 20 frames, 1022 draws`.
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_028\events.jsonl --backend d3d12 --d3d12-output native-renderer-mp042-retained-gated.bmp --shader-override-root shader_work\native_overrides --skip-unsupported --d3d12-draws 1200
+```
+
+Result: `165` supported real D3D12 draws across `8` shader pairs, `0`
+diagnostic pipelines, `204` captured texture SRVs, and nonzero color/depth
+readbacks.
+
+Bounded live run:
+
+```text
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_verbose false --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+Result: responsive at every sample through `24` seconds; process was killed by
+the watchdog. Latest log:
+`default_mp/out/build/win-clang-msvc-amd64-relwithdebinfo-msvctarget/logs/default_mp_053.log`.
+
+Relevant log evidence:
+
+```text
+BO2 native D3D12 live frame 6 submitted ... presentable_frame=no noop_utility_frame=yes copied_retained_frame=yes
+BO2 native D3D12 live frame 65 submitted real_draws=26 shader_pairs=7 ... presentable_frame=yes ... diagnostic_pipelines=0
+```
+
+No `Present failed` lines were emitted in the run. Remaining live issues are
+still real renderer gaps: some frames have no currently supported complete
+geometry, shader constants for atlas/animated texture coordinate selection are
+missing from native state, and the live path is still serialized around GPU
+fences rather than using a proper frame/resource ring.
