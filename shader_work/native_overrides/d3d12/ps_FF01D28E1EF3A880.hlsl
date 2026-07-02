@@ -16,8 +16,7 @@ struct PSInput
 
 float4 PSMain(PSInput input) : SV_Target0
 {
-  const float4 texel = native_texture0.Sample(native_sampler0, saturate(input.uv));
+  const float4 texel = native_texture0.Sample(native_sampler0, input.uv);
   const float alpha = saturate(max(max(texel.r, texel.g), max(texel.b, texel.a)));
-  return float4(saturate(input.color.rgb * alpha),
-                saturate(input.color.a * alpha));
+  return float4(saturate(input.color.rgb), saturate(input.color.a * alpha));
 }

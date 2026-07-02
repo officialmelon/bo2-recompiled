@@ -1786,3 +1786,131 @@ Remaining live issues:
   CPU work to live replay.
 * The native renderer still relies on many fallback texture/sampler slots, and
   several shader/material semantics are still manually approximated.
+
+## 2026-07-02 720p and sampler-addressing pass
+
+User-observed issues after the accumulated target change:
+
+* the native live window still flickered between partial frame contents
+* some text appeared as white squares
+* textures looked pixelated/weird
+* the user expected the current target to be 720p
+
+Resolution evidence:
+
+* Captured Xenos render state for the MP menu uses `window_scissor=0,0 ->
+  1280,720`, viewport center/extent matching `1280x720`, and
+  `surface_pitch=1280`.
+* The native D3D12 live backend already defaults `frame_width_=1280` and
+  `frame_height_=720`, and creates its DXGI swapchain from that frame size or
+  from captured command-buffer snapshot dimensions.
+* The ReXGlue app defaults were still forcing `video_mode_width=854` and
+  `video_mode_height=480` for both SP and MP launchers. Those defaults now use
+  `1280x720` so the host app window matches the native/captured 720p target.
+
+Texture evidence:
+
+* Draw 28 format-19 `2048x128` texture decoded cleanly as the repeated Treyarch
+  icon strip.
+* Draw 29 format-20 `256x64` texture decoded cleanly as the BO2 logo.
+* Draw 511 format-6 `1024x1024` texture decoded cleanly as a dark hex-pattern
+  background.
+* Draw 513 format-2 `512x1024` texture decoded cleanly as the font atlas.
+
+That evidence points away from base tiled texture decode for those menu
+resources. The immediate bug found in the manual D3D12 shader overrides was
+shader-side UV clamping: several overrides sampled `saturate(input.uv)`,
+which bypassed captured Xenos sampler address modes. Effect draws in this
+capture include wrap samplers (`clamp=0,0,0`), so forcing shader-side clamp can
+produce smeared/weird imagery. The overrides now pass raw UVs/offset UVs to the
+D3D12 sampler and let the captured sampler state choose wrap or clamp.
+
+The font override also now outputs straight-alpha text color:
+
+```text
+rgb = input color
+alpha = input alpha * sampled font coverage
+```
+
+instead of premultiplying RGB and then using the captured straight-alpha blend
+state.
+
+Build validation:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default_mp\out\build\win-clang-msvc-amd64-relwithdebinfo-msvctarget"" -j12 default_mp.exe"
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 native_render_replay default.exe"
+```
+
+The MP target was up to date. The debug/default target completed after the
+guard timeout expired; a follow-up process check confirmed the existing Ninja
+process completed.
+
+Replay validation:
+
+```text
+Validation OK: 6500 events, 25 frames, 1317 draws
+```
+
+Post-fix offline replay of `live_d3d12_mp_019`:
+
+```text
+D3D12 real replay submitted 232 supported draw(s) across 8 shader pair(s)
+D3D12 real replay PSO cache: entries=11 misses=11 hits=221 diagnostic_pipelines=0
+D3D12 real replay bound 282 captured texture SRV(s), 1574 fallback texture SRV(s)
+D3D12 real replay bound 282 captured sampler descriptor(s), 934 fallback sampler descriptor(s)
+D3D12 real replay draw classes: scene_candidate=159 depth_only=58 utility=15
+D3D12 real replay color readback: bytes=3686400 nonzero=3685950
+```
+
+Output:
+`C:\Users\braxt\bo2-recompiled\native-renderer-mp019-resolution-sampler-fix.bmp`.
+
+Fresh visible live MP run:
+
+```powershell
+default_mp.exe --native_renderer_mode native_d3d12 --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_020\events.jsonl --native_renderer_capture_limit 7500 --native_renderer_capture_flush_interval 64 --native_renderer_verbose true --native_renderer_live_allow_diagnostic_shader false --native_renderer_skip_unsupported_draws true
+```
+
+The process stayed alive until the `75s` guard stopped it. Validation:
+
+```text
+Validation OK: 7500 events, 26 frames, 1458 draws
+```
+
+Aggregated live-submit counters:
+
+```text
+live_submit_events=26
+attempted=25
+success=25
+failed=0
+noop_utility_frames=10
+presentable=7
+presented=7
+not_presented=19
+total_submitted_draws=152
+total_scene_draws=107
+total_depth_draws=36
+total_utility_draws=9
+max_scene_draws=25
+diagnostic_pipelines_sum=0
+```
+
+Known caveat from the same run: whole-capture offline replay of MP020 selected
+a final guest color base that read back black (`nonzero=0`). MP019 remains the
+reliable post-fix visual regression artifact. This target-selection issue is
+separate from the live submit telemetry and needs follow-up in the replay
+present/frontbuffer selection logic.
+
+Remaining live issues:
+
+* The native renderer is still not complete. It still supports only a subset of
+  the captured shader pairs and resource/state semantics.
+* Live present scheduling still alternates presentable buckets with
+  non-presented utility/noop buckets. The accumulated target reduces black
+  flip-discard loss, but this is not a full command-stream scheduler.
+* The replay target-selection logic can still choose a black final target for
+  some captures, as seen with MP020.
+* Several shader effects are still manual approximations, especially the
+  multi-texture background/effect pairs.

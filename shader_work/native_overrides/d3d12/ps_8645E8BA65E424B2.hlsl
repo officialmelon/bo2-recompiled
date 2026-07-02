@@ -32,20 +32,20 @@ struct PSInput
 
 float4 PSMain(PSInput input) : SV_Target0
 {
-  const float2 uv = saturate(input.uv);
+  const float2 uv = input.uv;
   const float2 c232 = captured_constants[232 & 511].xy;
   const float2 c233 = captured_constants[233 & 511].zw;
   const float2 c234 = captured_constants[234 & 511].xy;
   const float2 c235 = captured_constants[235 & 511].zw;
 
   const float tf2 = native_texture0.Sample(native_sampler0,
-      saturate(uv + c233 * (1.0f / 128.0f))).r;
+      uv + c233 * (1.0f / 128.0f)).r;
   const float tf1a = native_texture1.Sample(native_sampler1,
-      saturate(uv + c232 * (1.0f / 128.0f))).r;
+      uv + c232 * (1.0f / 128.0f)).r;
   const float tf1b = native_texture2.Sample(native_sampler2,
-      saturate(uv + c234 * (1.0f / 128.0f))).r;
+      uv + c234 * (1.0f / 128.0f)).r;
   const float tf1c = native_texture3.Sample(native_sampler3,
-      saturate(uv + c235 * (1.0f / 128.0f))).r;
+      uv + c235 * (1.0f / 128.0f)).r;
   const float tf1d = native_texture4.Sample(native_sampler4, uv).r;
 
   const float mask = saturate(max(tf2, max(tf1a, tf1b)) +

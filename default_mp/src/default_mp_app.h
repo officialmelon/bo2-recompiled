@@ -58,8 +58,8 @@ class DefaultMpApp : public rex::ReXApp {
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
     rex::cvar::SetFlagByName("vsync", "false");
-    rex::cvar::SetFlagByName("video_mode_width", "854");
-    rex::cvar::SetFlagByName("video_mode_height", "480");
+    rex::cvar::SetFlagByName("video_mode_width", "1280");
+    rex::cvar::SetFlagByName("video_mode_height", "720");
     rex::cvar::SetFlagByName("video_mode_refresh_rate", "60");
     rex::cvar::SetFlagByName("draw_resolution_scale_x", "1");
     rex::cvar::SetFlagByName("draw_resolution_scale_y", "1");
