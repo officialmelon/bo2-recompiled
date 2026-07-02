@@ -255,6 +255,12 @@ struct PM4DrawRecord {
   std::vector<TextureFetchRecord> texture_fetches;
   bool texture_fetch_truncated = false;
   bool texture_fetch_state_present = false;
+  uint32_t float_constant_dword_count = 0;
+  uint32_t float_constant_resource_byte_count = 0;
+  std::string float_constant_resource_path;
+  std::vector<uint32_t> float_constant_dwords;
+  bool float_constants_missing = true;
+  bool float_constants_loaded_from_resource = false;
   RenderStateRecord render_state;
   uint32_t major_mode = 0;
   bool explicit_major_mode = false;

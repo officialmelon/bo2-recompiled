@@ -2510,3 +2510,31 @@ remaining texture/atlas correctness issue. The texture issue still tracks to
 missing semantic shader constants (`c72`, `c73`, `c232-c235`, and sometimes
 `c252-c253`) rather than mip selection; base texture payloads are present and
 the D3D12 sampler is clamped to mip 0.
+
+Draw-time float constant snapshots:
+
+ReXGlue now copies the full Xenos ALU float constant file (`c0..c511`, 2048
+dwords) into each native draw trace event. The BO2 capture writer stores this
+snapshot as `resources/float_constants_*.bin` sidecars instead of inline JSON
+so captures do not produce giant draw lines. Replay loads those sidecars and
+seeds the D3D12 constant buffer from the draw snapshot before applying explicit
+PM4 constant uploads.
+
+Validation:
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_057_float_constants_sidecar\events.jsonl --validate --no-summary
+```
+
+Result: `Validation OK: 4000 events, 17 frames, 828 draws`.
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_057_float_constants_sidecar\events.jsonl --backend d3d12 --d3d12-output native-renderer-mp057-float-constants-replay.bmp --shader-override-root shader_work\native_overrides --skip-unsupported --d3d12-draws 1200
+```
+
+Result: `118` supported real draws across `8` shader pairs, nonzero
+color/depth output, `148` captured texture SRVs, and no semantic constant gap
+report for `PS=0x7D1EF030F5710BDA` or `PS=0x8645E8BA65E424B2`. This removes
+the proven missing-constant cause of stretched/static atlas sampling. Remaining
+texture issues should now be debugged as shader math/translation, sampler
+addressing, or texture decode issues rather than absent `c72/c235/...` state.

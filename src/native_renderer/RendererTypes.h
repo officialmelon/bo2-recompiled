@@ -331,6 +331,9 @@ struct PM4DrawInfo {
   static constexpr std::size_t kMaxIndexPayloadBytes = 1024;
   static constexpr std::size_t kMaxVertexFetches = 32;
   static constexpr std::size_t kMaxTextureFetches = 64;
+  static constexpr std::size_t kFloatConstantCount = 512;
+  static constexpr std::size_t kFloatConstantDwordCount =
+      kFloatConstantCount * 4;
 
   uint64_t event_index = 0;
   std::string_view opcode_name;
@@ -358,6 +361,9 @@ struct PM4DrawInfo {
   uint32_t texture_fetch_count = 0;
   std::array<TextureFetchInfo, kMaxTextureFetches> texture_fetches{};
   bool texture_fetch_truncated = false;
+  uint32_t float_constant_dword_count = 0;
+  std::array<uint32_t, kFloatConstantDwordCount> float_constant_dwords{};
+  bool float_constants_missing = true;
   RenderStateInfo render_state{};
   uint32_t major_mode = 0;
   bool explicit_major_mode = false;

@@ -710,6 +710,37 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
     WriteTextureFetchObject(draw.texture_fetches[i], true);
   }
   file_ << ']';
+  WriteU64Field("float_constant_dword_count",
+                draw.float_constant_dword_count);
+  WriteBoolField("float_constants_missing", draw.float_constants_missing);
+  const uint32_t float_constant_count = std::min<uint32_t>(
+      draw.float_constant_dword_count, draw.float_constant_dwords.size());
+  std::string float_constant_resource_path;
+  const bool float_constant_sidecar =
+      float_constant_count > 0 &&
+      WriteBinaryResource(
+          "float_constants",
+          reinterpret_cast<const uint8_t *>(draw.float_constant_dwords.data()),
+          static_cast<uint32_t>(float_constant_count * sizeof(uint32_t)),
+          float_constant_resource_path);
+  if (float_constant_sidecar) {
+    WriteU64Field("float_constant_resource_byte_count",
+                  uint64_t(float_constant_count) * sizeof(uint32_t));
+    WriteStringField("float_constant_resource_path",
+                     float_constant_resource_path);
+  }
+  WriteFieldPrefix("float_constant_dwords");
+  file_ << '[';
+  const uint32_t inline_float_constant_count = float_constant_sidecar
+                                                  ? 0
+                                                  : float_constant_count;
+  for (uint32_t i = 0; i < inline_float_constant_count; ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(draw.float_constant_dwords[i], 8) << '"';
+  }
+  file_ << ']';
   WriteFieldPrefix("render_state");
   file_ << '{';
   const RenderStateInfo &state = draw.render_state;

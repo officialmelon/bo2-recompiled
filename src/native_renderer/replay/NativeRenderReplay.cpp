@@ -1018,6 +1018,25 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
     if (event.draw.texture_fetches.size() < event.draw.texture_fetch_count) {
       event.draw.texture_fetch_truncated = true;
     }
+    event.draw.float_constant_dword_count =
+        GetU32(object, "float_constant_dword_count");
+    event.draw.float_constant_resource_byte_count =
+        GetU32(object, "float_constant_resource_byte_count");
+    event.draw.float_constant_resource_path =
+        GetString(object, "float_constant_resource_path");
+    event.draw.float_constant_dwords =
+        GetU32Array(object, "float_constant_dwords");
+    if (event.draw.float_constant_dword_count == 0 &&
+        !event.draw.float_constant_dwords.empty()) {
+      event.draw.float_constant_dword_count =
+          static_cast<uint32_t>(event.draw.float_constant_dwords.size());
+    }
+    event.draw.float_constants_missing = GetBool(
+        object, "float_constants_missing",
+        !FindValue(object, "float_constant_dwords"));
+    if (!event.draw.float_constant_dwords.empty()) {
+      event.draw.float_constants_missing = false;
+    }
     event.draw.render_state = ParseRenderState(object);
     event.draw.major_mode = GetU32(object, "major_mode");
     event.draw.explicit_major_mode = GetBool(object, "explicit_major_mode");
@@ -1357,6 +1376,60 @@ void LoadTexturePayloadSidecars(ReplayCapture &capture,
         fetch.payload_byte_count =
             static_cast<uint32_t>(fetch.payload_bytes.size());
       }
+    }
+  }
+}
+
+void LoadFloatConstantSidecars(ReplayCapture &capture,
+                               const ReplayLoadOptions &options) {
+  const std::filesystem::path base_dir = capture.path.parent_path();
+  for (CaptureEvent &event : capture.events) {
+    if (event.type != CaptureEventType::PM4Draw ||
+        event.draw.float_constant_resource_path.empty()) {
+      continue;
+    }
+
+    std::filesystem::path resource_path(event.draw.float_constant_resource_path);
+    if (resource_path.is_relative()) {
+      resource_path = base_dir / resource_path;
+    }
+
+    std::vector<uint8_t> bytes;
+    std::string error;
+    if (!ReadSidecarResource(resource_path, bytes, error)) {
+      AddWarning(capture, options,
+                 "float constant sidecar load failed for seq " +
+                     std::to_string(event.seq) + ": " + error);
+      continue;
+    }
+
+    if (event.draw.float_constant_resource_byte_count != 0 &&
+        event.draw.float_constant_resource_byte_count != bytes.size()) {
+      AddWarning(capture, options,
+                 "float constant sidecar byte count mismatch for seq " +
+                     std::to_string(event.seq) + ": expected " +
+                     std::to_string(
+                         event.draw.float_constant_resource_byte_count) +
+                     " got " + std::to_string(bytes.size()));
+    }
+
+    const std::size_t dword_count = bytes.size() / sizeof(uint32_t);
+    event.draw.float_constant_dwords.resize(dword_count);
+    if (!event.draw.float_constant_dwords.empty()) {
+      std::memcpy(event.draw.float_constant_dwords.data(), bytes.data(),
+                  dword_count * sizeof(uint32_t));
+    }
+    event.draw.float_constants_loaded_from_resource = true;
+    event.draw.float_constants_missing = false;
+    if (event.draw.float_constant_dword_count == 0 ||
+        event.draw.float_constant_dword_count <
+            event.draw.float_constant_dwords.size()) {
+      event.draw.float_constant_dword_count = static_cast<uint32_t>(
+          event.draw.float_constant_dwords.size());
+    }
+    if (event.draw.float_constant_resource_byte_count == 0) {
+      event.draw.float_constant_resource_byte_count =
+          static_cast<uint32_t>(bytes.size());
     }
   }
 }
@@ -2779,6 +2852,7 @@ bool LoadReplayCapture(const std::filesystem::path &path,
 
   LoadVertexPayloadSidecars(capture, options);
   LoadTexturePayloadSidecars(capture, options);
+  LoadFloatConstantSidecars(capture, options);
   LoadFrontbufferPayloadSidecars(capture, options);
   LoadRenderTargetPayloadSidecars(capture, options);
   AnalyzeReplayCapture(capture, options);

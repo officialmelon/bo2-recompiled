@@ -531,6 +531,18 @@ void OnNativeRendererDraw(const rex::graphics::NativeRendererDrawEvent *event,
   CopyDrawIndexPayloadIfPresent(event, draw);
   CopyDrawVertexFetchesIfPresent(event, draw);
   CopyDrawTextureFetchesIfPresent(event, draw);
+  if constexpr (requires {
+                  event->float_constant_dword_count;
+                  event->float_constant_dwords[0];
+                  event->float_constants_missing;
+                }) {
+    draw.float_constant_dword_count = std::min<uint32_t>(
+        event->float_constant_dword_count, draw.float_constant_dwords.size());
+    for (uint32_t i = 0; i < draw.float_constant_dword_count; ++i) {
+      draw.float_constant_dwords[i] = event->float_constant_dwords[i];
+    }
+    draw.float_constants_missing = event->float_constants_missing;
+  }
   CopyDrawRenderStateIfPresent(event, draw);
   draw.major_mode = event->major_mode;
   draw.explicit_major_mode = event->explicit_major_mode;

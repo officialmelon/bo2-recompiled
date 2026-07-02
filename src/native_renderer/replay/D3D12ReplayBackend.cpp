@@ -3896,6 +3896,21 @@ bool WriteOverrideCacheIndex(const ReplayDrawState &draw_state,
 PreparedCapturedConstants BuildCapturedConstants(
     const ReplayDrawState &draw_state) {
   PreparedCapturedConstants prepared;
+  if (!draw_state.draw.float_constants_missing &&
+      !draw_state.draw.float_constant_dwords.empty()) {
+    const uint32_t copy_count = std::min<uint32_t>(
+        static_cast<uint32_t>(draw_state.draw.float_constant_dwords.size()),
+        kCapturedConstantDwordCount);
+    for (uint32_t i = 0; i < copy_count; ++i) {
+      prepared.dwords[i] = draw_state.draw.float_constant_dwords[i];
+    }
+    const uint32_t present_count = std::min<uint32_t>(
+        kCapturedFloat4ConstantCount, (copy_count + 3u) / 4u);
+    for (uint32_t i = 0; i < present_count; ++i) {
+      prepared.present[i] = true;
+    }
+    prepared.count = copy_count;
+  }
   std::vector<const PM4ConstantRecord *> records;
   records.reserve(draw_state.bound_constants.size());
   for (const PM4ConstantRecord &record : draw_state.bound_constants) {
