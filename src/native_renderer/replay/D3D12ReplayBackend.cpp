@@ -5516,7 +5516,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         static_cast<uint64_t>(scene_candidate_draws);
     live_binding->depth_only_draws = static_cast<uint64_t>(depth_only_draws);
     live_binding->utility_draws = static_cast<uint64_t>(utility_draws);
-    live_binding->presentable_frame = scene_candidate_draws >= 6;
+    live_binding->presentable_frame = scene_candidate_draws > 0;
   }
   if (log_backend) {
     std::cout << "D3D12 real replay PSO cache: entries=" << pipelines->size()

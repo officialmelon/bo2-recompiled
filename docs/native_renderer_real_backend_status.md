@@ -1943,6 +1943,9 @@ Change:
 * `RunD3D12RealReplayBackend` no longer prints the full D3D12 replay summary
   for every live frame submission. Offline replay output is unchanged.
 * `D3D12LiveSubmitBinding` now reports `copied_retained_frame`.
+* Live frames with any scene-candidate draw are now marked presentable. The old
+  `scene_candidate_draws >= 6` threshold skipped real low-draw scene buckets,
+  which showed up as avoidable non-presented live frames.
 * For live noop utility buckets, the D3D12 replay backend copies the retained
   accumulated native render target to the current swapchain backbuffer when a
   retained target is available. The live backend executes and presents that
@@ -2010,3 +2013,42 @@ D3D12 real replay color readback: bytes=3686400 nonzero=3685914
 
 Output:
 `C:\Users\braxt\bo2-recompiled\native-renderer-mp023-retained-present.bmp`.
+
+MP024 low-scene present threshold update:
+
+The previous live presentability threshold required at least six
+scene-candidate draws. MP023 showed several real low-draw scene buckets with
+`scene_candidate_draws=2` that were submitted but not presented. The live
+threshold now marks any bucket with at least one scene-candidate draw as
+presentable; noop utility buckets still use retained-frame copy when possible.
+
+```text
+exit=timeout_killed after 45s guard
+stdout=0 bytes
+stderr=0 bytes
+Validation OK: 5000 events, 19 frames, 988 draws
+live_submit_events=19 attempted=19 success=19 failed=0
+noop_utility_frames=8
+presentable=9
+copied_retained=7
+presented=16
+not_presented=3
+diagnostic_pipelines_sum=0
+```
+
+Compared with MP023, presented live-submit events improved from `8/20` to
+`16/19`. The remaining non-presented events are startup buckets with no
+scene-candidate draw and no retained native frame yet.
+
+Fresh MP024 offline replay:
+
+```text
+D3D12 real replay submitted 163 supported draw(s) across 9 shader pair(s)
+D3D12 real replay PSO cache: entries=12 misses=12 hits=151 diagnostic_pipelines=0
+D3D12 real replay bound 180 captured texture SRV(s), 1124 fallback texture SRV(s)
+D3D12 real replay draw classes: scene_candidate=108 depth_only=44 utility=11
+D3D12 real replay color readback: bytes=3686400 nonzero=3686400
+```
+
+Output:
+`C:\Users\braxt\bo2-recompiled\native-renderer-mp024-low-scene-present.bmp`.
