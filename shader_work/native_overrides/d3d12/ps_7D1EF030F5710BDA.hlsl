@@ -13,11 +13,6 @@ cbuffer CapturedConstants : register(b1)
   float4 captured_constants[512];
 };
 
-// PM4 constant upload indices in captures are dword/register-file offsets.
-// The D3D12 native backend stores them as sparse float4 slots using index >> 3.
-static const uint kBo2Const244 = 1952u >> 3;
-static const uint kBo2Const254 = 2032u >> 3;
-
 Texture2D native_texture0 : register(t0);
 Texture2D native_texture1 : register(t1);
 Texture2D native_texture2 : register(t2);
@@ -36,20 +31,46 @@ struct PSInput
 
 float4 PSMain(PSInput input) : SV_Target0
 {
-  const float2 uv = saturate(input.uv);
-  const float2 wave = captured_constants[kBo2Const254].xy;
-  const float2 bias = captured_constants[kBo2Const244].zw;
-  const float tf1 = native_texture0.Sample(native_sampler0, uv).r;
-  const float tfa = native_texture1.Sample(native_sampler1, uv).r;
-  const float tfb = native_texture2.Sample(native_sampler2,
-      saturate(uv + wave * (1.0f / 128.0f))).r;
-  const float tfc = native_texture3.Sample(native_sampler3,
-      saturate(uv + bias * (1.0f / 128.0f))).r;
+  // Follow the decoded Xenos scalar path closely enough to preserve the BO2
+  // animated atlas coordinates. The backend repacks captured constants by
+  // semantic register index, so c72 is captured_constants[72], not a raw PM4
+  // dword offset.
+  const float4 c72 = captured_constants[72];
+  const float4 c235 = captured_constants[235];
+  const float4 c252 = captured_constants[252];
+  const float4 c253 = captured_constants[253];
+  const float4 c254 = captured_constants[254];
+  const float4 c255 = captured_constants[255];
 
-  const float mask = saturate(abs(tf1) * 1.35f +
-                              abs(captured_constants[kBo2Const254].z) *
-                                  (1.0f / 64.0f));
-  const float3 scalar_color = float3(tfa, tfb, tfc) * mask;
-  return float4(saturate(scalar_color * max(input.color.rgb, 0.35f.xxx)),
-                0.0f);
+  const float2 uv = input.uv;
+  float4 r0 = input.color;
+  float4 r1 = float4(uv, uv);
+  float4 r2 = c72.w * c255.xzwy;
+
+  r2.y = c235.w + r2.y;
+  r1.zw = frac(r2.xw);
+  r2.x = (r2.z >= 0.0f) ? frac(abs(r2.z)) : -frac(abs(r2.z));
+  r1.w = dot(r1.xy, c235.xy) + r1.w;
+  r1.z = dot(r1.xy, c253.zw) + r1.z;
+  r1.x = (r2.y >= 0.0f) ? frac(abs(r2.y)) : -frac(abs(r2.y));
+  r2.yz = r1.zw * c252.ww;
+  r1.zw = r2.yx + c252.yx;
+
+  const float tf1_x = native_texture0.Sample(native_sampler0, r1.xz).r;
+  r1.x = tf1_x;
+  r1.x = r1.w + r2.x;
+  r1.y = abs(r1.y) * abs(r1.y);
+  r2.yz = r2.yz + c252.yz;
+  r2.xw = (-r1.y) * c253.xy + r2.zz;
+
+  const float tf2_x = native_texture1.Sample(native_sampler1, r2.xy).r;
+  const float tf2_y = native_texture2.Sample(native_sampler2, r2.wy).r;
+  const float tf2_z = native_texture3.Sample(native_sampler3, r2.zy).r;
+  r1.x = tf2_x;
+  r1.y = tf2_y;
+  r1.z = tf2_z;
+
+  r0.yzw = r1.yzw * r0.xyz;
+  r0.x = abs(r1.x) * c235.z + c254.x;
+  return float4(saturate(r0.yzw * r0.x), 0.0f);
 }

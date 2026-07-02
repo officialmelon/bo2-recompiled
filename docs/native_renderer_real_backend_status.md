@@ -2521,6 +2521,14 @@ repacks the raw Xenos register-file layout (`cN` at raw dword `N * 8`) into
 the native D3D12/HLSL `float4 captured_constants[]` layout before applying
 explicit PM4 constant uploads.
 
+The MP menu pixel shader overrides for `PS=0x7D1EF030F5710BDA` and
+`PS=0x8645E8BA65E424B2` now consume that repacked buffer by semantic constant
+index (`c72`, `c73`, `c232-c235`, `c252-c255`). Older override code still used
+stale raw/register-file offset math such as `1952 >> 3` for atlas constants;
+that selected `c244` instead of `c232` after the full constant snapshot path
+landed. The overrides now preserve wrap/animated atlas coordinates more closely
+to the decoded Xenos ALU and leave captured sampler address modes in control.
+
 Validation:
 
 ```text

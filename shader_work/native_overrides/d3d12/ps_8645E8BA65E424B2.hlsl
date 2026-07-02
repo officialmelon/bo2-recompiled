@@ -12,14 +12,6 @@ cbuffer CapturedConstants : register(b1)
   float4 captured_constants[512];
 };
 
-// PM4 constant upload indices in captures are dword/register-file offsets.
-// The D3D12 native backend stores them as sparse float4 slots using index >> 3.
-static const uint kBo2Const244 = 1952u >> 3;
-static const uint kBo2Const245 = kBo2Const244 + 1u;
-static const uint kBo2Const246 = kBo2Const244 + 2u;
-static const uint kBo2Const247 = kBo2Const244 + 3u;
-static const uint kBo2Const254 = 2032u >> 3;
-
 Texture2D native_texture0 : register(t0);
 Texture2D native_texture1 : register(t1);
 Texture2D native_texture2 : register(t2);
@@ -40,27 +32,83 @@ struct PSInput
 
 float4 PSMain(PSInput input) : SV_Target0
 {
-  const float2 uv = input.uv;
-  const float2 c232 = captured_constants[kBo2Const244].xy;
-  const float2 c233 = captured_constants[kBo2Const245].zw;
-  const float2 c234 = captured_constants[kBo2Const246].xy;
-  const float2 c235 = captured_constants[kBo2Const247].zw;
+  const float4 c72 = captured_constants[72];
+  const float4 c73 = captured_constants[73];
+  const float4 c232 = captured_constants[232];
+  const float4 c233 = captured_constants[233];
+  const float4 c234 = captured_constants[234];
+  const float4 c235 = captured_constants[235];
+  const float4 c252 = captured_constants[252];
+  const float4 c253 = captured_constants[253];
+  const float4 c254 = captured_constants[254];
+  const float4 c255 = captured_constants[255];
 
-  const float tf2 = native_texture0.Sample(native_sampler0,
-      uv + c233 * (1.0f / 128.0f)).r;
-  const float tf1a = native_texture1.Sample(native_sampler1,
-      uv + c232 * (1.0f / 128.0f)).r;
-  const float tf1b = native_texture2.Sample(native_sampler2,
-      uv + c234 * (1.0f / 128.0f)).r;
-  const float tf1c = native_texture3.Sample(native_sampler3,
-      uv + c235 * (1.0f / 128.0f)).r;
-  const float tf1d = native_texture4.Sample(native_sampler4, uv).r;
+  float4 r0 = input.color;
+  float4 r1 = float4(input.uv, input.uv);
+  float4 r2 = r1.yxyx * c255.yzxy;
+  float4 r3 = 0.0f;
+  float4 r4 = 0.0f;
+  float4 r5 = 0.0f;
+  float4 r6 = 0.0f;
 
-  const float mask = saturate(max(tf2, max(tf1a, tf1b)) +
-                              abs(captured_constants[kBo2Const254].w) *
-                                  (1.0f / 64.0f));
-  const float3 scalar_color = float3(tf1a, tf1b, max(tf1c, tf1d)) * mask;
-  const float alpha = saturate(mask * max(input.color.a, 0.5f));
-  return float4(saturate(scalar_color * max(input.color.rgb, 0.35f.xxx)),
-                alpha);
+  r4.yz = c72.ww * c235.xy;
+  r4.xw = r4.yz + c235.zw;
+  r3.xyz = frac(abs(r4.wxy));
+  r1.w = max(r2.z, r2.z);
+  r6.x = (r4.w >= 0.0f) ? r3.x : -r3.x;
+  r3.x = (r4.x >= 0.0f) ? r3.y : -r3.y;
+  r3.z = (r4.y >= 0.0f) ? r3.z : -r3.z;
+  r3.w = r3.z - c252.w;
+  r3.y = c233.z + r1.w;
+  r1.zw = r3.wx + r3.zx;
+  r3.z = c233.w + r2.x;
+  r3.x = abs(r1.z) * c232.y;
+  r3.w = c233.w + r2.y;
+  r3 += c253.xyzz;
+  r6.yzw = r3.zyw + r2.ywx;
+  r4.x = native_texture0.Sample(native_sampler0, r6.xy).r;
+
+  r3.yz = c72.ww * c234.xy;
+  r4.yz = c73.xy + c252.xx;
+  r5.x = frac(r3.y);
+  r1.xy = r4.yz + r1.xy;
+  r5.y = frac(r3.z);
+  r4.yz = r2.wy + r5.xy;
+  r1.x = dot(r1.xy, r1.xy) + c255.w;
+  r1.yz = r4.yz + r2.zx;
+  r1.x = sqrt(abs(r1.x));
+  r2.yzw = r1.yzx * c234.zzw;
+  r1.w = -r1.w + c252.w;
+  r1.y = -r4.x;
+  r2.x = saturate(r1.w + r2.w);
+  r1.x = saturate(c253.w * r1.x);
+  r4.xzw = r2.yzx + c252.zyx;
+  r0 = max(r0, r1.xxxx);
+  r1.x = saturate(abs(r4.w) * c232.z);
+  r1.z = saturate(r1.x * r3.x);
+  r3.xyz = (-r1.xzx) * c254.wzx + c254.yzx;
+  r1.x = r3.z * r1.y;
+  r1.y = c232.x * r1.y;
+  r1.z = r1.y * r3.z;
+  r1.xy = r6.zz + r1.xz;
+  r0 = max(r0, r6.wwww);
+  r1.yz = r1.xy + r5.xx;
+  r1.x = r5.y + r1.x;
+  r2.xzw = r1.zxy * c234.zzz;
+  r4.y = c234.z * r1.x;
+
+  r2.x = native_texture1.Sample(native_sampler1, r2.xz).r;
+  r2.y = native_texture2.Sample(native_sampler2, r4.xy).r;
+  r2.z = native_texture3.Sample(native_sampler3, r2.wz).r;
+  r1.w = native_texture4.Sample(native_sampler4, r4.xz).r;
+
+  r2.w = c252.w - r1.x;
+  r2 = r3.xxxy * r2;
+  r1.w = r2.w + r1.x;
+  r1.xy = -r2.xy + c233.xy;
+  r0 = max(r0, -r2.zzzz);
+  r1.xy = r3.yy * r1.xy;
+  r1.z = r0.x * r3.y;
+  r1.xyz = r2.xyz + r1.xyz;
+  return saturate(r1 * r0);
 }
