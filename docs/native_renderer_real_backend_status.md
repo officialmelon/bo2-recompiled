@@ -2639,3 +2639,30 @@ Both validate with `native_render_replay.exe --validate --no-summary`.
 higher-coverage frames becoming eligible. The subsequent stricter half-coverage
 policy is intended to keep those later partial frames from flickering until
 the renderer supports substantially more of the captured frame.
+
+Live render-target cache:
+
+`D:\UnleashedRecomp` keeps guest render targets/depth surfaces as persistent
+GPU resources and binds framebuffers by render-target/depth pair. BO2 live
+`native_d3d12` previously drew every supported draw into one accumulated color
+target. That allowed offscreen work, depth/utility passes, and final color work
+to overwrite each other in live mode even though offline replay already had a
+small render-target cache keyed by captured guest color base.
+
+The live D3D12 session now owns a persistent `D3D12ReplayRenderTargetCache`.
+Each supported draw binds the RTV associated with its captured guest color base.
+When a frame passes the live presentability gate, the selected presented guest
+target is copied into the retained `color_accum_target`; non-presentable frames
+still copy the retained target to the swapchain. This brings live target
+composition closer to the offline replay and Unleashed-style persistent surface
+model, while keeping the retained-frame guard intact.
+
+Validation:
+
+```text
+default_mp.exe --native_renderer_mode=native_d3d12 --native_renderer_capture_path=native_captures\live_d3d12_mp_069_live_rt_cache\events.jsonl --native_renderer_capture_limit=7000 --native_renderer_capture_flush_interval=64 --native_renderer_verbose=true --native_renderer_live_allow_diagnostic_shader=false --native_renderer_skip_unsupported_draws=true
+native_render_replay.exe --capture native_captures\live_d3d12_mp_069_live_rt_cache\events.jsonl --validate --no-summary
+```
+
+Result: bounded live run stayed responsive through the watchdog window and the
+capture validates: `Validation OK: 7000 events, 24 frames, 1344 draws`.

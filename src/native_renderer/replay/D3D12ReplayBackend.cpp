@@ -4500,6 +4500,8 @@ struct D3D12LiveReplaySessionStorage {
   ComPtr<ID3D12Resource> color_accum_target;
   ComPtr<ID3D12DescriptorHeap> color_accum_rtv_heap;
   D3D12_CPU_DESCRIPTOR_HANDLE color_accum_rtv{};
+  D3D12ReplayRenderTargetCache color_target_cache;
+  uint32_t presented_guest_color_base = 0;
   uint32_t color_accum_width = 0;
   uint32_t color_accum_height = 0;
   bool color_accum_ready = false;
@@ -5208,9 +5210,13 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       live_session->color_accum_width = width;
       live_session->color_accum_height = height;
       live_session->color_accum_ready = true;
+      live_session->color_target_cache = {};
+      live_session->presented_guest_color_base = 0;
+      live_session->has_presentable_color = false;
       list->ClearRenderTargetView(live_session->color_accum_rtv,
                                   clear_value.Color, 0, nullptr);
     }
+    live_session->presented_guest_color_base = presented_guest_color_base;
     target = live_session->color_accum_target;
     rtv_heap = live_session->color_accum_rtv_heap;
     rtv = live_session->color_accum_rtv;
@@ -5995,7 +6001,23 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       bound_pipeline = pipeline;
     }
     D3D12_CPU_DESCRIPTOR_HANDLE draw_rtv = rtv;
-    if (!live_submit) {
+    if (live_submit) {
+      const uint32_t draw_guest_color_base =
+          GuestColorBaseForDraw(uploaded_state);
+      D3D12ReplayRenderTarget *draw_target = nullptr;
+      if (!CreateReplayRenderTarget(device.Get(),
+                                    live_session->color_target_cache,
+                                    draw_guest_color_base, width, height,
+                                    format, clear_value, draw_target, error)) {
+        return false;
+      }
+      if (!draw_target->initialized) {
+        list->ClearRenderTargetView(draw_target->rtv, clear_value.Color, 0,
+                                    nullptr);
+        draw_target->initialized = true;
+      }
+      draw_rtv = draw_target->rtv;
+    } else {
       const uint32_t draw_guest_color_base =
           GuestColorBaseForDraw(uploaded_state);
       D3D12ReplayRenderTarget *draw_target = nullptr;
@@ -6065,6 +6087,52 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   }
 
   if (live_submit) {
+    if (live_binding->presentable_frame && live_session &&
+        live_session->color_accum_target) {
+      auto presented_it = live_session->color_target_cache.targets.find(
+          live_session->presented_guest_color_base);
+      if (presented_it != live_session->color_target_cache.targets.end() &&
+          presented_it->second.resource &&
+          presented_it->second.resource.Get() !=
+              live_session->color_accum_target.Get()) {
+        D3D12_RESOURCE_BARRIER accum_barriers[2]{};
+        accum_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        accum_barriers[0].Transition.pResource =
+            presented_it->second.resource.Get();
+        accum_barriers[0].Transition.Subresource =
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        accum_barriers[0].Transition.StateBefore =
+            D3D12_RESOURCE_STATE_RENDER_TARGET;
+        accum_barriers[0].Transition.StateAfter =
+            D3D12_RESOURCE_STATE_COPY_SOURCE;
+        accum_barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        accum_barriers[1].Transition.pResource =
+            live_session->color_accum_target.Get();
+        accum_barriers[1].Transition.Subresource =
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        accum_barriers[1].Transition.StateBefore =
+            D3D12_RESOURCE_STATE_RENDER_TARGET;
+        accum_barriers[1].Transition.StateAfter =
+            D3D12_RESOURCE_STATE_COPY_DEST;
+        list->ResourceBarrier(2, accum_barriers);
+
+        list->CopyResource(live_session->color_accum_target.Get(),
+                           presented_it->second.resource.Get());
+
+        D3D12_RESOURCE_BARRIER restore_accum_barriers[2]{};
+        restore_accum_barriers[0] = accum_barriers[0];
+        restore_accum_barriers[0].Transition.StateBefore =
+            D3D12_RESOURCE_STATE_COPY_SOURCE;
+        restore_accum_barriers[0].Transition.StateAfter =
+            D3D12_RESOURCE_STATE_RENDER_TARGET;
+        restore_accum_barriers[1] = accum_barriers[1];
+        restore_accum_barriers[1].Transition.StateBefore =
+            D3D12_RESOURCE_STATE_COPY_DEST;
+        restore_accum_barriers[1].Transition.StateAfter =
+            D3D12_RESOURCE_STATE_RENDER_TARGET;
+        list->ResourceBarrier(2, restore_accum_barriers);
+      }
+    }
     const bool copy_retained_frame =
         !live_binding->presentable_frame && live_session &&
         live_session->has_presentable_color && target;
