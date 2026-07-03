@@ -132,6 +132,31 @@ Capture-side follow-up:
 - Constant payload capture remains capped separately at `64` dwords; this
   change is shader-specific.
 
+Fresh capture validation:
+
+```powershell
+default.exe --native_renderer_mode native --native_renderer_shader_record_probe_mode on --native_renderer_capture_path C:\Users\braxt\bo2-recompiled\native_captures\shader_payload_cap4096_001\events.jsonl --native_renderer_capture_limit 18000 --native_renderer_capture_flush_interval 32 --native_renderer_verbose false
+native_render_replay.exe --capture native_captures\shader_payload_cap4096_001\events.jsonl --validate --no-summary
+native_shader_inspect.exe --capture native_captures\shader_payload_cap4096_001\events.jsonl --precompile-runtime-shaders-d3d12 shader_work\cache --top-shaders 20
+```
+
+Results:
+
+- Capture run was watchdog-stopped after `120` seconds and wrote
+  `native_captures\shader_payload_cap4096_001\events.jsonl`.
+- Replay validation passed:
+  `Validation OK: 18000 events, 45 frames, 2866 draws`.
+- Shader payload coverage improved to
+  `with_payload=1438 missing_payload=0 payload_dwords=65433 truncated=0`.
+- Runtime D3D12 precompile reported `attempted=11`, `compiled=3`,
+  `cache_hits=7`, `translator_failed=1`, `dxc_failed=0`.
+- Newly compiled translated DXIL shaders:
+  `VS 0x81311AC4B1FBD082`, `PS 0xC4ED2979F29C9139`,
+  and `VS 0x5D918D91043B3ED0`.
+- Remaining translator miss in this capture:
+  `VS 0xDDED7E538422AE73`, a no-raster/no-fetch utility-style shader with
+  first ops `[alloc interpolators; alloc position; exece; setp_clr; sqrt oPos; cnop]`.
+
 Verified summary:
 
 - Zones: `142`
