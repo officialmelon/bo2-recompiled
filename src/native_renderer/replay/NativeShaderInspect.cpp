@@ -165,6 +165,7 @@ struct PayloadPrefixMatch {
 struct ProbeRuntimePayloadMatch {
   const RuntimeShaderUsage *shader = nullptr;
   PayloadPrefixMatch prefix;
+  std::string_view source;
 };
 
 std::string ToLower(std::string value) {
@@ -3697,18 +3698,20 @@ std::optional<ProbeRuntimePayloadMatch> FindProbeRuntimePayloadMatch(
       continue;
     }
 
+    std::string_view source = "secondary";
     std::optional<PayloadPrefixMatch> prefix =
         FindPayloadPrefixMatch(probe.secondary_dwords,
                                shader.first_payload_dwords);
     if (!prefix) {
       prefix = FindPayloadPrefixMatch(probe.write_dwords,
                                       shader.first_payload_dwords);
+      source = "write";
     }
     if (!prefix) {
       continue;
     }
 
-    ProbeRuntimePayloadMatch candidate{&shader, *prefix};
+    ProbeRuntimePayloadMatch candidate{&shader, *prefix, source};
     if (!best ||
         candidate.prefix.matched_dwords > best->prefix.matched_dwords ||
         (candidate.prefix.matched_dwords == best->prefix.matched_dwords &&
@@ -4207,6 +4210,7 @@ void MatchRuntimeShaders(std::string_view index_text,
       std::cout << " runtime_payload_prefix_match=yes"
                 << " runtime_hash=0x" << std::hex << std::uppercase
                 << shader.hash << std::dec
+                << " source=" << match->source
                 << " probe_payload_offset_dwords="
                 << match->prefix.secondary_offset
                 << " matched_dwords=" << match->prefix.matched_dwords
