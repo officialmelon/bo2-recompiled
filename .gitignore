@@ -15,3 +15,11 @@ shader_cache/
 !*/generated/.gitkeep
 !*/out/.gitkeep
 !*/assets/.gitkeep
+
+# Native renderer run/build artifacts accumulate at the repo root; keep new
+# ones out of git (existing tracked artifacts stay referenced by docs).
+/native-renderer-*
+/tmp-draw-*
+/run-*.log
+/logs/
+/native_captures/

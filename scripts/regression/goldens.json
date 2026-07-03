@@ -1,0 +1,101 @@
+{
+  "mp028-validate": {
+    "events": 5000,
+    "frames": 20,
+    "draws": 1022
+  },
+  "mp080-validate": {
+    "events": 18000,
+    "frames": 55,
+    "draws": 3436
+  },
+  "sidecar002-validate": {
+    "events": 12000,
+    "frames": 52,
+    "draws": 2628
+  },
+  "cap4096-validate": {
+    "events": 18000,
+    "frames": 45,
+    "draws": 2866
+  },
+  "mp028-real": {
+    "submitted_draws": 46,
+    "shader_pairs": 1,
+    "diagnostic_pipelines": 0,
+    "input_layout_variants": 1,
+    "captured_texture_srvs": 0,
+    "fallback_texture_srvs": 368,
+    "unsupported_texture_attempts": 0,
+    "output_sha256": "B064BFA60562271CA3481BF276F9A884CE9C61EBB68D9C9E5AE031C64DC83A46"
+  },
+  "mp080-real": {
+    "submitted_draws": 151,
+    "shader_pairs": 1,
+    "diagnostic_pipelines": 0,
+    "input_layout_variants": 1,
+    "captured_texture_srvs": 0,
+    "fallback_texture_srvs": 1208,
+    "unsupported_texture_attempts": 0,
+    "output_sha256": "B064BFA60562271CA3481BF276F9A884CE9C61EBB68D9C9E5AE031C64DC83A46"
+  },
+  "sidecar002-real": {
+    "submitted_draws": 140,
+    "shader_pairs": 1,
+    "diagnostic_pipelines": 0,
+    "input_layout_variants": 1,
+    "captured_texture_srvs": 0,
+    "fallback_texture_srvs": 1120,
+    "unsupported_texture_attempts": 0,
+    "output_sha256": "B064BFA60562271CA3481BF276F9A884CE9C61EBB68D9C9E5AE031C64DC83A46"
+  },
+  "mp080-precompile": {
+    "attempted": 16,
+    "compiled": 15,
+    "no_payload": 0,
+    "translator_failed": 2,
+    "dxc_failed": 0
+  },
+  "mp028-precompile": {
+    "attempted": 13,
+    "compiled": 13,
+    "no_payload": 0,
+    "translator_failed": 1,
+    "dxc_failed": 0
+  },
+  "mp080-dxbc": {
+    "attempted": 16,
+    "translated": 16,
+    "no_complete_payload": 1,
+    "translator_failed": 0,
+    "validation_failed": 0
+  },
+  "mp028-dxbc": {
+    "attempted": 13,
+    "translated": 13,
+    "no_complete_payload": 1,
+    "translator_failed": 0,
+    "validation_failed": 0
+  },
+  "cap4096-dxbc": {
+    "attempted": 11,
+    "translated": 11,
+    "no_complete_payload": 0,
+    "translator_failed": 0,
+    "validation_failed": 0
+  },
+  "mp080-xenia-replay": {
+    "submitted_draws": 3374,
+    "shader_pairs": 12,
+    "captured_texture_srvs": 1522,
+    "fallback_texture_srvs": 0,
+    "output_sha256": "B2DF486AEC241C258E89648CD45AE254D54500F65736CFB587679595A3B06038"
+  },
+  "mp028-xenia-replay": {
+    "submitted_draws": 1019,
+    "shader_pairs": 10,
+    "captured_texture_srvs": 302,
+    "fallback_texture_srvs": 0,
+    "output_sha256": "BA7DEDB973D66920F7ABAFE1F6DDE345713A2A150279F3D1D90809CE716CBBF1"
+  }
+}
