@@ -35,6 +35,7 @@
 #include <rex/string/buffer.h>
 
 #include "../shader_translation/XenosDisassembly.h"
+#include "../shader_translation/XenosDxbcTranslator.h"
 #include "../shader_translation/XenosHlslTranslator.h"
 
 #define XXH_INLINE_ALL
@@ -47,6 +48,20 @@ std::string &FLAGS_dump_shaders_storage_() {
   static std::string value;
   return value;
 }
+
+// The SDK DXBC translator's output-merger path checks this CVar and reads the
+// D3D10 standard sample position table from graphics/util/draw.cpp. Both are
+// stubbed here for the same reason as dump_shaders above.
+bool &FLAGS_use_fuzzy_alpha_epsilon_storage_() {
+  static bool value = false;
+  return value;
+}
+
+namespace rex::graphics::draw_util {
+extern const int8_t kD3D10StandardSamplePositions4x[4][2];
+const int8_t kD3D10StandardSamplePositions4x[4][2] = {
+    {-2, -6}, {6, -2}, {-6, 2}, {2, 6}};
+}  // namespace rex::graphics::draw_util
 
 namespace {
 
@@ -75,6 +90,7 @@ struct CliOptions {
   std::filesystem::path translated_hlsl_dxc_compile_cache_path;
   std::filesystem::path precompile_runtime_d3d12_cache_path;
   std::filesystem::path precompile_runtime_d3d12_report_path;
+  std::filesystem::path precompile_runtime_dxbc_cache_path;
   std::filesystem::path xenosrecomp_path;
   std::filesystem::path xenosrecomp_header_path =
       "thirdparty/XenosRecomp/XenosRecomp/shader_common.h";
@@ -264,6 +280,9 @@ void PrintHelp() {
             << "                     capture into a persistent D3D12 cache\n"
             << "  --precompile-runtime-shaders-report <path>\n"
             << "                     Write JSONL per-shader precompile results and summary\n"
+            << "  --precompile-runtime-shaders-dxbc <path>\n"
+            << "                     Translate top runtime shaders to complete SM 5.1\n"
+            << "                     DXBC (Xenia binding contract) in a persistent cache\n"
             << "  --xenosrecomp <path>\n"
             << "                     XenosRecomp.exe path for container-to-HLSL\n"
             << "  --xenosrecomp-header <path>\n"
@@ -2481,6 +2500,11 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     }
   }
 
+  error = std::string("shared translated-HLSL path rejected ") +
+          StageName(runtime_shader.stage) + " " + Hex64(runtime_shader.hash) +
+          ": " + shared_error;
+  return false;
+
   out << "// BO2 native renderer translated HLSL from decoded Xenos "
          "operations.\n";
   out << "// Translator subset: " << kLimitedXenosTranslatorVersion << ".\n";
@@ -4028,6 +4052,216 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
   return counts.compiled > 0 || counts.cache_hits > 0;
 }
 
+// Translates ranked runtime shader payloads to complete SM 5.1 DXBC through
+// the SDK's Xenia-derived translator and stores the blobs as persistent
+// shader cache records with format "xenia_dxbc". These records use the Xenia
+// binding contract and are consumed only by the translated D3D12 pipeline,
+// never by the legacy layout8 shader resolution.
+bool PrecompileRuntimeShadersXeniaDxbc(const RuntimeShaderCapture &capture,
+                                       const std::filesystem::path &cache_root,
+                                       std::size_t top_count,
+                                       const std::string &hash_filter) {
+  std::cout << "Runtime Xenia DXBC shader precompile\n";
+  std::cout << "  capture=" << capture.path.string() << "\n";
+  std::cout << "  cache_root=" << cache_root.string() << "\n";
+  std::cout << "  translator=" << bo2::native::XenosDxbcTranslatorVersion()
+            << "\n";
+
+  const std::optional<uint64_t> filter_hash =
+      hash_filter.empty() ? std::nullopt : ParseHexU64(hash_filter);
+
+  struct DxbcCounts {
+    uint64_t attempted = 0;
+    uint64_t translated = 0;
+    uint64_t cache_hits = 0;
+    uint64_t no_payload = 0;
+    uint64_t translator_failed = 0;
+    uint64_t validation_failed = 0;
+  } counts;
+
+  std::string error;
+  const std::size_t shader_count =
+      std::min<std::size_t>(top_count, capture.shaders.size());
+  for (std::size_t i = 0; i < shader_count; ++i) {
+    const RuntimeShaderUsage &shader = capture.shaders[i];
+    if (filter_hash && shader.hash != *filter_hash) {
+      continue;
+    }
+    if (shader.first_payload_dwords.empty() || shader.payload_missing_count ||
+        shader.payload_truncated_count) {
+      ++counts.no_payload;
+      std::cout << "  " << StageName(shader.stage) << " " << Hex64(shader.hash)
+                << " status=no_complete_payload draws=" << shader.draw_count
+                << " truncated=" << shader.payload_truncated_count
+                << " missing=" << shader.payload_missing_count << "\n";
+      continue;
+    }
+
+    ++counts.attempted;
+    // The SDK DXBC translator does not implement the rectangle-list VS
+    // expansion path (the D3D12 backend uses generated geometry shaders), so
+    // only the default variant is emitted. BO2 rectangle draws carry the
+    // full 4-vertex quad in the guest vertex buffer, and the replay backend
+    // draws them as 4-vertex triangle strips with the default vertex shader.
+    const int variant_count = 1;
+    for (int variant = 0; variant < variant_count; ++variant) {
+    const bool rect_variant = variant == 1;
+    const std::string stem = std::string(StageName(shader.stage)) + "_" +
+                             Hex64(shader.hash) +
+                             (rect_variant ? ".xenia_rect" : ".xenia");
+    const std::filesystem::path blob_path =
+        cache_root / "d3d12" / (stem + ".dxbc");
+    const std::filesystem::path log_path =
+        cache_root / "logs" / (stem + ".log");
+
+    bo2::native::XenosDxbcTranslationInput input;
+    input.runtime_stage = shader.stage;
+    input.runtime_hash = shader.hash;
+    input.payload_dwords = shader.first_payload_dwords.data();
+    input.payload_dword_count = shader.first_payload_dwords.size();
+    input.rectangle_list_as_triangle_strip = rect_variant;
+
+    bo2::native::XenosDxbcTranslationResult result;
+    if (!bo2::native::TranslateXenosPayloadToDxbc(input, result, error)) {
+      ++counts.translator_failed;
+      std::cout << "  " << StageName(shader.stage) << " " << Hex64(shader.hash)
+                << " status=translator_failed draws=" << shader.draw_count
+                << " error=\"" << error << "\"\n";
+      WriteTextFile(log_path,
+                    "translator=" +
+                        std::string(bo2::native::XenosDxbcTranslatorVersion()) +
+                        "\nstatus=translator_failed\nerror=" + error + "\n",
+                    error);
+      break;
+    }
+
+#if defined(_WIN32)
+    // Round-trip the container through D3DDisassemble to prove the emitted
+    // DXBC is well formed before it becomes a persistent cache record.
+    ID3DBlob *disassembly = nullptr;
+    const HRESULT disasm_result = D3DDisassemble(
+        result.dxbc.data(), result.dxbc.size(), 0, nullptr, &disassembly);
+    if (disassembly != nullptr) {
+      disassembly->Release();
+    }
+    if (FAILED(disasm_result)) {
+      ++counts.validation_failed;
+      std::cout << "  " << StageName(shader.stage) << " " << Hex64(shader.hash)
+                << " status=validation_failed hresult=0x" << std::hex
+                << static_cast<uint32_t>(disasm_result) << std::dec << "\n";
+      break;
+    }
+#endif
+
+    if (!WriteBinaryFile(blob_path, result.dxbc.data(), result.dxbc.size(),
+                         error)) {
+      ++counts.validation_failed;
+      std::cout << "  " << StageName(shader.stage) << " " << Hex64(shader.hash)
+                << " status=write_failed error=\"" << error << "\"\n";
+      break;
+    }
+
+    std::ostringstream log;
+    log << "translator=" << bo2::native::XenosDxbcTranslatorVersion() << "\n"
+        << "status=ok\n"
+        << "stage=" << StageName(shader.stage) << "\n"
+        << "runtime_hash=" << Hex64(shader.hash) << "\n"
+        << "modification=" << Hex64(result.modification) << "\n"
+        << "payload_dwords=" << shader.first_payload_dwords.size() << "\n"
+        << "dxbc_bytes=" << result.dxbc.size() << "\n"
+        << "uses_vertex_fetch=" << (result.uses_vertex_fetch ? "yes" : "no")
+        << "\n"
+        << "uses_texture_fetch=" << (result.uses_texture_fetch ? "yes" : "no")
+        << "\n"
+        << "uses_memexport=" << (result.uses_memexport ? "yes" : "no") << "\n";
+    if (!WriteTextFile(log_path, log.str(), error)) {
+      std::cerr << "  warning: could not write " << log_path.string() << "\n";
+    }
+
+    // Bindful binding lists as compact strings so the hand-rolled JSONL
+    // parser in replay can read them without nested-array support.
+    // texture_bindings: "fetch:dimension:signed" triples, comma separated.
+    // sampler_bindings: "fetch:mag:min:mip:aniso" tuples, comma separated.
+    std::ostringstream texture_bindings;
+    for (std::size_t b = 0; b < result.texture_bindings.size(); ++b) {
+      const auto &binding = result.texture_bindings[b];
+      if (b != 0) {
+        texture_bindings << ",";
+      }
+      texture_bindings << binding.fetch_constant << ":" << binding.dimension
+                       << ":" << (binding.is_signed ? 1 : 0);
+    }
+    std::ostringstream sampler_bindings;
+    for (std::size_t b = 0; b < result.sampler_bindings.size(); ++b) {
+      const auto &binding = result.sampler_bindings[b];
+      if (b != 0) {
+        sampler_bindings << ",";
+      }
+      sampler_bindings << binding.fetch_constant << ":" << binding.mag_filter
+                       << ":" << binding.min_filter << ":"
+                       << binding.mip_filter << ":" << binding.aniso_filter;
+    }
+
+    std::ostringstream index;
+    index << "{"
+          << "\"backend\":\"d3d12\","
+          << "\"format\":\"xenia_dxbc\","
+          << "\"compiler\":\"DxbcShaderTranslator\","
+          << "\"diagnostic\":false,"
+          << "\"translator\":\"" << bo2::native::XenosDxbcTranslatorVersion()
+          << "\","
+          << "\"binding_layout\":\"xenia_v1\","
+          << "\"stage\":\"" << StageName(shader.stage) << "\","
+          << "\"runtime_hash\":\"" << Hex64(shader.hash) << "\","
+          << "\"modification\":\"" << Hex64(result.modification) << "\","
+          << "\"uses_vertex_fetch\":"
+          << (result.uses_vertex_fetch ? "true" : "false") << ","
+          << "\"uses_texture_fetch\":"
+          << (result.uses_texture_fetch ? "true" : "false") << ","
+          << "\"uses_memexport\":"
+          << (result.uses_memexport ? "true" : "false") << ","
+          << "\"float_bitmap\":\"" << Hex64(result.float_bitmap[0]) << ","
+          << Hex64(result.float_bitmap[1]) << ","
+          << Hex64(result.float_bitmap[2]) << ","
+          << Hex64(result.float_bitmap[3]) << "\","
+          << "\"texture_bindings\":\"" << texture_bindings.str() << "\","
+          << "\"sampler_bindings\":\"" << sampler_bindings.str() << "\","
+          << "\"host_vertex_shader_type\":\""
+          << (rect_variant ? "rectangle_strip" : "vertex") << "\","
+          << "\"cache_key\":\"" << JsonEscape(stem) << "\","
+          << "\"path\":\"" << JsonEscape(blob_path.generic_string()) << "\","
+          << "\"log\":\"" << JsonEscape(log_path.generic_string()) << "\"}\n";
+    if (!AppendTextFile(cache_root / "shader_cache_index.jsonl", index.str(),
+                        error)) {
+      std::cerr << "  warning: could not append cache index: " << error
+                << "\n";
+    }
+
+    if (!rect_variant) {
+      ++counts.translated;
+    }
+    std::cout << "  " << StageName(shader.stage) << " " << Hex64(shader.hash)
+              << (rect_variant ? " variant=rectangle_strip" : "")
+              << " status=ok draws=" << shader.draw_count
+              << " dxbc_bytes=" << result.dxbc.size()
+              << " vfetch=" << (result.uses_vertex_fetch ? "yes" : "no")
+              << " tfetch=" << (result.uses_texture_fetch ? "yes" : "no")
+              << " memexport=" << (result.uses_memexport ? "yes" : "no")
+              << "\n";
+    }
+  }
+
+  std::cout << "\nRuntime Xenia DXBC precompile summary:\n";
+  std::cout << "  attempted=" << counts.attempted
+            << " translated=" << counts.translated
+            << " no_complete_payload=" << counts.no_payload
+            << " translator_failed=" << counts.translator_failed
+            << " validation_failed=" << counts.validation_failed << "\n";
+  std::cout << "  cache_index="
+            << (cache_root / "shader_cache_index.jsonl").string() << "\n";
+  return counts.translated > 0;
+}
+
 std::optional<PayloadPrefixMatch> FindPayloadPrefixMatch(
     const std::vector<uint32_t> &secondary_dwords,
     const std::vector<uint32_t> &payload_dwords) {
@@ -5089,6 +5323,43 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.precompile_runtime_d3d12_report_path = value;
+    } else if (arg == "--precompile-runtime-shaders-dxbc") {
+      const char *value = require_value("--precompile-runtime-shaders-dxbc");
+      if (!value) {
+        return 2;
+      }
+      cli.precompile_runtime_dxbc_cache_path = value;
+    } else if (arg == "--dxbc-disasm") {
+      const char *value = require_value("--dxbc-disasm");
+      if (!value) {
+        return 2;
+      }
+#if defined(_WIN32)
+      {
+        std::ifstream dxbc_file(value, std::ios::binary);
+        if (!dxbc_file) {
+          std::cerr << "could not open DXBC blob " << value << "\n";
+          return 1;
+        }
+        std::vector<char> dxbc((std::istreambuf_iterator<char>(dxbc_file)),
+                               std::istreambuf_iterator<char>());
+        ID3DBlob *disassembly = nullptr;
+        if (FAILED(D3DDisassemble(dxbc.data(), dxbc.size(), 0, nullptr,
+                                  &disassembly)) ||
+            disassembly == nullptr) {
+          std::cerr << "D3DDisassemble failed for " << value << "\n";
+          return 1;
+        }
+        std::cout << std::string(
+            static_cast<const char *>(disassembly->GetBufferPointer()),
+            disassembly->GetBufferSize());
+        disassembly->Release();
+        return 0;
+      }
+#else
+      std::cerr << "--dxbc-disasm is only available on Windows\n";
+      return 1;
+#endif
     } else if (arg == "--xenosrecomp") {
       const char *value = require_value("--xenosrecomp");
       if (!value) {
@@ -5150,6 +5421,7 @@ int main(int argc, char **argv) {
       !cli.hlsl_dxc_compile_cache_path.empty() ||
       !cli.translated_hlsl_dxc_compile_cache_path.empty() ||
       !cli.precompile_runtime_d3d12_cache_path.empty() ||
+      !cli.precompile_runtime_dxbc_cache_path.empty() ||
       !cli.xenosrecomp_hlsl_output_path.empty();
   if (!cli.show_summary && !cli.find_hash && !cli.list_runtime_shaders &&
       !cli.match_runtime_shaders && !cli.semantic_disassemble &&
@@ -5233,6 +5505,12 @@ int main(int argc, char **argv) {
   if (!cli.precompile_runtime_d3d12_cache_path.empty() &&
       cli.capture_path.empty()) {
     std::cerr << "--precompile-runtime-shaders-d3d12 requires --capture "
+                 "<events.jsonl>\n";
+    return 2;
+  }
+  if (!cli.precompile_runtime_dxbc_cache_path.empty() &&
+      cli.capture_path.empty()) {
+    std::cerr << "--precompile-runtime-shaders-dxbc requires --capture "
                  "<events.jsonl>\n";
     return 2;
   }
@@ -5369,7 +5647,8 @@ int main(int argc, char **argv) {
                              !cli.hlsl_dxc_compile_cache_path.empty() ||
                              !cli.translated_hlsl_dxc_compile_cache_path
                                   .empty() ||
-                             !cli.precompile_runtime_d3d12_cache_path.empty();
+                             !cli.precompile_runtime_d3d12_cache_path.empty() ||
+                             !cli.precompile_runtime_dxbc_cache_path.empty();
   if (!needs_index && !needs_capture && !needs_xenosrecomp) {
     return 0;
   }
@@ -5445,6 +5724,19 @@ int main(int argc, char **argv) {
             cli.precompile_runtime_d3d12_report_path)) {
       std::cerr << "no runtime shaders were compiled or found in translated "
                    "D3D12 cache\n";
+      return 1;
+    }
+    printed_anything = true;
+  }
+
+  if (!cli.precompile_runtime_dxbc_cache_path.empty()) {
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    if (!PrecompileRuntimeShadersXeniaDxbc(
+            runtime_capture, cli.precompile_runtime_dxbc_cache_path,
+            cli.top_shaders, cli.hash)) {
+      std::cerr << "no runtime shaders were translated to Xenia DXBC\n";
       return 1;
     }
     printed_anything = true;

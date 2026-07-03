@@ -76,6 +76,20 @@ if(EXISTS "${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/shader.cpp")
         ${REXGLUE_SHADER_SOURCE_DIR}/xenos.cpp
     )
 endif()
+# Generic Xenos -> DXBC translation through the SDK's Xenia-derived
+# DxbcShaderTranslator, exposed as --precompile-runtime-shaders-dxbc.
+if(EXISTS "${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator.cpp")
+    list(APPEND NATIVE_SHADER_INSPECT_SOURCES
+        ../src/native_renderer/shader_translation/XenosDxbcTranslator.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator_alu.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator_fetch.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator_memexport.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator_om.cpp
+        ${ReXGlue_SOURCE_DIR}/thirdparty/dxbc/DXBCChecksum.cpp
+    )
+endif()
 
 set(DEFAULT_SOURCES
     src/main.cpp
@@ -110,6 +124,17 @@ add_executable(native_render_replay ${NATIVE_RENDER_REPLAY_SOURCES})
 target_include_directories(native_render_replay PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../src/native_renderer/replay"
 )
+if(EXISTS "${ReXGlue_SOURCE_DIR}/include")
+    # Header-only use of the SDK's Xenia binding contract definitions by the
+    # d3d12-xenia replay backend (dxbc_translator.h and its includes).
+    target_include_directories(native_render_replay PRIVATE
+        "${ReXGlue_SOURCE_DIR}/include"
+        "${ReXGlue_BINARY_DIR}/include"
+        "${ReXGlue_SOURCE_DIR}/thirdparty/xxHash"
+        "${ReXGlue_SOURCE_DIR}/thirdparty/simde"
+        "${ReXGlue_SOURCE_DIR}/thirdparty/fmt/include"
+    )
+endif()
 target_compile_features(native_render_replay PRIVATE cxx_std_23)
 if(WIN32)
     target_compile_definitions(native_render_replay PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -123,6 +148,8 @@ target_include_directories(native_shader_inspect PRIVATE
 if(EXISTS "${ReXGlue_SOURCE_DIR}/include")
     target_include_directories(native_shader_inspect PRIVATE
         "${ReXGlue_SOURCE_DIR}/include"
+        "${ReXGlue_SOURCE_DIR}"
+        "${ReXGlue_SOURCE_DIR}/thirdparty/xxHash"
     )
 endif()
 target_compile_features(native_shader_inspect PRIVATE cxx_std_23)
