@@ -2,6 +2,34 @@
 
 Last updated: 2026-07-03
 
+## 2026-07-03 captured-payload report update
+
+`native_shader_inspect.exe --precompile-runtime-shaders-report` now records the
+hash evidence used for automatic runtime shader identity:
+
+- `payload_sha256_le`
+- `payload_sha256_be`
+- `payload_trimmed_sha256_le`
+- `payload_trimmed_sha256_be`
+- `payload_xxh3_host_words`
+- `payload_xxh3_be_bytes`
+- `resolution`
+
+On `native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl`,
+the persistent cache run reported `attempted=16`, `compiled=0`,
+`cache_hits=15`, `translator_failed=2`, `dxc_failed=0`, `source_shared=15`,
+and `source_fallback=0`. The top records prove that complete runtime shader
+hashes match `XXH3_64` over the captured PM4 payload encoded as big-endian
+dwords; for example `PS 0xA4A965C189287B99` reports
+`payload_xxh3_be_bytes=0xA4A965C189287B99` and
+`VS 0xB6C9863F710683EC` reports
+`payload_xxh3_be_bytes=0xB6C9863F710683EC`.
+
+This is the intended non-hardcoded path: capture the actual runtime payload,
+derive the runtime shader identity from that payload, generate/compile/cache
+native shaders from decoded operations, and let replay/live resolve cache
+entries before manual overrides. Manual overrides remain a fallback only.
+
 ## Implemented
 
 `native_shader_inspect.exe` has been added as the first shader registry inspection tool.

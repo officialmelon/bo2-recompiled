@@ -6,6 +6,31 @@ Last updated: 2026-07-03
 
 Real native rendering is not complete.
 
+## 2026-07-03 non-hardcoded shader identity report
+
+The MP080 runtime precompile report now includes payload hashes and a
+`resolution` field per ranked shader. A persistent cache check on
+`native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl`
+reported `attempted=16`, `compiled=0`, `cache_hits=15`,
+`translator_failed=2`, `dxc_failed=0`, `source_shared=15`, and
+`source_fallback=0`.
+
+The report confirms the useful runtime identity rule: complete captured shader
+payloads self-identify as `XXH3_64(big-endian PM4 payload bytes)`. Example
+records include `PS 0xA4A965C189287B99` with
+`payload_xxh3_be_bytes=0xA4A965C189287B99` and
+`VS 0xB6C9863F710683EC` with
+`payload_xxh3_be_bytes=0xB6C9863F710683EC`. That keeps the renderer path tied
+to captured BO2 command data instead of runtime-hash-only hand-written shader
+approximations.
+
+Bounded D3D12 replay verification with `--skip-unsupported --d3d12-draws 120`
+submitted `120` real draws across `9` shader pairs with
+`diagnostic_pipelines=0` and wrote a nonzero BMP. The same run still showed
+why the renderer is not finished: `135` captured texture SRVs were bound, but
+`825` fallback texture SRVs were still needed. Texture/resource translation and
+broader shader lowering remain visible correctness blockers.
+
 ## 2026-07-03 shader precompile report checkpoint
 
 `native_shader_inspect.exe` now supports

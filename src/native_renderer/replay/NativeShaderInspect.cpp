@@ -3855,6 +3855,28 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
            << "\"max_payload_dwords\":" << shader.max_payload_dwords << ","
            << "\"payload_missing\":" << shader.payload_missing_count << ","
            << "\"payload_truncated\":" << shader.payload_truncated_count;
+    if (!shader.payload_sha256_le.empty()) {
+      report << ",\"payload_sha256_le\":\""
+             << JsonEscape(shader.payload_sha256_le) << "\","
+             << "\"payload_sha256_be\":\""
+             << JsonEscape(shader.payload_sha256_be) << "\","
+             << "\"payload_trimmed_sha256_le\":\""
+             << JsonEscape(shader.payload_trimmed_sha256_le) << "\","
+             << "\"payload_trimmed_sha256_be\":\""
+             << JsonEscape(shader.payload_trimmed_sha256_be) << "\","
+             << "\"payload_xxh3_host_words\":\""
+             << Hex64(shader.payload_xxh3_host_words) << "\","
+             << "\"payload_xxh3_be_bytes\":\""
+             << Hex64(shader.payload_xxh3_be_bytes) << "\"";
+    }
+    if (!shader.first_payload_dwords.empty() && !shader.payload_missing_count &&
+        !shader.payload_truncated_count) {
+      report << ",\"resolution\":\"captured_pm4_payload\"";
+    } else if (shader.payload_truncated_count) {
+      report << ",\"resolution\":\"captured_pm4_payload_truncated\"";
+    } else if (shader.payload_missing_count) {
+      report << ",\"resolution\":\"missing_runtime_payload\"";
+    }
     if (!source_kind.empty()) {
       report << ",\"source\":\"" << JsonEscape(std::string(source_kind))
              << "\"";

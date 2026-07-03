@@ -1,5 +1,25 @@
 # Native Renderer Shader Notes
 
+## 2026-07-03 no-runtime-hash-only rule
+
+Do not add runtime-hash-only HLSL approximations as the main renderer solution.
+The supported path is now:
+
+1. Capture the shader PM4 payload.
+2. Prove the runtime identity from the captured payload.
+3. Decode Xenos operations.
+4. Generate HLSL/SPIR-V from decoded operations.
+5. Compile into the persistent shader cache.
+6. Let replay/live resolve the cache before manual overrides.
+
+`native_shader_inspect.exe --precompile-runtime-shaders-report` now writes the
+payload hash fields needed to audit that path. On the MP080 shader-probe
+capture, complete payloads report `payload_xxh3_be_bytes` equal to the runtime
+shader hash, confirming the identity rule
+`XXH3_64(big-endian captured PM4 payload bytes)`. Manual overrides are still
+allowed only as documented fallback or investigation aids; they are not the
+target architecture.
+
 Evidence date: 2026-07-03
 
 ## Existing shader work
