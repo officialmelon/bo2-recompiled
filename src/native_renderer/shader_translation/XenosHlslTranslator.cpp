@@ -32,7 +32,6 @@ bool TryTranslateScreenSpaceUiVertexShader(
     const XenosHlslTranslationRequest& request,
     const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
   if (request.runtime_stage != 0 ||
-      request.runtime_hash != 0x3C4F6D40D699817Bull ||
       request.disassembly.find("vfetch_full r1") == std::string::npos ||
       request.disassembly.find("FMT_32_32_32_32_FLOAT") ==
           std::string::npos ||
@@ -169,7 +168,6 @@ bool TryTranslatePointListVertexShader(
     const XenosHlslTranslationRequest& request,
     const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
   if (request.runtime_stage != 0 ||
-      request.runtime_hash != 0x5B9B7484417FB9B6ull ||
       request.disassembly.find("vfetch_full r16.yxwz") == std::string::npos ||
       request.disassembly.find("FMT_16_16_16_16") == std::string::npos ||
       request.disassembly.find("sgt oPos") == std::string::npos) {
@@ -204,7 +202,6 @@ bool TryTranslateDepthOnlyVertexShader(
     const XenosHlslTranslationRequest& request,
     const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
   if (request.runtime_stage != 0 ||
-      request.runtime_hash != 0x1E6883FCCDE1F688ull ||
       request.disassembly.find("vfetch_full r1.xyz1") == std::string::npos ||
       request.disassembly.find("vfetch_mini r0") == std::string::npos ||
       request.disassembly.find("max o0, r0, r0") == std::string::npos ||
@@ -305,7 +302,6 @@ bool TryTranslatePostProcessVertexShader(
     const XenosHlslTranslationRequest& request,
     const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
   if (request.runtime_stage != 0 ||
-      request.runtime_hash != 0x81311AC4B1FBD082ull ||
       request.disassembly.find("vfetch_full r1.xyz_") == std::string::npos ||
       request.disassembly.find("vfetch_mini r0.xy__") == std::string::npos ||
       request.disassembly.find("dp4 oPos") == std::string::npos ||
@@ -412,7 +408,6 @@ bool TryTranslatePostProcessPixelShader(
     const XenosHlslTranslationRequest& request,
     const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
   if (request.runtime_stage != 1 ||
-      request.runtime_hash != 0x246E20EF10E0DDC7ull ||
       !HasOperation(operations, "tfetch2D", {}, 0) ||
       request.disassembly.find("mad oC0") == std::string::npos) {
     return false;
@@ -509,7 +504,6 @@ bool TryTranslateSgtsPixelShader(
     const XenosHlslTranslationRequest& request,
     const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
   if (request.runtime_stage != 1 ||
-      request.runtime_hash != 0x3A6876055FEC1674ull ||
       request.disassembly.find("sgts oC0") == std::string::npos) {
     return false;
   }
