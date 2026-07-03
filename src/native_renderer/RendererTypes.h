@@ -123,7 +123,7 @@ struct CommandBufferEventInfo {
 };
 
 struct ShaderRecordProbeInfo {
-  static constexpr std::size_t kMaxRecordDwords = 64;
+  static constexpr std::size_t kMaxRecordDwords = 128;
 
   uint64_t event_index = 0;
   uint32_t function_address = 0;
@@ -146,6 +146,10 @@ struct ShaderRecordProbeInfo {
   uint32_t write_end = 0;
   uint32_t write_limit_begin = 0;
   uint32_t write_limit_end = 0;
+  uint32_t write_dword_count = 0;
+  std::array<uint32_t, kMaxRecordDwords> write_dwords{};
+  bool write_truncated = false;
+  bool write_missing = true;
   uint32_t return_value = 0;
   uint32_t primary_address = 0;
   uint32_t primary_dword_count_hint = 0;

@@ -1172,6 +1172,11 @@ bool ParseCaptureEvent(const JsonObject &object, uint64_t line,
     event.shader_probe.write_limit_begin =
         GetU32(object, "write_limit_begin");
     event.shader_probe.write_limit_end = GetU32(object, "write_limit_end");
+    event.shader_probe.write_dword_count =
+        GetU32(object, "write_dword_count");
+    event.shader_probe.write_dwords = GetU32Array(object, "write_dwords");
+    event.shader_probe.write_truncated = GetBool(object, "write_truncated");
+    event.shader_probe.write_missing = GetBool(object, "write_missing");
     event.shader_probe.return_value = GetU32(object, "return_value");
     event.shader_probe.primary_address = GetU32(object, "primary_address");
     event.shader_probe.primary_dword_count_hint =
@@ -4459,6 +4464,9 @@ void PrintShaderRecordProbes(const ReplayCapture &capture,
         }
       }
     };
+    print_dwords("write", probe.write_begin,
+                 probe.write_dword_count, probe.write_missing,
+                 probe.write_truncated, probe.write_dwords);
     print_dwords("primary", probe.primary_address,
                  probe.primary_dword_count, probe.primary_missing,
                  probe.primary_truncated, probe.primary_dwords);

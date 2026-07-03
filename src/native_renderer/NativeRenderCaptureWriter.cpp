@@ -959,6 +959,19 @@ void NativeRenderCaptureWriter::WriteShaderRecordProbe(
   WriteHex32Field("write_end", probe.write_end);
   WriteHex32Field("write_limit_begin", probe.write_limit_begin);
   WriteHex32Field("write_limit_end", probe.write_limit_end);
+  WriteU64Field("write_dword_count", probe.write_dword_count);
+  WriteBoolField("write_truncated", probe.write_truncated);
+  WriteBoolField("write_missing", probe.write_missing);
+  WriteFieldPrefix("write_dwords");
+  file_ << '[';
+  for (uint32_t i = 0;
+       i < probe.write_dword_count && i < probe.write_dwords.size(); ++i) {
+    if (i) {
+      file_ << ',';
+    }
+    file_ << '"' << HexValue(probe.write_dwords[i], 8) << '"';
+  }
+  file_ << ']';
   WriteHex32Field("return_value", probe.return_value);
   WriteHex32Field("primary_address", probe.primary_address);
   WriteU64Field("primary_dword_count_hint", probe.primary_dword_count_hint);

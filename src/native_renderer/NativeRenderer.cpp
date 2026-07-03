@@ -112,7 +112,15 @@ bool ReadGuestU32Checked(uint32_t address, uint32_t& value) {
     value = 0;
     return false;
   }
-  const auto* ptr = REX_KERNEL_MEMORY()->TranslateVirtual<const uint32_t*>(address);
+  const auto* ptr =
+      REX_KERNEL_MEMORY()->TranslateVirtual<const uint32_t*>(address);
+  // Shader microcode/pass payload pointers observed in MP live probes can be
+  // low physical addresses (for example 0x06CD5000) rather than mapped virtual
+  // record pointers. Preserve the virtual path for structured records, then
+  // fall back to physical memory for plausible low aligned addresses.
+  if (!ptr && address >= 0x00010000u && address < 0x80000000u) {
+    ptr = REX_KERNEL_MEMORY()->TranslatePhysical<const uint32_t*>(address);
+  }
   if (!ptr) {
     value = 0;
     return false;
@@ -182,9 +190,10 @@ uint32_t ShaderRecordProbeDwordLimit() {
       static_cast<uint32_t>(ShaderRecordProbeInfo::kMaxRecordDwords));
 }
 
+template <std::size_t N>
 void CaptureDwordSnapshot(
     uint32_t address, uint32_t dword_count_hint,
-    std::array<uint32_t, ShaderRecordProbeInfo::kMaxRecordDwords>& dwords,
+    std::array<uint32_t, N>& dwords,
     uint32_t& dword_count, bool& truncated, bool& missing) {
   dword_count = 0;
   truncated = false;
@@ -200,7 +209,7 @@ void CaptureDwordSnapshot(
   const uint32_t configured_limit = ShaderRecordProbeDwordLimit();
   const uint32_t limit = std::min<uint32_t>(
       {requested, configured_limit,
-       static_cast<uint32_t>(ShaderRecordProbeInfo::kMaxRecordDwords)});
+       static_cast<uint32_t>(dwords.size())});
   truncated = requested > limit;
 
   for (uint32_t i = 0; i < limit; ++i) {
@@ -214,6 +223,16 @@ void CaptureDwordSnapshot(
     ++dword_count;
   }
   missing = dword_count == 0;
+}
+
+void CaptureCommandBufferWriteSnapshot(ShaderRecordProbeInfo& probe) {
+  if (probe.write_end <= probe.write_begin) {
+    return;
+  }
+  const uint32_t byte_count = probe.write_end - probe.write_begin;
+  CaptureDwordSnapshot(probe.write_begin, byte_count / 4, probe.write_dwords,
+                       probe.write_dword_count, probe.write_truncated,
+                       probe.write_missing);
 }
 
 uint32_t FindNestedGuestPointer(
@@ -345,6 +364,7 @@ ShaderRecordProbeInfo BuildShaderRecordProbe(
   probe.write_limit_begin = event.write_limit_begin;
   probe.write_limit_end = event.write_limit_end;
   probe.return_value = event.return_value;
+  CaptureCommandBufferWriteSnapshot(probe);
 
   probe.primary_address = event.r4;
   probe.primary_dword_count_hint =
@@ -408,6 +428,7 @@ ShaderRecordProbeInfo BuildShaderRecordProbe(
   probe.write_end = draw.write_end;
   probe.write_limit_begin = draw.write_limit;
   probe.write_limit_end = draw.write_limit;
+  CaptureCommandBufferWriteSnapshot(probe);
 
   const bool r5_is_pointer = LooksLikeGuestPointer(draw.r5);
   const bool r4_is_pointer = LooksLikeGuestPointer(draw.r4);

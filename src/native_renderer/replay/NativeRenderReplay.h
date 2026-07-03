@@ -373,6 +373,10 @@ struct ShaderRecordProbeRecord {
   uint32_t write_end = 0;
   uint32_t write_limit_begin = 0;
   uint32_t write_limit_end = 0;
+  uint32_t write_dword_count = 0;
+  std::vector<uint32_t> write_dwords;
+  bool write_truncated = false;
+  bool write_missing = true;
   uint32_t return_value = 0;
   uint32_t primary_address = 0;
   uint32_t primary_dword_count_hint = 0;

@@ -283,6 +283,34 @@ Fresh MP probe evidence:
   `primary=0x06CEC000` from `r4`, but those reads still return `missing=yes`.
   The next blocker is therefore guest address mapping/readback for this low
   shader-code address range, not register selection.
+- The probe capture now snapshots the command-buffer write range for each
+  shader/material probe event (`write_dwords`) in addition to primary/secondary
+  record pointers. This is important because MP `sub_82117D20` writes the
+  shader-load packet into the command buffer even when its low source pointer
+  cannot be read directly.
+- MP080
+  (`native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl`)
+  validates as `18000 events, 55 frames, 3436 draws` and contains `28`
+  shader-record probes. The `sub_82117D20` probes still have
+  `primary=0x06CD5000` / `0x06CEC000` / `0x06CFE000` with `missing=yes`, but
+  their command-buffer write snapshots are complete: `80` dwords from the
+  `0x140` byte write range.
+- `native_shader_inspect.exe --match-runtime-shaders` now hashes and compares
+  probe `write_dwords` as well as secondary record snapshots. On MP080,
+  runtime/static index direct matching remains `0/17`, but probe-to-runtime
+  payload-prefix matching succeeds for `28/28` probes. The `sub_82117D20`
+  80-dword write snapshots match runtime vertex shader
+  `0xB6C9863F710683EC` at payload offset `6` for `24` dwords; this is the top
+  runtime VS in that capture (`2523` draws, `108` loads). The `sub_82117BC8`
+  31-dword write snapshots match runtime shader `0xDDED7E538422AE73` at offset
+  `10` for `15` dwords.
+- Current inference: low source addresses such as `0x06CD5000` are not
+  readable through the current virtual or physical memory translators at probe
+  time, but the emitted command-buffer write bytes provide a reliable bridge
+  from XEX shader-bind/constant-load functions to runtime PM4 shader hashes.
+  The next automatic-shader step is to parse these write snapshots as PM4
+  shader-load packets and normalize the payload slice before matching it
+  against full static containers/microcode for XenosRecomp.
 
 Ghidra evidence for the matching runtime path:
 
