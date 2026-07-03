@@ -561,6 +561,25 @@ struct ReplayLoadOptions {
   std::size_t max_warnings = 200;
 };
 
+// Result of translating a runtime shader payload on demand (live path).
+// String fields use the same compact encodings as ShaderCacheRecord.
+struct XeniaTranslatedShaderResult {
+  std::vector<uint8_t> dxbc;
+  uint64_t modification = 0;
+  bool uses_memexport = false;
+  std::string float_bitmap;
+  std::string texture_bindings;
+  std::string sampler_bindings;
+};
+
+// Callback used by the d3d12-xenia backend to translate a shader that has no
+// cache record, from a payload the caller captured (live PM4 stream). Only
+// targets that link the SDK shader translator install this.
+using XeniaShaderTranslateFn = bool (*)(void *context, uint32_t stage,
+                                        uint64_t runtime_hash,
+                                        XeniaTranslatedShaderResult &result,
+                                        std::string &error);
+
 struct ReplayCliOptions {
   std::filesystem::path capture_path;
   std::filesystem::path d3d12_output_path;
