@@ -38,6 +38,9 @@ REXCVAR_DEFINE_STRING(native_renderer_shader_cache_root, "shader_work/cache",
 REXCVAR_DEFINE_STRING(native_renderer_shader_override_root,
                       "shader_work/native_overrides", "Renderer",
                       "Root directory for native shader override manifests");
+REXCVAR_DEFINE_STRING(native_renderer_live_pipeline, "legacy", "Renderer",
+                      "Live D3D12 draw pipeline: legacy (layout8 replay "
+                      "path) or xenia (generic translated-DXBC pipeline)");
 REXCVAR_DEFINE_BOOL(native_renderer_skip_unsupported_draws, true, "Renderer",
                     "Skip unsupported PM4 draws in native_d3d12 live mode");
 REXCVAR_DEFINE_BOOL(
@@ -558,6 +561,7 @@ void NativeRenderer::ConfigureForApp(std::string_view app_name) {
       REXCVAR_GET(native_renderer_skip_unsupported_draws);
   config_.allow_live_diagnostic_shader =
       REXCVAR_GET(native_renderer_live_allow_diagnostic_shader);
+  config_.live_pipeline = REXCVAR_GET(native_renderer_live_pipeline);
   configured_ = true;
 
   REXLOG_INFO("BO2 native renderer mode={} backend={} verbose={} app={}",

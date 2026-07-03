@@ -67,6 +67,7 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
   app_name_ = config.app_name;
   shader_cache_root_ = config.shader_cache_root;
   shader_override_root_ = config.shader_override_root;
+  live_pipeline_ = config.live_pipeline;
   last_error_.clear();
   frame_stats_ = {};
   pending_stats_ = {};
@@ -404,6 +405,9 @@ replay::ReplayCliOptions D3D12LiveRendererBackend::BuildReplayOptions() const {
   options.skip_unsupported = skip_unsupported_draws_;
   options.allow_diagnostic_shader = allow_diagnostic_shader_;
   options.frame_index = 0;
+  if (live_pipeline_ == "xenia" || live_pipeline_ == "d3d12-xenia") {
+    options.backend = "d3d12-xenia";
+  }
   return options;
 }
 

@@ -121,6 +121,7 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   bool skip_unsupported_draws_ = true;
   bool allow_diagnostic_shader_ = false;
   std::string app_name_;
+  std::string live_pipeline_;
   std::string last_error_;
   NativeRenderCaptureWriter capture_;
   D3D12LiveFrameBuilder frame_builder_;

@@ -34,6 +34,9 @@ struct RendererConfig {
       std::filesystem::path("shader_work") / "native_overrides";
   bool skip_unsupported_draws = true;
   bool allow_live_diagnostic_shader = false;
+  // "legacy" = layout8 replay-submit path, "xenia" = generic translated-DXBC
+  // pipeline (RunD3D12XeniaReplayBackend).
+  std::string live_pipeline = "legacy";
 };
 
 struct VdSwapInfo {

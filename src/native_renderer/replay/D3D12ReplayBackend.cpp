@@ -4152,8 +4152,15 @@ bool WaitForGpu(ID3D12CommandQueue *queue, ID3D12Fence *fence, HANDLE event,
   return true;
 }
 
+// Persistent state for the live d3d12-xenia pipeline (defined with the
+// backend near the end of this file; owned by the live session so shader
+// blobs, PSOs, root signatures, the shared memory buffer, and guest render
+// targets survive across frames).
+struct XeniaLiveState;
+
 struct D3D12LiveReplaySessionStorage {
   std::map<PipelineKey, D3D12ReplayPipeline> pipelines;
+  std::shared_ptr<XeniaLiveState> xenia;
   std::vector<UploadedRealDraw> retained_draw_resources;
   ComPtr<ID3D12DescriptorHeap> retained_srv_heap;
   ComPtr<ID3D12DescriptorHeap> retained_sampler_heap;
@@ -6309,6 +6316,10 @@ bool RunD3D12LiveFrameBackend(const ReplayCapture &capture,
     binding.session = CreateD3D12LiveReplaySession();
   }
   options.live_session = binding.session;
+  if (base_options.backend == "d3d12-xenia" ||
+      base_options.backend == "d3d12-translated") {
+    return RunD3D12XeniaReplayBackend(capture, options, error);
+  }
   return RunD3D12RealReplayBackend(capture, options, error);
 #else
   (void)capture;
@@ -6628,26 +6639,113 @@ XeniaViewportInfo ComputeXeniaViewport(const RenderStateRecord &state,
   return info;
 }
 
+struct XeniaPipelineKey {
+  uint64_t vs_hash;
+  uint64_t ps_hash;
+  uint32_t topology_type;
+  uint32_t blend_control;
+  uint32_t color_mask;
+  uint32_t depth_bits;
+  uint32_t cull_bits;
+  uint32_t rect_variant;
+  bool operator<(const XeniaPipelineKey &other) const {
+    return std::tie(vs_hash, ps_hash, topology_type, blend_control,
+                    color_mask, depth_bits, cull_bits, rect_variant) <
+           std::tie(other.vs_hash, other.ps_hash, other.topology_type,
+                    other.blend_control, other.color_mask, other.depth_bits,
+                    other.cull_bits, other.rect_variant);
+  }
+};
+
+struct XeniaGuestColorTarget {
+  ComPtr<ID3D12Resource> resource;
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+  uint64_t draws = 0;
+};
+
+struct XeniaGuestDepthTarget {
+  ComPtr<ID3D12Resource> resource;
+  D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
+};
+
+}  // namespace
+
+namespace {
+
+// Persistent d3d12-xenia pipeline state. The offline replay run owns a local
+// instance; the live path stores one in the session so shader blobs, root
+// signatures, PSOs, the shared memory buffer, and guest render targets
+// survive across frames.
+struct XeniaLiveState {
+  std::map<std::tuple<int, uint64_t, int>, ShaderCacheRecord> cache_records;
+  bool cache_records_loaded = false;
+  std::map<std::tuple<int, uint64_t, int>, XeniaShaderBlob> blobs;
+  std::map<uint32_t, ComPtr<ID3D12RootSignature>> root_signatures;
+  std::map<XeniaPipelineKey, ComPtr<ID3D12PipelineState>> pipelines;
+  ComPtr<ID3D12Resource> shared_memory;
+  uint64_t shared_memory_size = 0;
+  // Buffer state tracking across frames: true while in COPY_DEST.
+  bool shared_memory_in_copy_dest = true;
+  bool shared_memory_needs_first_transition = true;
+  ComPtr<ID3D12DescriptorHeap> rtv_heap;
+  ComPtr<ID3D12DescriptorHeap> dsv_heap;
+  uint32_t next_rtv_descriptor = 0;
+  uint32_t next_dsv_descriptor = 0;
+  std::map<uint32_t, XeniaGuestColorTarget> color_targets;
+  std::map<uint32_t, XeniaGuestDepthTarget> depth_targets;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  // GPU resources from the previous live frame, released when the next frame
+  // begins (mirrors the legacy live path's retained-resource lifetime).
+  std::vector<ComPtr<ID3D12Resource>> retained_resources;
+  std::vector<ComPtr<ID3D12DescriptorHeap>> retained_heaps;
+};
+
 }  // namespace
 
 bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
                                 const ReplayCliOptions &options,
                                 std::string &error) {
+  D3D12LiveSubmitBinding *live_binding =
+      options.live_submit ? options.live_binding : nullptr;
+  const bool live_submit =
+      live_binding && live_binding->device && live_binding->command_list &&
+      live_binding->color_target;
+  D3D12LiveReplaySessionStorage *live_session = nullptr;
+  if (live_submit && options.live_session) {
+    live_session = reinterpret_cast<D3D12LiveReplaySessionStorage *>(
+        options.live_session);
+  }
+  const bool log_backend = !live_submit;
+
+  XeniaLiveState local_state;
+  XeniaLiveState *state_ptr = &local_state;
+  if (live_session) {
+    if (!live_session->xenia) {
+      live_session->xenia = std::make_shared<XeniaLiveState>();
+    }
+    state_ptr = live_session->xenia.get();
+  }
+  XeniaLiveState &xenia = *state_ptr;
+  // Release GPU resources retained from the previous live frame.
+  xenia.retained_resources.clear();
+  xenia.retained_heaps.clear();
+
   // Resolve the xenia_dxbc shader records for every runtime shader used by
   // the capture, newest record winning per (stage, hash, rect_variant).
-  std::map<std::tuple<int, uint64_t, int>, ShaderCacheRecord> cache_records;
-  {
+  std::map<std::tuple<int, uint64_t, int>, ShaderCacheRecord> &cache_records =
+      xenia.cache_records;
+  if (!xenia.cache_records_loaded) {
+    xenia.cache_records_loaded = true;
     const std::array<std::filesystem::path, 2> indexes = {
         options.shader_cache_root / "shader_cache_index.jsonl",
         options.shader_cache_root / "shader_cache_index.json",
     };
-    bool found_any_index = false;
     for (const std::filesystem::path &index : indexes) {
       std::error_code ec;
       if (!std::filesystem::is_regular_file(index, ec) || ec) {
         continue;
       }
-      found_any_index = true;
       std::vector<ShaderCacheRecord> records;
       std::string index_error;
       if (!LoadShaderCacheIndex(index, records, index_error)) {
@@ -6664,12 +6762,7 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         cache_records[{stage, record.runtime_hash, rect}] = record;
       }
     }
-    if (!found_any_index) {
-      error = "no shader cache index found under " +
-              options.shader_cache_root.string();
-      return false;
-    }
-    if (cache_records.empty()) {
+    if (cache_records.empty() && !live_submit) {
       error = "no xenia_dxbc shader cache records found under " +
               options.shader_cache_root.string() +
               "; run native_shader_inspect --precompile-runtime-shaders-dxbc "
@@ -6678,7 +6771,8 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     }
   }
 
-  std::map<std::tuple<int, uint64_t, int>, XeniaShaderBlob> blobs;
+  std::map<std::tuple<int, uint64_t, int>, XeniaShaderBlob> &blobs =
+      xenia.blobs;
   auto load_blob = [&](int stage, uint64_t hash,
                        int rect) -> const XeniaShaderBlob * {
     const auto key = std::make_tuple(stage, hash, rect);
@@ -6810,15 +6904,20 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   }
 
   const ReplaySurfaceSize size = ChooseSurfaceSize(capture);
-  const uint32_t width = std::clamp<uint32_t>(size.width, 64u, 3840u);
-  const uint32_t height = std::clamp<uint32_t>(size.height, 64u, 2160u);
+  const uint32_t width =
+      live_submit ? std::clamp<uint32_t>(live_binding->width, 64u, 3840u)
+                  : std::clamp<uint32_t>(size.width, 64u, 3840u);
+  const uint32_t height =
+      live_submit ? std::clamp<uint32_t>(live_binding->height, 64u, 2160u)
+                  : std::clamp<uint32_t>(size.height, 64u, 2160u);
   const DXGI_FORMAT color_format = DXGI_FORMAT_R8G8B8A8_UNORM;
   const DXGI_FORMAT depth_format = DXGI_FORMAT_D32_FLOAT;
 
   // BO2_XENIA_DEBUG_LAYER=1 enables the D3D12 debug layer and prints stored
-  // validation messages after execution.
+  // validation messages after execution (offline runs only; the live device
+  // is created by the live backend before this point).
   bool debug_layer = false;
-  {
+  if (!live_submit) {
     char env_value[8]{};
     if (GetEnvironmentVariableA("BO2_XENIA_DEBUG_LAYER", env_value,
                                 sizeof(env_value)) > 0 &&
@@ -6832,9 +6931,11 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   }
 
   ComPtr<ID3D12Device> device;
-  if (!CheckHr(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
-                                 IID_PPV_ARGS(&device)),
-               "D3D12CreateDevice", error)) {
+  if (live_submit) {
+    device = live_binding->device;
+  } else if (!CheckHr(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
+                                        IID_PPV_ARGS(&device)),
+                      "D3D12CreateDevice", error)) {
     return false;
   }
   ComPtr<ID3D12InfoQueue> info_queue;
@@ -6842,22 +6943,38 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     device.As(&info_queue);
   }
   ComPtr<ID3D12CommandQueue> queue;
-  D3D12_COMMAND_QUEUE_DESC queue_desc{};
-  queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-  if (!CheckHr(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)),
-               "CreateCommandQueue", error)) {
-    return false;
-  }
   ComPtr<ID3D12CommandAllocator> allocator;
   ComPtr<ID3D12GraphicsCommandList> list;
-  if (!CheckHr(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                              IID_PPV_ARGS(&allocator)),
-               "CreateCommandAllocator", error) ||
-      !CheckHr(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                         allocator.Get(), nullptr,
-                                         IID_PPV_ARGS(&list)),
-               "CreateCommandList", error)) {
-    return false;
+  if (live_submit) {
+    list = live_binding->command_list;
+  } else {
+    D3D12_COMMAND_QUEUE_DESC queue_desc{};
+    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    if (!CheckHr(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)),
+                 "CreateCommandQueue", error)) {
+      return false;
+    }
+    if (!CheckHr(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                IID_PPV_ARGS(&allocator)),
+                 "CreateCommandAllocator", error) ||
+        !CheckHr(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                           allocator.Get(), nullptr,
+                                           IID_PPV_ARGS(&list)),
+                 "CreateCommandList", error)) {
+      return false;
+    }
+  }
+
+  // Reset persistent guest targets when the live surface size changes.
+  if (xenia.width != width || xenia.height != height) {
+    xenia.color_targets.clear();
+    xenia.depth_targets.clear();
+    xenia.rtv_heap.Reset();
+    xenia.dsv_heap.Reset();
+    xenia.next_rtv_descriptor = 0;
+    xenia.next_dsv_descriptor = 0;
+    xenia.width = width;
+    xenia.height = height;
   }
 
   D3D12_HEAP_PROPERTIES default_heap{};
@@ -6867,7 +6984,7 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   D3D12_HEAP_PROPERTIES readback_heap{};
   readback_heap.Type = D3D12_HEAP_TYPE_READBACK;
 
-  // Color and depth targets.
+  // Color and depth target descriptions shared by the guest target cache.
   D3D12_RESOURCE_DESC color_desc{};
   color_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
   color_desc.Width = width;
@@ -6880,41 +6997,28 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   D3D12_CLEAR_VALUE color_clear{};
   color_clear.Format = color_format;
   color_clear.Color[3] = 1.0f;
-  ComPtr<ID3D12Resource> color_target;
-  if (!CheckHr(device->CreateCommittedResource(
-                   &default_heap, D3D12_HEAP_FLAG_NONE, &color_desc,
-                   D3D12_RESOURCE_STATE_RENDER_TARGET, &color_clear,
-                   IID_PPV_ARGS(&color_target)),
-               "CreateCommittedResource(xenia color target)", error)) {
-    return false;
-  }
   D3D12_RESOURCE_DESC depth_desc = color_desc;
   depth_desc.Format = depth_format;
   depth_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
   D3D12_CLEAR_VALUE depth_clear{};
   depth_clear.Format = depth_format;
   depth_clear.DepthStencil.Depth = 1.0f;
-  ComPtr<ID3D12Resource> depth_target;
-  if (!CheckHr(device->CreateCommittedResource(
-                   &default_heap, D3D12_HEAP_FLAG_NONE, &depth_desc,
-                   D3D12_RESOURCE_STATE_DEPTH_WRITE, &depth_clear,
-                   IID_PPV_ARGS(&depth_target)),
-               "CreateCommittedResource(xenia depth target)", error)) {
-    return false;
-  }
-  ComPtr<ID3D12DescriptorHeap> rtv_heap;
+
   D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc{};
   rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
   rtv_heap_desc.NumDescriptors = 32;
-  ComPtr<ID3D12DescriptorHeap> dsv_heap;
   D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc{};
   dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
   dsv_heap_desc.NumDescriptors = 16;
-  if (!CheckHr(device->CreateDescriptorHeap(&rtv_heap_desc,
-                                            IID_PPV_ARGS(&rtv_heap)),
-               "CreateDescriptorHeap(RTV)", error) ||
+  if (!xenia.rtv_heap &&
+      !CheckHr(device->CreateDescriptorHeap(&rtv_heap_desc,
+                                            IID_PPV_ARGS(&xenia.rtv_heap)),
+               "CreateDescriptorHeap(RTV)", error)) {
+    return false;
+  }
+  if (!xenia.dsv_heap &&
       !CheckHr(device->CreateDescriptorHeap(&dsv_heap_desc,
-                                            IID_PPV_ARGS(&dsv_heap)),
+                                            IID_PPV_ARGS(&xenia.dsv_heap)),
                "CreateDescriptorHeap(DSV)", error)) {
     return false;
   }
@@ -6922,39 +7026,21 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
       device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
   const uint32_t dsv_stride =
       device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-  const D3D12_CPU_DESCRIPTOR_HANDLE rtv =
-      rtv_heap->GetCPUDescriptorHandleForHeapStart();
-  const D3D12_CPU_DESCRIPTOR_HANDLE dsv =
-      dsv_heap->GetCPUDescriptorHandleForHeapStart();
-  device->CreateRenderTargetView(color_target.Get(), nullptr, rtv);
-  device->CreateDepthStencilView(depth_target.Get(), nullptr, dsv);
+  const D3D12_CPU_DESCRIPTOR_HANDLE rtv_base =
+      xenia.rtv_heap->GetCPUDescriptorHandleForHeapStart();
+  const D3D12_CPU_DESCRIPTOR_HANDLE dsv_base =
+      xenia.dsv_heap->GetCPUDescriptorHandleForHeapStart();
 
   // Guest render-target cache: one host color target per guest color base and
   // one host depth target per guest depth base, so draws to different guest
   // surfaces (UI composition passes, effects) do not overwrite each other.
-  // The guest base 0-keyed defaults use the targets created above.
-  struct XeniaGuestColorTarget {
-    ComPtr<ID3D12Resource> resource;
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
-    uint64_t draws = 0;
-  };
-  struct XeniaGuestDepthTarget {
-    ComPtr<ID3D12Resource> resource;
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
-  };
-  std::map<uint32_t, XeniaGuestColorTarget> guest_color_targets;
-  std::map<uint32_t, XeniaGuestDepthTarget> guest_depth_targets;
-  uint32_t next_rtv_descriptor = 1;
-  uint32_t next_dsv_descriptor = 1;
-  {
-    XeniaGuestColorTarget default_color;
-    default_color.resource = color_target;
-    default_color.rtv = rtv;
-    guest_color_targets.emplace(0u, std::move(default_color));
-    XeniaGuestDepthTarget default_depth;
-    default_depth.resource = depth_target;
-    default_depth.dsv = dsv;
-    guest_depth_targets.emplace(0u, std::move(default_depth));
+  // In live mode the targets persist across frames.
+  std::map<uint32_t, XeniaGuestColorTarget> &guest_color_targets =
+      xenia.color_targets;
+  std::map<uint32_t, XeniaGuestDepthTarget> &guest_depth_targets =
+      xenia.depth_targets;
+  for (auto &[base, target] : guest_color_targets) {
+    target.draws = 0;
   }
   auto get_guest_color_target =
       [&](uint32_t base) -> XeniaGuestColorTarget * {
@@ -6962,18 +7048,22 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     if (it != guest_color_targets.end()) {
       return &it->second;
     }
-    if (next_rtv_descriptor >= rtv_heap_desc.NumDescriptors) {
-      return &guest_color_targets.begin()->second;
+    if (xenia.next_rtv_descriptor >= rtv_heap_desc.NumDescriptors) {
+      return guest_color_targets.empty()
+                 ? nullptr
+                 : &guest_color_targets.begin()->second;
     }
     XeniaGuestColorTarget target;
     if (FAILED(device->CreateCommittedResource(
             &default_heap, D3D12_HEAP_FLAG_NONE, &color_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &color_clear,
             IID_PPV_ARGS(&target.resource)))) {
-      return &guest_color_targets.begin()->second;
+      return guest_color_targets.empty()
+                 ? nullptr
+                 : &guest_color_targets.begin()->second;
     }
-    target.rtv = rtv;
-    target.rtv.ptr += std::size_t(next_rtv_descriptor++) * rtv_stride;
+    target.rtv = rtv_base;
+    target.rtv.ptr += std::size_t(xenia.next_rtv_descriptor++) * rtv_stride;
     device->CreateRenderTargetView(target.resource.Get(), nullptr, target.rtv);
     list->ClearRenderTargetView(target.rtv, color_clear.Color, 0, nullptr);
     auto [inserted_it, inserted] =
@@ -6986,18 +7076,22 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     if (it != guest_depth_targets.end()) {
       return &it->second;
     }
-    if (next_dsv_descriptor >= dsv_heap_desc.NumDescriptors) {
-      return &guest_depth_targets.begin()->second;
+    if (xenia.next_dsv_descriptor >= dsv_heap_desc.NumDescriptors) {
+      return guest_depth_targets.empty()
+                 ? nullptr
+                 : &guest_depth_targets.begin()->second;
     }
     XeniaGuestDepthTarget target;
     if (FAILED(device->CreateCommittedResource(
             &default_heap, D3D12_HEAP_FLAG_NONE, &depth_desc,
             D3D12_RESOURCE_STATE_DEPTH_WRITE, &depth_clear,
             IID_PPV_ARGS(&target.resource)))) {
-      return &guest_depth_targets.begin()->second;
+      return guest_depth_targets.empty()
+                 ? nullptr
+                 : &guest_depth_targets.begin()->second;
     }
-    target.dsv = dsv;
-    target.dsv.ptr += std::size_t(next_dsv_descriptor++) * dsv_stride;
+    target.dsv = dsv_base;
+    target.dsv.ptr += std::size_t(xenia.next_dsv_descriptor++) * dsv_stride;
     device->CreateDepthStencilView(target.resource.Get(), nullptr, target.dsv);
     list->ClearDepthStencilView(target.dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0,
                                 0, nullptr);
@@ -7008,28 +7102,41 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
 
   // Shared memory buffer holding guest physical memory ranges referenced by
   // the translated shaders' vertex fetches. Raw guest bytes; the translated
-  // shader applies fetch-constant endian swaps itself.
-  const uint64_t shared_memory_size = std::min<uint64_t>(
+  // shader applies fetch-constant endian swaps itself. Grows (recreates) when
+  // a frame references addresses beyond the current size.
+  const uint64_t shared_memory_size_needed = std::min<uint64_t>(
       512ull << 20,
       std::max<uint64_t>(1ull << 20, (shared_memory_end + 0xFFFFFull) &
                                          ~uint64_t(0xFFFFF)));
-  D3D12_RESOURCE_DESC shared_desc{};
-  shared_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-  shared_desc.Width = shared_memory_size;
-  shared_desc.Height = 1;
-  shared_desc.DepthOrArraySize = 1;
-  shared_desc.MipLevels = 1;
-  shared_desc.SampleDesc.Count = 1;
-  shared_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-  shared_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-  ComPtr<ID3D12Resource> shared_memory;
-  if (!CheckHr(device->CreateCommittedResource(
-                   &default_heap, D3D12_HEAP_FLAG_NONE, &shared_desc,
-                   D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                   IID_PPV_ARGS(&shared_memory)),
-               "CreateCommittedResource(xenia shared memory)", error)) {
-    return false;
+  if (!xenia.shared_memory ||
+      xenia.shared_memory_size < shared_memory_size_needed) {
+    D3D12_RESOURCE_DESC shared_desc{};
+    shared_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    shared_desc.Width = shared_memory_size_needed;
+    shared_desc.Height = 1;
+    shared_desc.DepthOrArraySize = 1;
+    shared_desc.MipLevels = 1;
+    shared_desc.SampleDesc.Count = 1;
+    shared_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    shared_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    // Defer releasing a previous smaller buffer until the next frame.
+    if (xenia.shared_memory) {
+      xenia.retained_resources.push_back(xenia.shared_memory);
+      xenia.shared_memory.Reset();
+    }
+    if (!CheckHr(device->CreateCommittedResource(
+                     &default_heap, D3D12_HEAP_FLAG_NONE, &shared_desc,
+                     D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                     IID_PPV_ARGS(&xenia.shared_memory)),
+                 "CreateCommittedResource(xenia shared memory)", error)) {
+      return false;
+    }
+    xenia.shared_memory_size = shared_memory_size_needed;
+    xenia.shared_memory_in_copy_dest = true;
+    xenia.shared_memory_needs_first_transition = true;
   }
+  ComPtr<ID3D12Resource> shared_memory = xenia.shared_memory;
+  const uint64_t shared_memory_size = xenia.shared_memory_size;
 
   // Upload captured vertex payload ranges into shared memory at their guest
   // physical addresses.
@@ -7058,11 +7165,30 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   for (const auto &[begin, bytes] : shared_ranges) {
     shared_upload_size += (bytes.size() + 255) & ~std::size_t(255);
   }
+  // The shared memory buffer persists across live frames in the shader-read
+  // state; transition back to COPY_DEST before this frame's uploads.
+  if (shared_upload_size != 0 && !xenia.shared_memory_in_copy_dest) {
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = shared_memory.Get();
+    barrier.Transition.StateBefore =
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    list->ResourceBarrier(1, &barrier);
+    xenia.shared_memory_in_copy_dest = true;
+  }
   ComPtr<ID3D12Resource> shared_upload;
   if (shared_upload_size != 0) {
-    D3D12_RESOURCE_DESC upload_desc = shared_desc;
+    D3D12_RESOURCE_DESC upload_desc{};
+    upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     upload_desc.Width = shared_upload_size;
-    upload_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    upload_desc.Height = 1;
+    upload_desc.DepthOrArraySize = 1;
+    upload_desc.MipLevels = 1;
+    upload_desc.SampleDesc.Count = 1;
+    upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     if (!CheckHr(device->CreateCommittedResource(
                      &upload_heap, D3D12_HEAP_FLAG_NONE, &upload_desc,
                      D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
@@ -7084,8 +7210,10 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
       upload_offset += (bytes.size() + 255) & ~std::size_t(255);
     }
     shared_upload->Unmap(0, nullptr);
+    xenia.retained_resources.push_back(shared_upload);
   }
-  {
+  if (xenia.shared_memory_in_copy_dest ||
+      xenia.shared_memory_needs_first_transition) {
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = shared_memory.Get();
@@ -7095,9 +7223,11 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     list->ResourceBarrier(1, &barrier);
+    xenia.shared_memory_in_copy_dest = false;
+    xenia.shared_memory_needs_first_transition = false;
   }
 
-  // Per-draw constant buffer ring.
+  // Per-draw constant buffer ring (one fresh upload buffer per run/frame).
   const uint32_t system_cb_size =
       (uint32_t(sizeof(XeniaTranslator::SystemConstants)) + 255u) & ~255u;
   const uint32_t float_cb_size = 256 * 16;
@@ -7108,9 +7238,14 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   const uint64_t cb_total =
       uint64_t(draw_cb_stride) * prepared.size() + 256;
   ComPtr<ID3D12Resource> cb_buffer;
-  D3D12_RESOURCE_DESC cb_desc = shared_desc;
+  D3D12_RESOURCE_DESC cb_desc{};
+  cb_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
   cb_desc.Width = cb_total;
-  cb_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+  cb_desc.Height = 1;
+  cb_desc.DepthOrArraySize = 1;
+  cb_desc.MipLevels = 1;
+  cb_desc.SampleDesc.Count = 1;
+  cb_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
   if (!CheckHr(device->CreateCommittedResource(
                    &upload_heap, D3D12_HEAP_FLAG_NONE, &cb_desc,
                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
@@ -7118,6 +7253,7 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
                "CreateCommittedResource(xenia constant ring)", error)) {
     return false;
   }
+  xenia.retained_resources.push_back(cb_buffer);
   uint8_t *cb_mapped = nullptr;
   if (!CheckHr(cb_buffer->Map(0, nullptr,
                               reinterpret_cast<void **>(&cb_mapped)),
@@ -7189,7 +7325,8 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   uint32_t next_sampler_descriptor = 0;
 
   // Root signature cache keyed by (ps_tex, ps_samp, vs_tex, vs_samp).
-  std::map<uint32_t, ComPtr<ID3D12RootSignature>> root_signatures;
+  std::map<uint32_t, ComPtr<ID3D12RootSignature>> &root_signatures =
+      xenia.root_signatures;
   auto get_root_signature = [&](uint32_t vs_tex, uint32_t vs_samp,
                                 uint32_t ps_tex, uint32_t ps_samp)
       -> ID3D12RootSignature * {
@@ -7326,29 +7463,16 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     return inserted_it->second.Get();
   };
 
-  // PSO cache.
-  struct XeniaPipelineKey {
-    uint64_t vs_hash;
-    uint64_t ps_hash;
-    uint32_t topology_type;
-    uint32_t blend_control;
-    uint32_t color_mask;
-    uint32_t depth_bits;
-    uint32_t cull_bits;
-    uint32_t rect_variant;
-    bool operator<(const XeniaPipelineKey &other) const {
-      return std::tie(vs_hash, ps_hash, topology_type, blend_control,
-                      color_mask, depth_bits, cull_bits, rect_variant) <
-             std::tie(other.vs_hash, other.ps_hash, other.topology_type,
-                      other.blend_control, other.color_mask, other.depth_bits,
-                      other.cull_bits, other.rect_variant);
-    }
-  };
-  std::map<XeniaPipelineKey, ComPtr<ID3D12PipelineState>> pipelines;
+  // PSO cache (persistent across live frames).
+  std::map<XeniaPipelineKey, ComPtr<ID3D12PipelineState>> &pipelines =
+      xenia.pipelines;
 
-  // Keep-alive lists for per-draw texture resources.
-  std::vector<ComPtr<ID3D12Resource>> texture_resources;
-  std::vector<ComPtr<ID3D12Resource>> texture_uploads;
+  // Keep-alive lists for per-draw texture resources. In live mode these are
+  // released at the start of the next frame.
+  std::vector<ComPtr<ID3D12Resource>> &texture_resources =
+      xenia.retained_resources;
+  std::vector<ComPtr<ID3D12Resource>> &texture_uploads =
+      xenia.retained_resources;
 
   const D3D12_GPU_DESCRIPTOR_HANDLE shared_memory_table = srv_gpu_base;
   uint64_t submitted = 0;
@@ -7357,11 +7481,10 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   std::map<ShaderPairKey, std::size_t> submitted_pairs;
 
   D3D12_RECT scissor{0, 0, LONG(width), LONG(height)};
-  list->ClearRenderTargetView(rtv, color_clear.Color, 0, nullptr);
-  list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0,
-                              nullptr);
   ID3D12DescriptorHeap *heaps[] = {srv_heap.Get(), sampler_heap.Get()};
   list->SetDescriptorHeaps(2, heaps);
+  xenia.retained_heaps.push_back(srv_heap);
+  xenia.retained_heaps.push_back(sampler_heap);
 
   for (std::size_t prepared_index = 0; prepared_index < prepared.size();
        ++prepared_index) {
@@ -7818,6 +7941,10 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         render_state.color_base.empty() ? 0u : render_state.color_base[0]);
     XeniaGuestDepthTarget *guest_depth =
         get_guest_depth_target(render_state.depth_base);
+    if (guest_color == nullptr || guest_depth == nullptr) {
+      ++unsupported_reasons["render_target_allocation_failed"];
+      continue;
+    }
     ++guest_color->draws;
     list->OMSetRenderTargets(1, &guest_color->rtv, FALSE, &guest_depth->dsv);
 
@@ -7883,9 +8010,9 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
                        draw_state.pixel_shader.hash}];
   }
 
-  // Readback and BMP output: export the guest color target that received the
-  // most draws (the composed scene/UI surface).
-  ID3D12Resource *presented_target = color_target.Get();
+  // Select the guest color target that received the most draws this run
+  // (the composed scene/UI surface).
+  ID3D12Resource *presented_target = nullptr;
   {
     uint64_t best_draws = 0;
     uint32_t best_base = 0;
@@ -7896,14 +8023,74 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         presented_target = target.resource.Get();
       }
     }
-    std::cout << "D3D12 Xenia-translated replay guest color targets:";
-    for (const auto &[base, target] : guest_color_targets) {
-      std::cout << " base=0x" << std::hex << base << std::dec
-                << " draws=" << target.draws
-                << (base == best_base ? " (presented)" : "");
+    if (log_backend) {
+      std::cout << "D3D12 Xenia-translated replay guest color targets:";
+      for (const auto &[base, target] : guest_color_targets) {
+        std::cout << " base=0x" << std::hex << base << std::dec
+                  << " draws=" << target.draws
+                  << (base == best_base ? " (presented)" : "");
+      }
+      std::cout << "\n";
     }
-    std::cout << "\n";
   }
+  if (presented_target == nullptr) {
+    error = "no guest color target was rendered";
+    return false;
+  }
+
+  if (live_submit) {
+    // Copy the presented guest target into the live backend's color target
+    // (which enters and leaves this function in the PRESENT state) and fill
+    // the frame statistics. The caller closes and executes the command list.
+    D3D12_RESOURCE_BARRIER copy_barriers[2]{};
+    copy_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    copy_barriers[0].Transition.pResource = presented_target;
+    copy_barriers[0].Transition.Subresource =
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    copy_barriers[0].Transition.StateBefore =
+        D3D12_RESOURCE_STATE_RENDER_TARGET;
+    copy_barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    copy_barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    copy_barriers[1].Transition.pResource = live_binding->color_target;
+    copy_barriers[1].Transition.Subresource =
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    copy_barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    copy_barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    list->ResourceBarrier(2, copy_barriers);
+    list->CopyResource(live_binding->color_target, presented_target);
+    D3D12_RESOURCE_BARRIER restore_barriers[2]{};
+    restore_barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    restore_barriers[0].Transition.pResource = presented_target;
+    restore_barriers[0].Transition.Subresource =
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    restore_barriers[0].Transition.StateBefore =
+        D3D12_RESOURCE_STATE_COPY_SOURCE;
+    restore_barriers[0].Transition.StateAfter =
+        D3D12_RESOURCE_STATE_RENDER_TARGET;
+    restore_barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    restore_barriers[1].Transition.pResource = live_binding->color_target;
+    restore_barriers[1].Transition.Subresource =
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    restore_barriers[1].Transition.StateBefore =
+        D3D12_RESOURCE_STATE_COPY_DEST;
+    restore_barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    list->ResourceBarrier(2, restore_barriers);
+
+    live_binding->submitted_draws = submitted;
+    live_binding->shader_pair_count = submitted_pairs.size();
+    live_binding->pso_entries = pipelines.size();
+    live_binding->diagnostic_pipelines = 0;
+    live_binding->skipped_draws = 0;
+    for (const auto &[reason, count] : unsupported_reasons) {
+      live_binding->skipped_draws += count;
+      live_binding->unsupported_reasons.emplace_back(reason, count);
+    }
+    live_binding->presentable_frame = submitted > 0;
+    live_binding->copied_retained_frame = true;
+    live_binding->retained_color_ready = true;
+    return true;
+  }
+
   {
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
