@@ -7,20 +7,28 @@ const { XXHash3 } = pkg;
 function usage() {
   console.error(
     'usage: node scripts/shaders/match-runtime-xxh3-microcode.mjs ' +
-      '--capture <events.jsonl> [--microcode-root <dir>]',
+      '--capture <events.jsonl> [--microcode-root <dir>] ' +
+      '[--container-root <dir>] [--skip-hash-scan] [--write-map <path>]',
   );
 }
 
 function parseArgs(argv) {
   const args = {
+    containerRoot: 'shader_work/shaders/containers',
     microcodeRoot: 'shader_work/shaders/microcode',
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--capture') {
       args.capture = argv[++i];
+    } else if (arg === '--container-root') {
+      args.containerRoot = argv[++i];
     } else if (arg === '--microcode-root') {
       args.microcodeRoot = argv[++i];
+    } else if (arg === '--skip-hash-scan') {
+      args.skipHashScan = true;
+    } else if (arg === '--write-map') {
+      args.writeMap = argv[++i];
     } else if (arg === '--help' || arg === '-h') {
       args.help = true;
     } else {
@@ -112,6 +120,8 @@ function hashRuntimePayload(shader) {
 
   return {
     payloadDwords: shader.firstDwords.length,
+    beBytes: be,
+    hostBytes: host,
     be: hashHex(be),
     host: hashHex(host),
     trimmedBe: hashHex(trimTrailingZeroBeDwords(be)),
@@ -190,6 +200,77 @@ function scanMicrocode(microcodeRoot, targets) {
   return { files, variants, matches };
 }
 
+function payloadNeedles(shaders) {
+  const needles = [];
+  for (const shader of shaders.values()) {
+    const payload = hashRuntimePayload(shader);
+    if (!payload.beBytes || payload.beBytes.length === 0) {
+      continue;
+    }
+    needles.push({
+      hash: shader.hash,
+      stage: shader.stage,
+      loads: shader.loads,
+      variant: 'runtime_payload_be_bytes',
+      bytes: payload.beBytes,
+    });
+  }
+  return needles;
+}
+
+function scanExactPayloadSubranges(scanRoot, extension, shaders) {
+  const needles = payloadNeedles(shaders);
+  const matches = [];
+  let files = 0;
+  let bytesScanned = 0;
+  if (!fs.existsSync(scanRoot)) {
+    return { files, bytesScanned, matches };
+  }
+
+  for (const entry of fs.readdirSync(scanRoot, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(extension)) {
+      continue;
+    }
+
+    const file = path.join(scanRoot, entry.name);
+    const bytes = fs.readFileSync(file);
+    files++;
+    bytesScanned += bytes.length;
+
+    for (const needle of needles) {
+      const prefixLength = Math.min(16, needle.bytes.length);
+      const prefix = needle.bytes.subarray(0, prefixLength);
+      let offset = bytes.indexOf(prefix);
+      while (offset !== -1) {
+        if (
+          offset + needle.bytes.length <= bytes.length &&
+          bytes.compare(
+            needle.bytes,
+            0,
+            needle.bytes.length,
+            offset,
+            offset + needle.bytes.length,
+          ) === 0
+        ) {
+          matches.push({
+            hash: needle.hash,
+            stage: needle.stage,
+            loads: needle.loads,
+            variant: needle.variant,
+            file,
+            offset,
+            payloadBytes: needle.bytes.length,
+            fileBytes: bytes.length,
+          });
+        }
+        offset = bytes.indexOf(prefix, offset + 1);
+      }
+    }
+  }
+
+  return { files, bytesScanned, matches };
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || !args.capture) {
@@ -199,6 +280,7 @@ function main() {
 
   const root = process.cwd();
   const capturePath = path.resolve(root, args.capture);
+  const containerRoot = path.resolve(root, args.containerRoot);
   const microcodeRoot = path.resolve(root, args.microcodeRoot);
   const shaders = parseRuntimeShaders(capturePath);
   const targets = new Set(shaders.keys());
@@ -224,7 +306,19 @@ function main() {
     );
   }
 
-  const scan = scanMicrocode(microcodeRoot, targets);
+  const scan = args.skipHashScan
+    ? { files: 0, variants: 0, matches: [] }
+    : scanMicrocode(microcodeRoot, targets);
+  const microcodeSubranges = scanExactPayloadSubranges(
+    microcodeRoot,
+    '.ucode',
+    shaders,
+  );
+  const containerSubranges = scanExactPayloadSubranges(
+    containerRoot,
+    '.bin',
+    shaders,
+  );
   console.log(
     `ucode_files=${scan.files} variants_checked=${scan.variants}` +
       ` runtime_payload_self_matches=${payloadSelfMatches}/${shaders.size}` +
@@ -235,6 +329,81 @@ function main() {
       `match 0x${match.hash} ${match.variant} ` +
         `${path.relative(root, match.file)} bytes=${match.size}`,
     );
+  }
+  console.log(
+    `ucode_exact_subrange_files=${microcodeSubranges.files}` +
+      ` bytes=${microcodeSubranges.bytesScanned}` +
+      ` matches=${microcodeSubranges.matches.length}`,
+  );
+  for (const match of microcodeSubranges.matches) {
+    console.log(
+      `subrange 0x${match.hash} ${match.variant} ` +
+        `${path.relative(root, match.file)} offset=${match.offset}` +
+        ` payload_bytes=${match.payloadBytes} file_bytes=${match.fileBytes}`,
+    );
+  }
+  console.log(
+    `container_exact_subrange_files=${containerSubranges.files}` +
+      ` bytes=${containerSubranges.bytesScanned}` +
+      ` matches=${containerSubranges.matches.length}`,
+  );
+  for (const match of containerSubranges.matches) {
+    console.log(
+      `container_subrange 0x${match.hash} ${match.variant} ` +
+        `${path.relative(root, match.file)} offset=${match.offset}` +
+        ` payload_bytes=${match.payloadBytes} file_bytes=${match.fileBytes}`,
+    );
+  }
+
+  if (args.writeMap) {
+    const mapPath = path.resolve(root, args.writeMap);
+    fs.mkdirSync(path.dirname(mapPath), { recursive: true });
+    const payloads = {};
+    for (const shader of shaders.values()) {
+      const payload = hashRuntimePayload(shader);
+      payloads[shader.hash] = {
+        stage: shader.stage,
+        loads: shader.loads,
+        payload_dwords: payload.payloadDwords ?? 0,
+        payload_xxh3_be: payload.be ?? null,
+        payload_xxh3_host: payload.host ?? null,
+        payload_xxh3_self:
+          payload.be === shader.hash ||
+          payload.host === shader.hash ||
+          payload.trimmedBe === shader.hash ||
+          payload.trimmedHost === shader.hash,
+      };
+    }
+    const serializeMatch = (match) => ({
+      runtime_hash: `0x${match.hash}`,
+      stage: match.stage,
+      loads: match.loads,
+      variant: match.variant,
+      file: path.relative(root, match.file),
+      byte_offset: match.offset,
+      payload_bytes: match.payloadBytes,
+      file_bytes: match.fileBytes,
+    });
+    const map = {
+      schema: 'bo2_runtime_shader_xxh3_static_subranges.v1',
+      capture: path.relative(root, capturePath),
+      microcode_root: path.relative(root, microcodeRoot),
+      container_root: path.relative(root, containerRoot),
+      runtime_shader_count: shaders.size,
+      payloads,
+      static_whole_file_hash_matches: scan.matches.map((match) => ({
+        runtime_hash: `0x${match.hash}`,
+        variant: match.variant,
+        file: path.relative(root, match.file),
+        file_bytes: match.size,
+      })),
+      microcode_subrange_matches:
+        microcodeSubranges.matches.map(serializeMatch),
+      container_subrange_matches:
+        containerSubranges.matches.map(serializeMatch),
+    };
+    fs.writeFileSync(mapPath, `${JSON.stringify(map, null, 2)}\n`);
+    console.log(`wrote_map=${path.relative(root, mapPath)}`);
   }
 }
 

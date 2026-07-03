@@ -765,6 +765,34 @@ This disproves the simple "ReXGlue host-word `.xsh` hash over extracted `.ucode`
 2. Prefer exact captured payload bytes over static index SHA-256 for live mapping.
 3. For static extracted files, continue by reversing the `.ucode`/container layout or comparing true microcode subranges, because most extracted files are not byte-identical to the runtime PM4 payload.
 
+The matcher now also supports exact payload subrange scanning and JSON map output:
+
+```powershell
+node scripts/shaders/match-runtime-xxh3-microcode.mjs --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --skip-hash-scan --write-map shader_work\cache\runtime_xxh3_static_subranges_mp080.json
+```
+
+Verified subrange result:
+
+- `ucode_exact_subrange_files=33355`, `bytes=54759132`, `matches=2`
+- `container_exact_subrange_files=33950`, `bytes=103924988`, `matches=3`
+- Runtime `PS 0x3A6876055FEC1674` maps to raw file `shader_work\shaders\microcode\pixel_4bac86eb643a281fb683c579f5f097e1424917b266af2d64dfc015bc414ab52f.ucode`, byte offset `0`, byte size `36`, and container `shader_work\shaders\containers\pixel_34bf3f734648398a4cc35c9799c55dc262c2e880266ee0f04dc3a45ef333d40f.bin`, byte offset `120`.
+- Runtime `PS 0xEDC17DCC3FFDB040` maps to subrange `shader_work\shaders\microcode\vertex_2d80c395ae2cb329f235d10f6399cb77fe28a988af167b6dce78a053b566d3c1.ucode`, byte offset `134`, byte size `60`, plus two full-container subranges at offsets `510` and `650`.
+
+`native_shader_inspect` now accepts explicit file-backed microcode slices:
+
+```powershell
+native_shader_inspect.exe --microcode shader_work\shaders\microcode\vertex_2d80c395ae2cb329f235d10f6399cb77fe28a988af167b6dce78a053b566d3c1.ucode --microcode-byte-offset 134 --microcode-byte-size 60 --semantic-disassemble
+```
+
+That slice dumps the exact 15 runtime dwords for `0xEDC17DCC3FFDB040` and ReXGlue's analyzer decodes it as:
+
+- `cf_pair_index_bound=2`
+- one texture binding on fetch constant `0`
+- `writes_interpolators=0x00000001`
+- operations include `tfetch2D r0, r0.xy, tf0` and `mul o0, r0, r1`
+
+The emitted semantic IR records `source_byte_offset=134` and confirms the static subrange is analyzer-readable. This is the first verified path from a live runtime hash back to a non-whole-file static microcode subrange.
+
 MP003 `PS=0x79E1F538A5074A65` is now covered by a manual D3D12 override only
 after draw-state inspection. The representative draw has no texture fetches,
 real vf95 quad data, and alpha `0.101961`; the runtime shader payload is

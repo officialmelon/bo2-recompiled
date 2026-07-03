@@ -88,6 +88,8 @@ struct CliOptions {
   std::string hash;
   std::size_t limit = 8;
   std::size_t top_shaders = 20;
+  std::size_t microcode_byte_offset = 0;
+  std::size_t microcode_byte_size = std::numeric_limits<std::size_t>::max();
 };
 
 struct RuntimeShaderUsage {
@@ -184,6 +186,24 @@ std::string ToLower(std::string value) {
 }
 
 bool ParseSize(std::string_view text, std::size_t &out) {
+  if (text.rfind("0x", 0) == 0 || text.rfind("0X", 0) == 0) {
+    std::size_t value = 0;
+    for (char ch : text.substr(2)) {
+      value <<= 4;
+      if (ch >= '0' && ch <= '9') {
+        value += static_cast<std::size_t>(ch - '0');
+      } else if (ch >= 'a' && ch <= 'f') {
+        value += static_cast<std::size_t>(ch - 'a' + 10);
+      } else if (ch >= 'A' && ch <= 'F') {
+        value += static_cast<std::size_t>(ch - 'A' + 10);
+      } else {
+        return false;
+      }
+    }
+    out = value;
+    return true;
+  }
+
   std::size_t value = 0;
   for (char ch : text) {
     if (ch < '0' || ch > '9') {
@@ -209,6 +229,10 @@ void PrintHelp() {
             << "  --dump-header     Dump the shader container header fields\n"
             << "  --microcode <path>\n"
             << "                     Xenos microcode file to inspect\n"
+            << "  --microcode-byte-offset <n>\n"
+            << "                     Start file-backed inspection at byte offset\n"
+            << "  --microcode-byte-size <n>\n"
+            << "                     Limit file-backed inspection to byte size\n"
             << "  --dump-words      Dump big-endian microcode dwords\n"
             << "  --disassemble     Emit an unknown-preserving raw Xenos dword listing\n"
             << "  --semantic-disassemble\n"
@@ -289,6 +313,26 @@ bool LoadBinary(const std::filesystem::path &path,
     file.read(reinterpret_cast<char *>(bytes.data()), bytes.size());
     return file.gcount() == size;
   }
+  return true;
+}
+
+bool SliceBytes(std::vector<uint8_t> &bytes, std::size_t offset,
+                std::size_t size, std::string &error) {
+  if (offset > bytes.size()) {
+    error = "microcode byte offset is past end of file";
+    return false;
+  }
+  const std::size_t available = bytes.size() - offset;
+  const std::size_t slice_size =
+      size == std::numeric_limits<std::size_t>::max()
+          ? available
+          : std::min(size, available);
+  if (offset == 0 && slice_size == bytes.size()) {
+    return true;
+  }
+  std::vector<uint8_t> sliced(bytes.begin() + offset,
+                              bytes.begin() + offset + slice_size);
+  bytes = std::move(sliced);
   return true;
 }
 
@@ -539,11 +583,15 @@ void EmitMicrocodeWords(std::ostream &out, const std::filesystem::path &path,
 }
 
 bool PrintMicrocodeWords(const std::filesystem::path &path,
+                         std::size_t byte_offset, std::size_t byte_size,
                          std::size_t limit, bool disassemble,
                          std::string &error) {
   std::vector<uint8_t> bytes;
   if (!LoadBinary(path, bytes)) {
     error = "could not read microcode: " + path.string();
+    return false;
+  }
+  if (!SliceBytes(bytes, byte_offset, byte_size, error)) {
     return false;
   }
   EmitMicrocodeWords(std::cout, path, bytes, limit, disassemble);
@@ -578,12 +626,17 @@ std::filesystem::path MakeDisasmArtifactPath(
 }
 
 bool WriteMicrocodeDisassemblyArtifact(const std::filesystem::path &path,
+                                       std::size_t byte_offset,
+                                       std::size_t byte_size,
                                        const std::filesystem::path &requested,
                                        std::filesystem::path &written_path,
                                        std::string &error) {
   std::vector<uint8_t> bytes;
   if (!LoadBinary(path, bytes)) {
     error = "could not read microcode: " + path.string();
+    return false;
+  }
+  if (!SliceBytes(bytes, byte_offset, byte_size, error)) {
     return false;
   }
 
@@ -674,12 +727,17 @@ std::filesystem::path MakeIrArtifactPath(
 }
 
 bool WriteMicrocodeIrArtifact(const std::filesystem::path &path,
+                              std::size_t byte_offset,
+                              std::size_t byte_size,
                               const std::filesystem::path &requested,
                               std::filesystem::path &written_path,
                               std::string &error) {
   std::vector<uint8_t> bytes;
   if (!LoadBinary(path, bytes)) {
     error = "could not read microcode: " + path.string();
+    return false;
+  }
+  if (!SliceBytes(bytes, byte_offset, byte_size, error)) {
     return false;
   }
 
@@ -1532,10 +1590,14 @@ bool WriteSemanticRuntimeArtifact(const RuntimeShaderCapture &capture,
 }
 
 bool LoadMicrocodeDwords(const std::filesystem::path &path,
+                         std::size_t byte_offset, std::size_t byte_size,
                          std::vector<uint8_t> &bytes,
                          std::vector<uint32_t> &dwords, std::string &error) {
   if (!LoadBinary(path, bytes)) {
     error = "could not read microcode: " + path.string();
+    return false;
+  }
+  if (!SliceBytes(bytes, byte_offset, byte_size, error)) {
     return false;
   }
   dwords = BytesToBigEndianDwords(bytes);
@@ -1555,10 +1617,13 @@ std::vector<uint32_t> SelectSemanticMicrocodePayload(
 }
 
 bool PrintSemanticMicrocodeDisassembly(const std::filesystem::path &path,
+                                       std::size_t byte_offset,
+                                       std::size_t byte_size,
                                        std::string &error) {
   std::vector<uint8_t> bytes;
   std::vector<uint32_t> dwords;
-  if (!LoadMicrocodeDwords(path, bytes, dwords, error)) {
+  if (!LoadMicrocodeDwords(path, byte_offset, byte_size, bytes, dwords,
+                           error)) {
     return false;
   }
   const std::string stage = InferMicrocodeStageFromPath(path);
@@ -1569,6 +1634,9 @@ bool PrintSemanticMicrocodeDisassembly(const std::filesystem::path &path,
   }
   std::size_t source_dword_offset = 0;
   dwords = SelectSemanticMicrocodePayload(dwords, stage, source_dword_offset);
+  if (byte_offset) {
+    std::cout << "semantic_source_byte_offset=" << byte_offset << "\n";
+  }
   if (source_dword_offset) {
     std::cout << "semantic_source_dword_offset=" << source_dword_offset << "\n";
   }
@@ -1594,12 +1662,15 @@ std::filesystem::path MakeSemanticArtifactPath(
 }
 
 bool WriteSemanticMicrocodeArtifact(const std::filesystem::path &path,
+                                    std::size_t byte_offset,
+                                    std::size_t byte_size,
                                     const std::filesystem::path &requested,
                                     std::filesystem::path &written_path,
                                     std::string &error) {
   std::vector<uint8_t> bytes;
   std::vector<uint32_t> dwords;
-  if (!LoadMicrocodeDwords(path, bytes, dwords, error)) {
+  if (!LoadMicrocodeDwords(path, byte_offset, byte_size, bytes, dwords,
+                           error)) {
     return false;
   }
   const std::string stage = InferMicrocodeStageFromPath(path);
@@ -1629,6 +1700,9 @@ bool WriteSemanticMicrocodeArtifact(const std::filesystem::path &path,
   const uint64_t hash = HashPrefix64FromSha256(Sha256Hex(bytes));
   std::size_t source_dword_offset = 0;
   dwords = SelectSemanticMicrocodePayload(dwords, stage, source_dword_offset);
+  if (byte_offset) {
+    file << "semantic_source_byte_offset=" << byte_offset << "\n";
+  }
   if (source_dword_offset) {
     file << "semantic_source_dword_offset=" << source_dword_offset << "\n";
   }
@@ -1660,6 +1734,7 @@ bool EmitSemanticShaderIrJson(std::ostream &out,
                               const std::filesystem::path &path,
                               const std::vector<uint8_t> &bytes,
                               const std::vector<uint32_t> &dwords,
+                              std::size_t source_byte_offset,
                               std::size_t source_dword_offset,
                               std::string &error) {
   const std::string stage = InferMicrocodeStageFromPath(path);
@@ -1690,6 +1765,7 @@ bool EmitSemanticShaderIrJson(std::ostream &out,
     out << "  \"microcode_sha256_be\": \"" << JsonEscape(Sha256Hex(bytes))
         << "\",\n";
     out << "  \"shader_hash\": \"" << Hex64(hash) << "\",\n";
+    out << "  \"source_byte_offset\": " << source_byte_offset << ",\n";
     out << "  \"source_dword_offset\": " << source_dword_offset << ",\n";
     out << "  \"dword_count\": " << dwords.size() << ",\n";
     out << "  \"cf_pair_index_bound\": " << shader.cf_pair_index_bound()
@@ -1809,12 +1885,15 @@ std::filesystem::path MakeSemanticIrArtifactPath(
 }
 
 bool WriteSemanticMicrocodeIrArtifact(const std::filesystem::path &path,
+                                      std::size_t byte_offset,
+                                      std::size_t byte_size,
                                       const std::filesystem::path &requested,
                                       std::filesystem::path &written_path,
                                       std::string &error) {
   std::vector<uint8_t> bytes;
   std::vector<uint32_t> dwords;
-  if (!LoadMicrocodeDwords(path, bytes, dwords, error)) {
+  if (!LoadMicrocodeDwords(path, byte_offset, byte_size, bytes, dwords,
+                           error)) {
     return false;
   }
   const std::string stage = InferMicrocodeStageFromPath(path);
@@ -1840,8 +1919,8 @@ bool WriteSemanticMicrocodeIrArtifact(const std::filesystem::path &path,
     error = "could not open semantic IR output: " + written_path.string();
     return false;
   }
-  if (!EmitSemanticShaderIrJson(file, path, bytes, dwords, source_dword_offset,
-                                error)) {
+  if (!EmitSemanticShaderIrJson(file, path, bytes, dwords, byte_offset,
+                                source_dword_offset, error)) {
     return false;
   }
   if (!file) {
@@ -4653,6 +4732,18 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.microcode_path = value;
+    } else if (arg == "--microcode-byte-offset") {
+      const char *value = require_value("--microcode-byte-offset");
+      if (!value || !ParseSize(value, cli.microcode_byte_offset)) {
+        std::cerr << "--microcode-byte-offset expects an integer\n";
+        return 2;
+      }
+    } else if (arg == "--microcode-byte-size") {
+      const char *value = require_value("--microcode-byte-size");
+      if (!value || !ParseSize(value, cli.microcode_byte_size)) {
+        std::cerr << "--microcode-byte-size expects an integer\n";
+        return 2;
+      }
     } else if (arg == "--summary") {
       cli.show_summary = true;
     } else if (arg == "--list-runtime-shaders") {
@@ -4886,7 +4977,9 @@ int main(int argc, char **argv) {
     std::filesystem::path written_path;
     std::string error;
     if (!WriteMicrocodeDisassemblyArtifact(
-            cli.microcode_path, cli.disasm_output_path, written_path, error)) {
+            cli.microcode_path, cli.microcode_byte_offset,
+            cli.microcode_byte_size, cli.disasm_output_path, written_path,
+            error)) {
       std::cerr << error << "\n";
       return 1;
     }
@@ -4899,7 +4992,9 @@ int main(int argc, char **argv) {
   if (!cli.ir_output_path.empty()) {
     std::filesystem::path written_path;
     std::string error;
-    if (!WriteMicrocodeIrArtifact(cli.microcode_path, cli.ir_output_path,
+    if (!WriteMicrocodeIrArtifact(cli.microcode_path,
+                                  cli.microcode_byte_offset,
+                                  cli.microcode_byte_size, cli.ir_output_path,
                                   written_path, error)) {
       std::cerr << error << "\n";
       return 1;
@@ -4914,6 +5009,8 @@ int main(int argc, char **argv) {
     std::filesystem::path written_path;
     std::string error;
     if (!WriteSemanticMicrocodeArtifact(cli.microcode_path,
+                                        cli.microcode_byte_offset,
+                                        cli.microcode_byte_size,
                                         cli.semantic_output_path, written_path,
                                         error)) {
       std::cerr << error << "\n";
@@ -4929,6 +5026,8 @@ int main(int argc, char **argv) {
     std::filesystem::path written_path;
     std::string error;
     if (!WriteSemanticMicrocodeIrArtifact(cli.microcode_path,
+                                          cli.microcode_byte_offset,
+                                          cli.microcode_byte_size,
                                           cli.semantic_ir_output_path,
                                           written_path, error)) {
       std::cerr << error << "\n";
@@ -4945,7 +5044,9 @@ int main(int argc, char **argv) {
       std::cout << "\n";
     }
     std::string error;
-    if (!PrintSemanticMicrocodeDisassembly(cli.microcode_path, error)) {
+    if (!PrintSemanticMicrocodeDisassembly(cli.microcode_path,
+                                           cli.microcode_byte_offset,
+                                           cli.microcode_byte_size, error)) {
       std::cerr << error << "\n";
       return 1;
     }
@@ -4956,8 +5057,9 @@ int main(int argc, char **argv) {
       std::cout << "\n";
     }
     std::string error;
-    if (!PrintMicrocodeWords(cli.microcode_path, cli.limit, cli.disassemble,
-                             error)) {
+    if (!PrintMicrocodeWords(cli.microcode_path, cli.microcode_byte_offset,
+                             cli.microcode_byte_size, cli.limit,
+                             cli.disassemble, error)) {
       std::cerr << error << "\n";
       return 1;
     }
