@@ -2452,7 +2452,7 @@ std::filesystem::path MakeRuntimeTranslatedHlslArtifactPath(
 }
 
 constexpr const char *kLimitedXenosTranslatorVersion =
-    "xenos_limited_semantic_v8";
+    "xenos_limited_semantic_v9";
 
 bool TryEmitLimitedTranslatedRuntimeHlsl(
     std::ostream &out, const RuntimeShaderCapture &capture,
@@ -2468,6 +2468,7 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
   const std::vector<ParsedShaderOperation> operations =
       ParseDisassemblyOperations(disassembly);
 
+  std::string shared_error;
   {
     XenosHlslTranslationRequest request;
     request.runtime_stage = runtime_shader.stage;
@@ -2475,7 +2476,6 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
     request.capture_path = capture.path;
     request.stage_name = StageName(runtime_shader.stage);
     request.disassembly = disassembly;
-    std::string shared_error;
     if (TryTranslateLimitedXenosHlsl(request, out, shared_error)) {
       return true;
     }
@@ -3015,6 +3015,9 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
           std::to_string(runtime_shader.first_payload_dwords.size()) +
           " semantic_ops=" + std::to_string(operations.size()) +
           " first_ops=[" + operation_summary.str() + "]";
+  if (!shared_error.empty()) {
+    error += " shared_error=\"" + shared_error + "\"";
+  }
   return false;
 }
 
@@ -3663,7 +3666,7 @@ bool CompileRuntimeTranslatedHlslWithDxc(
   }
 
   const std::string stem = RuntimeSemanticArtifactStem(*runtime_shader);
-  const std::string cache_key = stem + ".translated.v8.dxc";
+  const std::string cache_key = stem + ".translated.v9.dxc";
   const char *target = runtime_shader->stage == 0 ? "vs_6_0" : "ps_6_0";
   std::ostringstream source_stream;
   if (!TryEmitLimitedTranslatedRuntimeHlsl(source_stream, capture,

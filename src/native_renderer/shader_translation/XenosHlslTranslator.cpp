@@ -2,7 +2,9 @@
 
 #include "XenosDisassembly.h"
 
+#include <algorithm>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 
 namespace bo2::native {
@@ -547,10 +549,314 @@ bool TryTranslateMaxExportPixelShader(
   return true;
 }
 
+bool IsWritableComponent(char component) {
+  return component == 'x' || component == 'y' || component == 'z' ||
+         component == 'w';
+}
+
+char ComponentForIndex(std::size_t index) {
+  static constexpr char kComponents[] = {'x', 'y', 'z', 'w'};
+  return kComponents[std::min<std::size_t>(index, 3)];
+}
+
+std::string DestMaskFor(const ParsedShaderOperand& operand) {
+  if (operand.mask.empty()) {
+    return "xyzw";
+  }
+  return operand.mask;
+}
+
+std::string RegisterExpr(const ParsedShaderOperand& operand) {
+  if (operand.register_file == "gpr") {
+    return "r" + std::to_string(operand.register_index.value_or(0));
+  }
+  if (operand.register_file == "float_constant") {
+    return "asfloat(bo2_constants[" +
+           std::to_string(operand.register_index.value_or(0)) + "])";
+  }
+  if (operand.register_file == "color_export") {
+    return "output_color";
+  }
+  return "float4(0.0f, 0.0f, 0.0f, 0.0f)";
+}
+
+char SourceComponentFor(const ParsedShaderOperand& operand,
+                        std::size_t component_index,
+                        std::size_t write_ordinal) {
+  if (operand.mask.empty()) {
+    return ComponentForIndex(component_index);
+  }
+  if (operand.mask.size() == 1) {
+    return operand.mask[0];
+  }
+  if (operand.mask.size() == 2) {
+    return operand.mask[std::min<std::size_t>(write_ordinal, 1)];
+  }
+  return operand.mask[std::min<std::size_t>(component_index,
+                                            operand.mask.size() - 1)];
+}
+
+std::string SourceScalarExpr(const ParsedShaderOperand& operand,
+                             std::size_t component_index,
+                             std::size_t write_ordinal) {
+  const char component =
+      SourceComponentFor(operand, component_index, write_ordinal);
+  std::string expr;
+  if (component == '0') {
+    expr = "0.0f";
+  } else if (component == '1') {
+    expr = "1.0f";
+  } else if (IsWritableComponent(component)) {
+    expr = RegisterExpr(operand) + "." + component;
+  } else {
+    expr = "0.0f";
+  }
+  if (operand.absolute) {
+    expr = "abs(" + expr + ")";
+  }
+  if (operand.negate) {
+    expr = "-(" + expr + ")";
+  }
+  return expr;
+}
+
+std::string TextureSampleExpr(const ParsedShaderOperation& operation,
+                              uint32_t texture_slot) {
+  std::string uv = "input.uv";
+  if (operation.parsed_operands.size() >= 2) {
+    const ParsedShaderOperand& coord = operation.parsed_operands[1];
+    uv = "float2(" + SourceScalarExpr(coord, 0, 0) + ", " +
+         SourceScalarExpr(coord, 1, 1) + ")";
+  }
+  return "native_texture" + std::to_string(texture_slot) +
+         ".Sample(native_sampler" + std::to_string(texture_slot) +
+         ", saturate(" + uv + "))";
+}
+
+bool EmitGenericPixelOperation(const ParsedShaderOperation& operation,
+                               std::ostream& out, std::string& error) {
+  if (operation.opcode == "exec" || operation.opcode == "exece" ||
+      operation.opcode == "cnop" || operation.opcode == "alloc" ||
+      operation.opcode == "serialize") {
+    out << "  // " << operation.text << "\n";
+    return true;
+  }
+  if (!operation.has_destination || operation.parsed_operands.empty()) {
+    error = "operation has no parsed destination: " + operation.text;
+    return false;
+  }
+
+  const ParsedShaderOperand& dest = operation.parsed_operands.front();
+  const std::string dest_register = RegisterExpr(dest);
+  const std::string dest_mask = DestMaskFor(dest);
+
+  if (operation.opcode.rfind("tfetch", 0) == 0) {
+    const uint32_t texture_slot =
+        static_cast<uint32_t>(operation.fetch_constant.value_or(0));
+    if (texture_slot >= 8) {
+      error = "tfetch slot above native generic binding limit: " +
+              operation.text;
+      return false;
+    }
+    out << "  {\n";
+    out << "    const float4 sample_value = "
+        << TextureSampleExpr(operation, texture_slot) << ";\n";
+    std::size_t write_ordinal = 0;
+    for (std::size_t component_index = 0; component_index < dest_mask.size();
+         ++component_index) {
+      const char component = dest_mask[component_index];
+      if (!IsWritableComponent(component)) {
+        continue;
+      }
+      out << "    " << dest_register << "." << component
+          << " = sample_value." << ComponentForIndex(write_ordinal) << ";\n";
+      ++write_ordinal;
+    }
+    out << "  }\n";
+    return true;
+  }
+
+  const std::size_t source_count =
+      operation.parsed_operands.size() > 0 ? operation.parsed_operands.size() - 1
+                                           : 0;
+  const auto source = [&](std::size_t index, std::size_t component_index,
+                          std::size_t write_ordinal) {
+    return SourceScalarExpr(operation.parsed_operands.at(index + 1),
+                            component_index, write_ordinal);
+  };
+
+  std::size_t write_ordinal = 0;
+  for (std::size_t component_index = 0; component_index < dest_mask.size();
+       ++component_index) {
+    const char component = dest_mask[component_index];
+    if (!IsWritableComponent(component)) {
+      continue;
+    }
+
+    std::string expr;
+    if ((operation.opcode == "mov" || operation.opcode == "maxs" ||
+         operation.opcode == "muls" || operation.opcode == "muls_prev" ||
+         operation.opcode == "muls_prev_sat" ||
+         operation.opcode == "adds" || operation.opcode == "adds_prev" ||
+         operation.opcode == "frcs" || operation.opcode == "rcp" ||
+         operation.opcode == "trunc" || operation.opcode == "floor" ||
+         operation.opcode == "sqrt") &&
+        source_count >= 1) {
+      if (operation.opcode == "frcs") {
+        expr = "frac(" + source(0, component_index, write_ordinal) + ")";
+      } else if (operation.opcode == "rcp") {
+        expr = "(1.0f / max(abs(" +
+               source(0, component_index, write_ordinal) + "), 1.0e-20f))";
+      } else if (operation.opcode == "trunc") {
+        expr = "trunc(" + source(0, component_index, write_ordinal) + ")";
+      } else if (operation.opcode == "floor") {
+        expr = "floor(" + source(0, component_index, write_ordinal) + ")";
+      } else if (operation.opcode == "sqrt") {
+        expr = "sqrt(max(" + source(0, component_index, write_ordinal) +
+               ", 0.0f))";
+      } else if (operation.opcode == "muls_prev_sat") {
+        expr = "saturate(" + source(0, component_index, write_ordinal) + ")";
+      } else if (operation.opcode == "muls") {
+        expr = source(0, component_index, write_ordinal);
+      } else {
+        expr = source(0, component_index, write_ordinal);
+      }
+    } else if ((operation.opcode == "mul" || operation.opcode == "mul_sat" ||
+                operation.opcode == "add" || operation.opcode == "add_sat" ||
+                operation.opcode == "adds" ||
+                operation.opcode == "max" || operation.opcode == "sgt" ||
+                operation.opcode == "sgts" || operation.opcode == "frc") &&
+               source_count >= 1) {
+      if ((operation.opcode == "mul" || operation.opcode == "mul_sat") &&
+          source_count >= 2) {
+        expr = "(" + source(0, component_index, write_ordinal) + " * " +
+               source(1, component_index, write_ordinal) + ")";
+        if (operation.opcode == "mul_sat") {
+          expr = "saturate" + expr;
+        }
+      } else if ((operation.opcode == "add" || operation.opcode == "add_sat" ||
+                  operation.opcode == "adds") &&
+                 source_count >= 2) {
+        expr = "(" + source(0, component_index, write_ordinal) + " + " +
+               source(1, component_index, write_ordinal) + ")";
+        if (operation.opcode == "add_sat") {
+          expr = "saturate" + expr;
+        }
+      } else if (operation.opcode == "max" && source_count >= 2) {
+        expr = "max(" + source(0, component_index, write_ordinal) + ", " +
+               source(1, component_index, write_ordinal) + ")";
+      } else if (operation.opcode == "sgt" || operation.opcode == "sgts") {
+        expr = "(" + source(0, component_index, write_ordinal) +
+               " > 0.0f ? 1.0f : 0.0f)";
+      } else if (operation.opcode == "frc") {
+        expr = "frac(" + source(0, component_index, write_ordinal) + ")";
+      }
+    } else if (operation.opcode == "mad" && source_count >= 3) {
+      expr = "(" + source(0, component_index, write_ordinal) + " * " +
+             source(1, component_index, write_ordinal) + " + " +
+             source(2, component_index, write_ordinal) + ")";
+    } else if (operation.opcode == "addsc" && source_count >= 2) {
+      expr = "(" + source(0, component_index, write_ordinal) + " + " +
+             source(1, component_index, write_ordinal) + ")";
+    } else if (operation.opcode == "subsc" && source_count >= 2) {
+      expr = "(" + source(0, component_index, write_ordinal) + " - " +
+             source(1, component_index, write_ordinal) + ")";
+    } else if ((operation.opcode == "mulsc" ||
+                operation.opcode == "mulsc_sat") &&
+               source_count >= 2) {
+      expr = "(" + source(0, component_index, write_ordinal) + " * " +
+             source(1, component_index, write_ordinal) + ")";
+      if (operation.opcode == "mulsc_sat") {
+        expr = "saturate" + expr;
+      }
+    } else if (operation.opcode == "dp2add" && source_count >= 3) {
+      expr = "(dot(float2(" + source(0, 0, 0) + ", " + source(0, 1, 1) +
+             "), float2(" + source(1, 0, 0) + ", " + source(1, 1, 1) +
+             ")) + " + source(2, component_index, write_ordinal) + ")";
+    } else if (operation.opcode == "cndge" && source_count >= 3) {
+      expr = "(" + source(0, component_index, write_ordinal) +
+             " >= 0.0f ? " + source(1, component_index, write_ordinal) +
+             " : " + source(2, component_index, write_ordinal) + ")";
+    }
+
+    if (expr.empty()) {
+      error = "unsupported generic pixel operation: " + operation.text;
+      return false;
+    }
+    out << "  " << dest_register << "." << component << " = " << expr
+        << ";\n";
+    ++write_ordinal;
+  }
+  return true;
+}
+
+bool TryTranslateGenericPixelShader(
+    const XenosHlslTranslationRequest& request,
+    const std::vector<ParsedShaderOperation>& operations, std::ostream& out,
+    std::string& error) {
+  if (request.runtime_stage != 1 || operations.empty()) {
+    return false;
+  }
+  bool writes_color = false;
+  std::string validation_error;
+  for (const ParsedShaderOperation& operation : operations) {
+    if (operation.has_destination && !operation.parsed_operands.empty() &&
+        operation.parsed_operands.front().register_file == "color_export") {
+      writes_color = true;
+    }
+    std::ostringstream discard;
+    if (!EmitGenericPixelOperation(operation, discard, validation_error)) {
+      error = "generic pixel lowering failed: " + validation_error;
+      return false;
+    }
+  }
+  if (!writes_color) {
+    error = "generic pixel lowering failed: shader does not write oC0";
+    return false;
+  }
+
+  EmitTranslatedHeader(request, out);
+  out << "cbuffer BO2CapturedConstants : register(b1)\n";
+  out << "{\n";
+  out << "  uint4 bo2_constants[512];\n";
+  out << "};\n\n";
+  for (uint32_t slot = 0; slot < 8; ++slot) {
+    out << "Texture2D native_texture" << slot << " : register(t" << slot
+        << ");\n";
+  }
+  for (uint32_t slot = 0; slot < 8; ++slot) {
+    out << "SamplerState native_sampler" << slot << " : register(s" << slot
+        << ");\n";
+  }
+  out << "\nstruct PSInput\n";
+  out << "{\n";
+  out << "  float4 position : SV_Position;\n";
+  out << "  float4 color : COLOR0;\n";
+  out << "  float2 uv : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "float4 main(PSInput input) : SV_Target0\n";
+  out << "{\n";
+  out << "  float4 r0 = input.color;\n";
+  out << "  float4 r1 = float4(input.uv, input.color.ba);\n";
+  for (uint32_t reg = 2; reg < 32; ++reg) {
+    out << "  float4 r" << reg << " = float4(0.0f, 0.0f, 0.0f, 0.0f);\n";
+  }
+  out << "  float4 output_color = float4(0.0f, 0.0f, 0.0f, 1.0f);\n";
+  for (const ParsedShaderOperation& operation : operations) {
+    if (!EmitGenericPixelOperation(operation, out, error)) {
+      error = "generic pixel lowering failed while emitting: " + error;
+      return false;
+    }
+  }
+  out << "  return saturate(output_color);\n";
+  out << "}\n";
+  return true;
+}
+
 }  // namespace
 
 const char* LimitedXenosHlslTranslatorVersion() {
-  return "xenos_limited_semantic_v8";
+  return "xenos_limited_semantic_v9";
 }
 
 bool TryTranslateLimitedXenosHlsl(const XenosHlslTranslationRequest& request,
@@ -600,9 +906,16 @@ bool TryTranslateLimitedXenosHlsl(const XenosHlslTranslationRequest& request,
   if (TryTranslateMaxExportPixelShader(request, operations, out)) {
     return true;
   }
+  std::string generic_error;
+  if (TryTranslateGenericPixelShader(request, operations, out, generic_error)) {
+    return true;
+  }
 
   error = "no limited translated-HLSL rule for " + request.stage_name + " " +
           Hex64(request.runtime_hash);
+  if (!generic_error.empty()) {
+    error += ": " + generic_error;
+  }
   return false;
 }
 
