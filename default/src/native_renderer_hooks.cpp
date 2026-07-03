@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <unordered_set>
 
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/graphics_system.h>
@@ -175,6 +176,24 @@ bool TextureFormatFootprint(const bo2::native::TextureFetchInfo &fetch,
 }
 
 void RecaptureTexturePayloadFromGuest(bo2::native::TextureFetchInfo &target) {
+  // The renderer's texture cache only needs the full guest payload the first
+  // time a (address, format, size) texture is seen; repeated recaptures are
+  // multi-megabyte guest memory copies per draw and dominated the live frame
+  // time. Vertex payloads stay uncached because they change per frame.
+  {
+    static std::unordered_set<uint64_t> recaptured_textures;
+    const uint64_t key =
+        (uint64_t(target.base_address_bytes) << 32) ^
+        (uint64_t(target.format) << 24) ^ (uint64_t(target.width) << 12) ^
+        uint64_t(target.height) ^ (uint64_t(target.pitch) << 44) ^
+        (target.tiled ? 0x8000000000000000ull : 0ull);
+    if (!recaptured_textures.insert(key).second) {
+      return;
+    }
+    if (recaptured_textures.size() > 65536) {
+      recaptured_textures.clear();
+    }
+  }
   uint32_t footprint = 0;
   if (!target.payload_truncated ||
       !TextureFormatFootprint(target, footprint) ||

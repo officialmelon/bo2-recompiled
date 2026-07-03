@@ -6690,6 +6690,41 @@ struct XeniaLiveState {
   std::map<std::tuple<int, uint64_t, int>, XeniaShaderBlob> blobs;
   std::map<uint32_t, ComPtr<ID3D12RootSignature>> root_signatures;
   std::map<XeniaPipelineKey, ComPtr<ID3D12PipelineState>> pipelines;
+
+  // Persistent texture cache keyed by guest content address and layout so
+  // live frames reuse uploaded textures instead of recreating and
+  // re-uploading committed resources per draw.
+  struct CachedTexture {
+    ComPtr<ID3D12Resource> resource;
+    // Slot in the persistent non-shader-visible SRV staging heap.
+    uint32_t staging_slot = 0;
+    uint64_t last_used_frame = 0;
+  };
+  using TextureKey = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>;
+  std::map<TextureKey, CachedTexture> texture_cache;
+  ComPtr<ID3D12DescriptorHeap> srv_staging_heap;
+  uint32_t srv_staging_next = 0;
+
+  // Persistent shader-visible descriptor rings (SRV/sampler) so per-frame
+  // heap creation disappears; per-draw contiguous tables are copied from the
+  // staging heap. Ring wrap is safe because retained frames keep at least
+  // kRetainedFrameRing frames of history and the ring is much larger than a
+  // frame's worst-case usage.
+  ComPtr<ID3D12DescriptorHeap> srv_ring_heap;
+  uint32_t srv_ring_capacity = 0;
+  uint32_t srv_ring_next = 0;
+  ComPtr<ID3D12DescriptorHeap> sampler_ring_heap;
+  uint32_t sampler_ring_capacity = 0;
+  uint32_t sampler_ring_next = 0;
+
+  // Persistent constant/index upload ring, replacing per-frame committed
+  // buffer creation. 32 MiB covers several frames of worst-case usage.
+  ComPtr<ID3D12Resource> upload_ring;
+  uint8_t *upload_ring_mapped = nullptr;
+  uint64_t upload_ring_capacity = 0;
+  uint64_t upload_ring_next = 0;
+
+  uint64_t frame_counter = 0;
   ComPtr<ID3D12Resource> shared_memory;
   uint64_t shared_memory_size = 0;
   // Buffer state tracking across frames: true while in COPY_DEST.
@@ -7221,38 +7256,49 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     list->ResourceBarrier(1, &barrier);
     xenia.shared_memory_in_copy_dest = true;
   }
-  ComPtr<ID3D12Resource> shared_upload;
-  if (shared_upload_size != 0) {
-    D3D12_RESOURCE_DESC upload_desc{};
-    upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    upload_desc.Width = shared_upload_size;
-    upload_desc.Height = 1;
-    upload_desc.DepthOrArraySize = 1;
-    upload_desc.MipLevels = 1;
-    upload_desc.SampleDesc.Count = 1;
-    upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  // Guest ranges are staged through the persistent upload ring (created in
+  // the constants section below on first use; ensure it exists here since
+  // shared-memory uploads run first).
+  if (shared_upload_size != 0 && !xenia.upload_ring) {
+    xenia.upload_ring_capacity = 64ull << 20;
+    D3D12_RESOURCE_DESC ring_desc{};
+    ring_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    ring_desc.Width = xenia.upload_ring_capacity;
+    ring_desc.Height = 1;
+    ring_desc.DepthOrArraySize = 1;
+    ring_desc.MipLevels = 1;
+    ring_desc.SampleDesc.Count = 1;
+    ring_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     if (!CheckHr(device->CreateCommittedResource(
-                     &upload_heap, D3D12_HEAP_FLAG_NONE, &upload_desc,
+                     &upload_heap, D3D12_HEAP_FLAG_NONE, &ring_desc,
                      D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                     IID_PPV_ARGS(&shared_upload)),
-                 "CreateCommittedResource(xenia shared upload)", error)) {
+                     IID_PPV_ARGS(&xenia.upload_ring)),
+                 "CreateCommittedResource(xenia upload ring)", error)) {
       return false;
     }
-    uint8_t *mapped = nullptr;
-    if (!CheckHr(shared_upload->Map(0, nullptr,
-                                    reinterpret_cast<void **>(&mapped)),
-                 "Map(xenia shared upload)", error)) {
+    if (!CheckHr(xenia.upload_ring->Map(
+                     0, nullptr,
+                     reinterpret_cast<void **>(&xenia.upload_ring_mapped)),
+                 "Map(xenia upload ring)", error)) {
       return false;
     }
-    uint64_t upload_offset = 0;
+  }
+  if (shared_upload_size != 0) {
+    uint64_t staged_offset =
+        (xenia.upload_ring_next + 255) & ~uint64_t(255);
+    if (staged_offset + shared_upload_size > xenia.upload_ring_capacity) {
+      staged_offset = 0;
+    }
+    xenia.upload_ring_next = staged_offset + shared_upload_size;
+    uint64_t upload_offset = staged_offset;
     for (const auto &[begin, bytes] : shared_ranges) {
-      std::memcpy(mapped + upload_offset, bytes.data(), bytes.size());
-      list->CopyBufferRegion(shared_memory.Get(), begin, shared_upload.Get(),
-                             upload_offset, bytes.size());
+      std::memcpy(xenia.upload_ring_mapped + upload_offset, bytes.data(),
+                  bytes.size());
+      list->CopyBufferRegion(shared_memory.Get(), begin,
+                             xenia.upload_ring.Get(), upload_offset,
+                             bytes.size());
       upload_offset += (bytes.size() + 255) & ~std::size_t(255);
     }
-    shared_upload->Unmap(0, nullptr);
-    xenia.retained_resources->push_back(shared_upload);
   }
   if (xenia.shared_memory_in_copy_dest ||
       xenia.shared_memory_needs_first_transition) {
@@ -7269,7 +7315,8 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     xenia.shared_memory_needs_first_transition = false;
   }
 
-  // Per-draw constant buffer ring (one fresh upload buffer per run/frame).
+  // Persistent upload ring for constants and index data: no per-frame
+  // committed resource creation.
   const uint32_t system_cb_size =
       (uint32_t(sizeof(XeniaTranslator::SystemConstants)) + 255u) & ~255u;
   const uint32_t float_cb_size = 256 * 16;
@@ -7277,62 +7324,84 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   const uint32_t fetch_cb_size = 768;
   const uint32_t draw_cb_stride =
       system_cb_size + 2 * float_cb_size + bool_loop_cb_size + fetch_cb_size;
-  const uint64_t cb_total =
-      uint64_t(draw_cb_stride) * prepared.size() + 256;
-  ComPtr<ID3D12Resource> cb_buffer;
-  D3D12_RESOURCE_DESC cb_desc{};
-  cb_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-  cb_desc.Width = cb_total;
-  cb_desc.Height = 1;
-  cb_desc.DepthOrArraySize = 1;
-  cb_desc.MipLevels = 1;
-  cb_desc.SampleDesc.Count = 1;
-  cb_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-  if (!CheckHr(device->CreateCommittedResource(
-                   &upload_heap, D3D12_HEAP_FLAG_NONE, &cb_desc,
-                   D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                   IID_PPV_ARGS(&cb_buffer)),
-               "CreateCommittedResource(xenia constant ring)", error)) {
-    return false;
+  if (!xenia.upload_ring) {
+    xenia.upload_ring_capacity = 64ull << 20;
+    D3D12_RESOURCE_DESC ring_desc{};
+    ring_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    ring_desc.Width = xenia.upload_ring_capacity;
+    ring_desc.Height = 1;
+    ring_desc.DepthOrArraySize = 1;
+    ring_desc.MipLevels = 1;
+    ring_desc.SampleDesc.Count = 1;
+    ring_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (!CheckHr(device->CreateCommittedResource(
+                     &upload_heap, D3D12_HEAP_FLAG_NONE, &ring_desc,
+                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                     IID_PPV_ARGS(&xenia.upload_ring)),
+                 "CreateCommittedResource(xenia upload ring)", error)) {
+      return false;
+    }
+    if (!CheckHr(xenia.upload_ring->Map(
+                     0, nullptr,
+                     reinterpret_cast<void **>(&xenia.upload_ring_mapped)),
+                 "Map(xenia upload ring)", error)) {
+      return false;
+    }
   }
-  xenia.retained_resources->push_back(cb_buffer);
-  uint8_t *cb_mapped = nullptr;
-  if (!CheckHr(cb_buffer->Map(0, nullptr,
-                              reinterpret_cast<void **>(&cb_mapped)),
-               "Map(xenia constant ring)", error)) {
-    return false;
-  }
-  const D3D12_GPU_VIRTUAL_ADDRESS cb_base = cb_buffer->GetGPUVirtualAddress();
+  const D3D12_GPU_VIRTUAL_ADDRESS ring_base =
+      xenia.upload_ring->GetGPUVirtualAddress();
+  auto ring_alloc = [&xenia](uint64_t size, uint64_t align) -> uint64_t {
+    uint64_t offset = (xenia.upload_ring_next + align - 1) & ~(align - 1);
+    if (offset + size > xenia.upload_ring_capacity) {
+      offset = 0;
+    }
+    xenia.upload_ring_next = offset + size;
+    return offset;
+  };
+  const uint64_t cb_frame_bytes = uint64_t(draw_cb_stride) * prepared.size();
+  const uint64_t cb_frame_offset = ring_alloc(cb_frame_bytes, 256);
+  uint8_t *cb_mapped = xenia.upload_ring_mapped + cb_frame_offset;
+  const D3D12_GPU_VIRTUAL_ADDRESS cb_base = ring_base + cb_frame_offset;
 
-  // Shader-visible descriptor heaps: [0] shared memory SRV, [1] shared memory
-  // UAV, then per-draw texture SRVs. Sampler heap holds per-draw samplers.
-  const uint32_t max_texture_descriptors = 2 + uint32_t(prepared.size()) * 8;
-  D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc{};
-  srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  srv_heap_desc.NumDescriptors = std::min<uint32_t>(
-      max_texture_descriptors, 1u << 20);
-  srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-  ComPtr<ID3D12DescriptorHeap> srv_heap;
-  if (!CheckHr(device->CreateDescriptorHeap(&srv_heap_desc,
-                                            IID_PPV_ARGS(&srv_heap)),
-               "CreateDescriptorHeap(xenia SRV)", error)) {
-    return false;
-  }
-  D3D12_DESCRIPTOR_HEAP_DESC sampler_heap_desc{};
-  sampler_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
-  sampler_heap_desc.NumDescriptors = std::min<uint32_t>(
-      std::max<uint32_t>(uint32_t(prepared.size()) * 4, 16), 2048);
-  sampler_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-  ComPtr<ID3D12DescriptorHeap> sampler_heap;
-  if (!CheckHr(device->CreateDescriptorHeap(&sampler_heap_desc,
-                                            IID_PPV_ARGS(&sampler_heap)),
-               "CreateDescriptorHeap(xenia sampler)", error)) {
-    return false;
-  }
+  // Persistent shader-visible descriptor rings plus a non-shader-visible
+  // staging heap for cached texture SRVs.
   const uint32_t srv_stride = device->GetDescriptorHandleIncrementSize(
       D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   const uint32_t sampler_stride = device->GetDescriptorHandleIncrementSize(
       D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+  if (!xenia.srv_ring_heap) {
+    D3D12_DESCRIPTOR_HEAP_DESC ring_heap_desc{};
+    ring_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    ring_heap_desc.NumDescriptors = 262144;
+    ring_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    if (!CheckHr(device->CreateDescriptorHeap(
+                     &ring_heap_desc, IID_PPV_ARGS(&xenia.srv_ring_heap)),
+                 "CreateDescriptorHeap(xenia SRV ring)", error)) {
+      return false;
+    }
+    xenia.srv_ring_capacity = ring_heap_desc.NumDescriptors;
+    D3D12_DESCRIPTOR_HEAP_DESC sampler_ring_desc{};
+    sampler_ring_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+    sampler_ring_desc.NumDescriptors = 2048;
+    sampler_ring_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    if (!CheckHr(device->CreateDescriptorHeap(
+                     &sampler_ring_desc,
+                     IID_PPV_ARGS(&xenia.sampler_ring_heap)),
+                 "CreateDescriptorHeap(xenia sampler ring)", error)) {
+      return false;
+    }
+    xenia.sampler_ring_capacity = sampler_ring_desc.NumDescriptors;
+    D3D12_DESCRIPTOR_HEAP_DESC staging_desc{};
+    staging_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    staging_desc.NumDescriptors = 65536;
+    if (!CheckHr(device->CreateDescriptorHeap(
+                     &staging_desc, IID_PPV_ARGS(&xenia.srv_staging_heap)),
+                 "CreateDescriptorHeap(xenia SRV staging)", error)) {
+      return false;
+    }
+  }
+  ComPtr<ID3D12DescriptorHeap> srv_heap = xenia.srv_ring_heap;
+  ComPtr<ID3D12DescriptorHeap> sampler_heap = xenia.sampler_ring_heap;
   const D3D12_CPU_DESCRIPTOR_HANDLE srv_cpu_base =
       srv_heap->GetCPUDescriptorHandleForHeapStart();
   const D3D12_GPU_DESCRIPTOR_HANDLE srv_gpu_base =
@@ -7341,8 +7410,27 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
       sampler_heap->GetCPUDescriptorHandleForHeapStart();
   const D3D12_GPU_DESCRIPTOR_HANDLE sampler_gpu_base =
       sampler_heap->GetGPUDescriptorHandleForHeapStart();
+  const D3D12_CPU_DESCRIPTOR_HANDLE staging_cpu_base =
+      xenia.srv_staging_heap->GetCPUDescriptorHandleForHeapStart();
+  auto srv_ring_alloc = [&xenia](uint32_t count) -> uint32_t {
+    if (xenia.srv_ring_next + count > xenia.srv_ring_capacity) {
+      xenia.srv_ring_next = 0;
+    }
+    const uint32_t first = xenia.srv_ring_next;
+    xenia.srv_ring_next += count;
+    return first;
+  };
+  auto sampler_ring_alloc = [&xenia](uint32_t count) -> uint32_t {
+    if (xenia.sampler_ring_next + count > xenia.sampler_ring_capacity) {
+      xenia.sampler_ring_next = 0;
+    }
+    const uint32_t first = xenia.sampler_ring_next;
+    xenia.sampler_ring_next += count;
+    return first;
+  };
 
-  // Shared memory SRV + UAV at heap slots 0/1.
+  // Shared memory SRV + UAV pair for this frame from the ring.
+  const uint32_t shared_memory_slot = srv_ring_alloc(2);
   {
     D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};
     srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
@@ -7351,20 +7439,21 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srv_desc.Buffer.NumElements = UINT(shared_memory_size >> 2);
     srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    D3D12_CPU_DESCRIPTOR_HANDLE srv_handle = srv_cpu_base;
+    srv_handle.ptr += std::size_t(shared_memory_slot) * srv_stride;
     device->CreateShaderResourceView(shared_memory.Get(), &srv_desc,
-                                     srv_cpu_base);
+                                     srv_handle);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc{};
     uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
     uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
     uav_desc.Buffer.NumElements = UINT(shared_memory_size >> 2);
     uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-    D3D12_CPU_DESCRIPTOR_HANDLE uav_handle = srv_cpu_base;
+    D3D12_CPU_DESCRIPTOR_HANDLE uav_handle = srv_handle;
     uav_handle.ptr += srv_stride;
     device->CreateUnorderedAccessView(shared_memory.Get(), nullptr, &uav_desc,
                                       uav_handle);
   }
-  uint32_t next_srv_descriptor = 2;
-  uint32_t next_sampler_descriptor = 0;
+  ++xenia.frame_counter;
 
   // Root signature cache keyed by (ps_tex, ps_samp, vs_tex, vs_samp).
   std::map<uint32_t, ComPtr<ID3D12RootSignature>> &root_signatures =
@@ -7516,7 +7605,8 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   std::vector<ComPtr<ID3D12Resource>> &texture_uploads =
       *xenia.retained_resources;
 
-  const D3D12_GPU_DESCRIPTOR_HANDLE shared_memory_table = srv_gpu_base;
+  D3D12_GPU_DESCRIPTOR_HANDLE shared_memory_table = srv_gpu_base;
+  shared_memory_table.ptr += std::size_t(shared_memory_slot) * srv_stride;
   uint64_t submitted = 0;
   uint64_t captured_srvs = 0;
   uint64_t fallback_srvs = 0;
@@ -7525,8 +7615,6 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   D3D12_RECT scissor{0, 0, LONG(width), LONG(height)};
   ID3D12DescriptorHeap *heaps[] = {srv_heap.Get(), sampler_heap.Get()};
   list->SetDescriptorHeaps(2, heaps);
-  xenia.retained_heaps->push_back(srv_heap);
-  xenia.retained_heaps->push_back(sampler_heap);
 
   for (std::size_t prepared_index = 0; prepared_index < prepared.size();
        ++prepared_index) {
@@ -7764,11 +7852,10 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
       if (blob.texture_bindings.empty()) {
         return std::nullopt;
       }
-      const uint32_t first_descriptor = next_srv_descriptor;
+      const uint32_t binding_count = uint32_t(blob.texture_bindings.size());
+      const uint32_t first_descriptor = srv_ring_alloc(binding_count);
+      uint32_t ring_slot = first_descriptor;
       for (const XeniaTextureBindingRecord &binding : blob.texture_bindings) {
-        if (next_srv_descriptor >= srv_heap_desc.NumDescriptors) {
-          return std::nullopt;
-        }
         const TextureFetchRecord *fetch = nullptr;
         for (const TextureFetchRecord &candidate : draw.texture_fetches) {
           if (candidate.fetch_constant == binding.fetch_constant) {
@@ -7776,6 +7863,28 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
             break;
           }
         }
+        // Cache key: guest base address + format + dimensions + layout.
+        // A cached texture skips decode, resource creation, and upload.
+        XeniaLiveState::TextureKey key{
+            fetch ? fetch->base_address_bytes : 0u,
+            fetch ? fetch->format : 0xFFFFFFFFu,
+            fetch ? ((fetch->width << 16) | (fetch->height & 0xFFFFu)) : 1u,
+            fetch ? ((fetch->pitch << 1) | (fetch->tiled ? 1u : 0u)) : 0u};
+        D3D12_CPU_DESCRIPTOR_HANDLE ring_handle = srv_cpu_base;
+        ring_handle.ptr += std::size_t(ring_slot) * srv_stride;
+        auto cache_it = xenia.texture_cache.find(key);
+        if (cache_it != xenia.texture_cache.end()) {
+          cache_it->second.last_used_frame = xenia.frame_counter;
+          D3D12_CPU_DESCRIPTOR_HANDLE staging_handle = staging_cpu_base;
+          staging_handle.ptr +=
+              std::size_t(cache_it->second.staging_slot) * srv_stride;
+          device->CopyDescriptorsSimple(1, ring_handle, staging_handle,
+                                        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+          ++captured_srvs;
+          ++ring_slot;
+          continue;
+        }
+
         std::vector<uint8_t> rgba;
         uint32_t tex_width = 1;
         uint32_t tex_height = 1;
@@ -7805,29 +7914,15 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
                 IID_PPV_ARGS(&texture)))) {
           return std::nullopt;
         }
+        // Upload through the persistent ring instead of a per-texture
+        // committed buffer.
         const uint32_t row_pitch =
             (tex_width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
             ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
-        D3D12_RESOURCE_DESC upload_desc{};
-        upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        upload_desc.Width = uint64_t(row_pitch) * tex_height;
-        upload_desc.Height = 1;
-        upload_desc.DepthOrArraySize = 1;
-        upload_desc.MipLevels = 1;
-        upload_desc.SampleDesc.Count = 1;
-        upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        ComPtr<ID3D12Resource> upload;
-        if (FAILED(device->CreateCommittedResource(
-                &upload_heap, D3D12_HEAP_FLAG_NONE, &upload_desc,
-                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&upload)))) {
-          return std::nullopt;
-        }
-        uint8_t *tex_mapped = nullptr;
-        if (FAILED(upload->Map(0, nullptr,
-                               reinterpret_cast<void **>(&tex_mapped)))) {
-          return std::nullopt;
-        }
+        const uint64_t upload_bytes = uint64_t(row_pitch) * tex_height;
+        const uint64_t upload_offset = ring_alloc(
+            upload_bytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+        uint8_t *tex_mapped = xenia.upload_ring_mapped + upload_offset;
         for (uint32_t row = 0; row < tex_height; ++row) {
           const std::size_t src_offset = std::size_t(row) * tex_width * 4;
           if (src_offset + tex_width * 4 <= rgba.size()) {
@@ -7838,13 +7933,13 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
                         tex_width * 4);
           }
         }
-        upload->Unmap(0, nullptr);
         D3D12_TEXTURE_COPY_LOCATION dst{};
         dst.pResource = texture.Get();
         dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         D3D12_TEXTURE_COPY_LOCATION src{};
-        src.pResource = upload.Get();
+        src.pResource = xenia.upload_ring.Get();
         src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint.Offset = upload_offset;
         src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         src.PlacedFootprint.Footprint.Width = tex_width;
         src.PlacedFootprint.Footprint.Height = tex_height;
@@ -7862,12 +7957,20 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
             D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         list->ResourceBarrier(1, &barrier);
 
-        D3D12_CPU_DESCRIPTOR_HANDLE srv_handle = srv_cpu_base;
-        srv_handle.ptr += std::size_t(next_srv_descriptor) * srv_stride;
-        device->CreateShaderResourceView(texture.Get(), nullptr, srv_handle);
-        ++next_srv_descriptor;
-        texture_resources.push_back(std::move(texture));
-        texture_uploads.push_back(std::move(upload));
+        // Persistent SRV in the staging heap for reuse; copy into the ring
+        // slot for this draw's contiguous table.
+        XeniaLiveState::CachedTexture cached;
+        cached.resource = texture;
+        cached.staging_slot = xenia.srv_staging_next++ % 65536;
+        cached.last_used_frame = xenia.frame_counter;
+        D3D12_CPU_DESCRIPTOR_HANDLE staging_handle = staging_cpu_base;
+        staging_handle.ptr += std::size_t(cached.staging_slot) * srv_stride;
+        device->CreateShaderResourceView(texture.Get(), nullptr,
+                                         staging_handle);
+        device->CopyDescriptorsSimple(1, ring_handle, staging_handle,
+                                      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        xenia.texture_cache.insert_or_assign(key, std::move(cached));
+        ++ring_slot;
       }
       return first_descriptor;
     };
@@ -7877,11 +7980,10 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
       if (blob.sampler_bindings.empty()) {
         return std::nullopt;
       }
-      const uint32_t first_descriptor = next_sampler_descriptor;
+      const uint32_t first_descriptor =
+          sampler_ring_alloc(uint32_t(blob.sampler_bindings.size()));
+      uint32_t next_sampler_descriptor = first_descriptor;
       for (const XeniaSamplerBindingRecord &binding : blob.sampler_bindings) {
-        if (next_sampler_descriptor >= sampler_heap_desc.NumDescriptors) {
-          return std::nullopt;
-        }
         const TextureFetchRecord *fetch = nullptr;
         for (const TextureFetchRecord &candidate : draw.texture_fetches) {
           if (candidate.fetch_constant == binding.fetch_constant) {
@@ -8002,35 +8104,14 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     list->IASetPrimitiveTopology(item.topology);
 
     if (draw.indexed) {
-      // Raw guest index bytes; the translated vertex shader applies the
-      // captured endian swap through the system constants.
-      D3D12_RESOURCE_DESC ib_desc{};
-      ib_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-      ib_desc.Width = (draw.index_bytes.size() + 255) & ~std::size_t(255);
-      ib_desc.Height = 1;
-      ib_desc.DepthOrArraySize = 1;
-      ib_desc.MipLevels = 1;
-      ib_desc.SampleDesc.Count = 1;
-      ib_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-      ComPtr<ID3D12Resource> index_buffer;
-      if (FAILED(device->CreateCommittedResource(
-              &upload_heap, D3D12_HEAP_FLAG_NONE, &ib_desc,
-              D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-              IID_PPV_ARGS(&index_buffer)))) {
-        ++unsupported_reasons["index_buffer_allocation_failed"];
-        continue;
-      }
-      uint8_t *ib_mapped = nullptr;
-      if (FAILED(index_buffer->Map(0, nullptr,
-                                   reinterpret_cast<void **>(&ib_mapped)))) {
-        ++unsupported_reasons["index_buffer_map_failed"];
-        continue;
-      }
-      std::memcpy(ib_mapped, draw.index_bytes.data(),
-                  draw.index_bytes.size());
-      index_buffer->Unmap(0, nullptr);
+      // Raw guest index bytes suballocated from the persistent upload ring;
+      // the translated vertex shader applies the captured endian swap
+      // through the system constants.
+      const uint64_t ib_offset = ring_alloc(draw.index_bytes.size(), 16);
+      std::memcpy(xenia.upload_ring_mapped + ib_offset,
+                  draw.index_bytes.data(), draw.index_bytes.size());
       D3D12_INDEX_BUFFER_VIEW ib_view{};
-      ib_view.BufferLocation = index_buffer->GetGPUVirtualAddress();
+      ib_view.BufferLocation = ring_base + ib_offset;
       ib_view.SizeInBytes = UINT(draw.index_bytes.size());
       ib_view.Format = draw.index_format == 0 ? DXGI_FORMAT_R16_UINT
                                               : DXGI_FORMAT_R32_UINT;
@@ -8040,7 +8121,6 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
                                  : UINT(draw.index_bytes.size() / 4);
       list->DrawIndexedInstanced(std::min(draw.index_count, max_indices), 1,
                                  0, 0, 0);
-      texture_uploads.push_back(std::move(index_buffer));
     } else if (item.rectangle_strip) {
       // Single guest rectangle with the full quad present in the vertex
       // buffer: draw the four buffer vertices as a triangle strip.
@@ -8285,7 +8365,6 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     WaitForSingleObject(event_handle, 30000);
     CloseHandle(event_handle);
   }
-  cb_buffer->Unmap(0, nullptr);
 
   if (info_queue) {
     const UINT64 message_count = info_queue->GetNumStoredMessages();

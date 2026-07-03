@@ -583,8 +583,11 @@ bool NativeRenderer::ShouldInstallHooks() const {
 }
 
 bool NativeRenderer::ShouldSuppressEmulatedPresent() const {
-  return config_.mode == RendererMode::NativeNull ||
-         config_.mode == RendererMode::NativeD3D12;
+  // native_d3d12 forwards VdSwap: ReXGlue's command processor must execute
+  // the XE_SWAP packet so guest swap writeback and frame pacing work (the
+  // guest polls swap completion and otherwise stalls on a ~300ms timeout per
+  // frame). The native window presents our own pipeline's output regardless.
+  return config_.mode == RendererMode::NativeNull;
 }
 
 void NativeRenderer::OnSystemCommandBufferGpuIdentifierAddress(uint32_t address) {

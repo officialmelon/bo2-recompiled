@@ -124,6 +124,10 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   std::string live_pipeline_;
   std::string last_error_;
   NativeRenderCaptureWriter capture_;
+  // PM4 events arrive on the command-processor thread while frame
+  // begin/submit runs on the guest swap thread; every frame-builder and
+  // frame-stats access is serialized by this mutex.
+  std::mutex frame_builder_mutex_;
   D3D12LiveFrameBuilder frame_builder_;
   D3D12LiveFrameBuilder pending_frame_builder_;
   FrameStats frame_stats_;

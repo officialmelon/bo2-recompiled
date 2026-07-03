@@ -245,6 +245,7 @@ void D3D12LiveRendererBackend::Shutdown() {
 }
 
 void D3D12LiveRendererBackend::BeginFrame(uint64_t frame_index) {
+  std::lock_guard<std::mutex> builder_lock(frame_builder_mutex_);
   frame_stats_ = pending_stats_;
   pending_stats_ = {};
   in_frame_ = true;
@@ -290,17 +291,20 @@ void D3D12LiveRendererBackend::SubmitShaderRecordProbe(
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Packet(const PM4PacketInfo &packet) {
+  std::lock_guard<std::mutex> builder_lock(frame_builder_mutex_);
   ++ActiveStats().packets;
   capture_.WritePM4Packet(packet);
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Draw(const PM4DrawInfo &draw) {
+  std::lock_guard<std::mutex> builder_lock(frame_builder_mutex_);
   ++ActiveStats().draws;
   capture_.WritePM4Draw(draw);
   ActiveFrameBuilder().AddDraw(draw, draw.event_index);
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Shader(const PM4ShaderInfo &shader) {
+  std::lock_guard<std::mutex> builder_lock(frame_builder_mutex_);
   ++ActiveStats().shaders;
   capture_.WritePM4Shader(shader);
   ActiveFrameBuilder().BindShader(shader, shader.event_index);
@@ -308,12 +312,14 @@ void D3D12LiveRendererBackend::SubmitPM4Shader(const PM4ShaderInfo &shader) {
 
 void D3D12LiveRendererBackend::SubmitPM4Constants(
     const PM4ConstantInfo &constants) {
+  std::lock_guard<std::mutex> builder_lock(frame_builder_mutex_);
   ++ActiveStats().constants;
   capture_.WritePM4Constants(constants);
   ActiveFrameBuilder().BindConstants(constants, constants.event_index);
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Swap(const PM4SwapInfo &swap) {
+  std::lock_guard<std::mutex> builder_lock(frame_builder_mutex_);
   ++ActiveStats().swaps;
   capture_.WritePM4Swap(swap);
 }
@@ -326,7 +332,11 @@ void D3D12LiveRendererBackend::SubmitRenderCommand(
 void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
   capture_.WriteEndFrame(frame_index);
 
-  const uint64_t frame_draws = frame_builder_.draw_count();
+  uint64_t frame_draws = 0;
+  {
+    std::lock_guard<std::mutex> builder_lock(frame_builder_mutex_);
+    frame_draws = frame_builder_.draw_count();
+  }
   last_submit_stats_ = {};
   bool attempted_submit = frame_draws > 0;
   bool submit_success = false;
@@ -488,7 +498,11 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
   binding.height = height;
   binding.session = replay_session_;
 
-  const replay::ReplayCapture capture = frame_builder_.BuildCapture(frame_index);
+  replay::ReplayCapture capture;
+  {
+    std::lock_guard<std::mutex> builder_lock(frame_builder_mutex_);
+    capture = frame_builder_.BuildCapture(frame_index);
+  }
   if (!replay::RunD3D12LiveFrameBackend(capture, BuildReplayOptions(), binding,
                                         replay_error)) {
     last_error_ = replay_error.empty()
