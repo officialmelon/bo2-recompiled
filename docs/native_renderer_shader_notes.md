@@ -894,6 +894,19 @@ Result: `attempted=11`, `compiled=10`, `cache_hits=0`,
 `VS 0xDDED7E538422AE73`, still treated as a no-raster/no-fetch utility shader
 rather than visible scene geometry.
 
+`native_shader_inspect.exe --precompile-runtime-shaders-report <path>` now
+emits the runtime D3D12 precompile result as JSONL. Use that report as the
+machine-readable backlog for automatic translator work: it records each ranked
+runtime shader's status, draw count, payload completeness, generated-source
+provenance, cache path, and translator/DXC error text.
+
+Current report validation:
+
+- MP080 isolated cache: `compiled=8`, `translator_failed=9`, `dxc_failed=0`,
+  `source_shared=8`, `source_fallback=0`.
+- MP028 isolated cache: `compiled=6`, `translator_failed=8`, `dxc_failed=0`,
+  `source_shared=6`, `source_fallback=0`.
+
 ## Native renderer path forward
 
 1. Preserve the runtime `(stage, hash, guest_address, dword_count)` stream from replay as the first shader registry key.

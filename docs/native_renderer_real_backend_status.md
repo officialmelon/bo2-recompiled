@@ -6,6 +6,41 @@ Last updated: 2026-07-03
 
 Real native rendering is not complete.
 
+## 2026-07-03 shader precompile report checkpoint
+
+`native_shader_inspect.exe` now supports
+`--precompile-runtime-shaders-report <path>` for the runtime D3D12 precompile
+flow. The JSONL report gives one record per ranked runtime-used shader plus a
+summary, so follow-up work can consume exact generated-cache hits, translator
+misses, DXC failures, payload truncation, and source provenance without scraping
+console text.
+
+Validation:
+
+- Built `native_shader_inspect.exe` and `native_render_replay.exe` with Ninja
+  `-j12`, exit `0`.
+- MP080 shader usage/matching still shows direct static-index matches at `0`,
+  but shader-record probe runtime payload-prefix matches at `20/20`; the useful
+  identity bridge remains the captured runtime PM4 payload.
+- MP080 replay validation passed:
+  `Validation OK: 18000 events, 55 frames, 3436 draws`.
+- MP080 real-backend gap report stayed stable:
+  `draws=3436`, `ready=836`, `scene_candidate_ready=639`,
+  `depth_only_zero_color_ready=151`, `utility_ready=46`.
+- MP080 D3D12 replay with `--skip-unsupported --d3d12-draws 1200` submitted
+  `836` supported draws across `9` shader pairs with `diagnostic_pipelines=0`.
+- MP080 isolated-cache report run compiled `8` shared automatic shaders and
+  reported `9` translator misses, `0` DXC failures, and
+  `source_shared=8 source_fallback=0 source_unknown=0`.
+- MP028 isolated-cache report run compiled `6` shared automatic shaders and
+  reported `8` translator misses, `0` DXC failures, and
+  `source_shared=6 source_fallback=0 source_unknown=0`.
+
+This is reporting/tooling progress for the automatic shader pipeline, not a
+claim that live native D3D12 is finished. The remaining visible scene quality
+problems still line up with missing shader lowering for the reported runtime
+classes and incomplete texture/sampler/resource interface translation.
+
 ## 2026-07-03 shared translator migration checkpoint
 
 More runtime-used limited shader rules have been moved into the shared

@@ -73,6 +73,7 @@ struct CliOptions {
   std::filesystem::path hlsl_dxc_compile_cache_path;
   std::filesystem::path translated_hlsl_dxc_compile_cache_path;
   std::filesystem::path precompile_runtime_d3d12_cache_path;
+  std::filesystem::path precompile_runtime_d3d12_report_path;
   std::filesystem::path xenosrecomp_path;
   std::filesystem::path xenosrecomp_header_path =
       "thirdparty/XenosRecomp/XenosRecomp/shader_common.h";
@@ -260,6 +261,8 @@ void PrintHelp() {
             << "  --precompile-runtime-shaders-d3d12 <path>\n"
             << "                     Compile top runtime-used translated shaders from a\n"
             << "                     capture into a persistent D3D12 cache\n"
+            << "  --precompile-runtime-shaders-report <path>\n"
+            << "                     Write JSONL per-shader precompile results and summary\n"
             << "  --xenosrecomp <path>\n"
             << "                     XenosRecomp.exe path for container-to-HLSL\n"
             << "  --xenosrecomp-header <path>\n"
@@ -3770,11 +3773,35 @@ bool CompileRuntimeTranslatedHlslWithDxc(
 
 bool PrecompileRuntimeTranslatedShadersD3D12(
     const RuntimeShaderCapture &capture, const std::filesystem::path &cache_root,
-    const std::filesystem::path &requested_dxc_path, std::size_t top_count) {
+    const std::filesystem::path &requested_dxc_path, std::size_t top_count,
+    const std::filesystem::path &report_path) {
   std::cout << "Runtime D3D12 translated shader precompile\n";
   std::cout << "  capture=" << capture.path.string() << "\n";
   std::cout << "  cache_root=" << cache_root.string() << "\n";
   std::cout << "  shader_limit=" << top_count << "\n";
+  if (!report_path.empty()) {
+    std::cout << "  report=" << report_path.string() << "\n";
+  }
+
+  std::ofstream report;
+  if (!report_path.empty()) {
+    std::error_code ec;
+    if (!report_path.parent_path().empty()) {
+      std::filesystem::create_directories(report_path.parent_path(), ec);
+      if (ec) {
+        std::cerr << "failed to create precompile report directory "
+                  << report_path.parent_path().string() << ": "
+                  << ec.message() << "\n";
+        return false;
+      }
+    }
+    report.open(report_path, std::ios::binary | std::ios::trunc);
+    if (!report) {
+      std::cerr << "failed to open precompile report "
+                << report_path.string() << "\n";
+      return false;
+    }
+  }
 
   const std::size_t pair_count =
       std::min<std::size_t>(top_count, capture.pairs.size());
@@ -3799,6 +3826,39 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
     uint64_t source_unknown = 0;
   } counts;
 
+  auto write_report_record = [&](const RuntimeShaderUsage &shader,
+                                 std::string_view status,
+                                 std::string_view source_kind,
+                                 const std::filesystem::path &cache_path,
+                                 std::string_view error) {
+    if (!report) {
+      return;
+    }
+    report << "{"
+           << "\"type\":\"shader\","
+           << "\"stage\":\"" << StageName(shader.stage) << "\","
+           << "\"runtime_hash\":\"" << Hex64(shader.hash) << "\","
+           << "\"status\":\"" << JsonEscape(std::string(status)) << "\","
+           << "\"draws\":" << shader.draw_count << ","
+           << "\"loads\":" << shader.load_count << ","
+           << "\"payload_dwords\":" << shader.payload_dwords << ","
+           << "\"max_payload_dwords\":" << shader.max_payload_dwords << ","
+           << "\"payload_missing\":" << shader.payload_missing_count << ","
+           << "\"payload_truncated\":" << shader.payload_truncated_count;
+    if (!source_kind.empty()) {
+      report << ",\"source\":\"" << JsonEscape(std::string(source_kind))
+             << "\"";
+    }
+    if (!cache_path.empty()) {
+      report << ",\"cache\":\""
+             << JsonEscape(cache_path.generic_string()) << "\"";
+    }
+    if (!error.empty()) {
+      report << ",\"error\":\"" << JsonEscape(std::string(error)) << "\"";
+    }
+    report << "}\n";
+  };
+
   std::cout << "\nRuntime shader compile results:\n";
   const std::size_t shader_count =
       std::min<std::size_t>(top_count, capture.shaders.size());
@@ -3809,6 +3869,7 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
       std::cout << "  " << StageName(shader.stage) << " "
                 << Hex64(shader.hash) << " status=skipped_no_draws"
                 << " loads=" << shader.load_count << "\n";
+      write_report_record(shader, "skipped_no_draws", "", {}, "");
       continue;
     }
     if (shader.first_payload_dwords.empty() || shader.payload_missing_count) {
@@ -3819,6 +3880,7 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
                 << " loads=" << shader.load_count
                 << " missing_payload=" << shader.payload_missing_count
                 << "\n";
+      write_report_record(shader, "no_payload", "", {}, "");
       continue;
     }
     if (shader.payload_truncated_count) {
@@ -3830,6 +3892,8 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
                 << " payload_dwords=" << shader.payload_dwords
                 << " max_payload=" << shader.max_payload_dwords
                 << " truncated=" << shader.payload_truncated_count << "\n";
+      write_report_record(shader, "translator_failed", "", {},
+                          "payload_truncated");
       continue;
     }
 
@@ -3872,6 +3936,8 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
                 << " draws=" << shader.draw_count
                 << " source=" << source_kind
                 << " cache=" << result.shader_path.string() << "\n";
+      write_report_record(shader, cache_hit ? "cache_hit" : "compiled",
+                          source_kind, result.shader_path, "");
       continue;
     }
 
@@ -3889,6 +3955,9 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
               << (translator_error ? "translator_failed" : "dxc_failed")
               << " draws=" << shader.draw_count
               << " error=\"" << JsonEscape(error) << "\"\n";
+    write_report_record(shader,
+                        translator_error ? "translator_failed" : "dxc_failed",
+                        "", {}, error);
   }
 
   std::cout << "\nRuntime D3D12 translated shader precompile summary:\n";
@@ -3904,6 +3973,26 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
             << " source_unknown=" << counts.source_unknown << "\n";
   std::cout << "  cache_index="
             << (cache_root / "shader_cache_index.jsonl").string() << "\n";
+  if (report) {
+    report << "{"
+           << "\"type\":\"summary\","
+           << "\"capture\":\"" << JsonEscape(capture.path.generic_string())
+           << "\","
+           << "\"cache_root\":\"" << JsonEscape(cache_root.generic_string())
+           << "\","
+           << "\"shader_limit\":" << top_count << ","
+           << "\"attempted\":" << counts.attempted << ","
+           << "\"compiled\":" << counts.compiled << ","
+           << "\"cache_hits\":" << counts.cache_hits << ","
+           << "\"no_payload\":" << counts.no_payload << ","
+           << "\"translator_failed\":" << counts.translator_failed << ","
+           << "\"dxc_failed\":" << counts.dxc_failed << ","
+           << "\"skipped_no_draws\":" << counts.skipped_no_draws << ","
+           << "\"source_shared\":" << counts.source_shared << ","
+           << "\"source_fallback\":" << counts.source_fallback << ","
+           << "\"source_unknown\":" << counts.source_unknown
+           << "}\n";
+  }
   return counts.compiled > 0 || counts.cache_hits > 0;
 }
 
@@ -4962,6 +5051,12 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.precompile_runtime_d3d12_cache_path = value;
+    } else if (arg == "--precompile-runtime-shaders-report") {
+      const char *value = require_value("--precompile-runtime-shaders-report");
+      if (!value) {
+        return 2;
+      }
+      cli.precompile_runtime_d3d12_report_path = value;
     } else if (arg == "--xenosrecomp") {
       const char *value = require_value("--xenosrecomp");
       if (!value) {
@@ -5314,7 +5409,8 @@ int main(int argc, char **argv) {
     }
     if (!PrecompileRuntimeTranslatedShadersD3D12(
             runtime_capture, cli.precompile_runtime_d3d12_cache_path,
-            cli.dxc_path, cli.top_shaders)) {
+            cli.dxc_path, cli.top_shaders,
+            cli.precompile_runtime_d3d12_report_path)) {
       std::cerr << "no runtime shaders were compiled or found in translated "
                    "D3D12 cache\n";
       return 1;

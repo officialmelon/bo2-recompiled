@@ -71,7 +71,45 @@ native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\eve
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --write-translated-hlsl shader_work\cache\hlsl
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --compile-translated-hlsl-dxc shader_work\cache
 native_shader_inspect.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --precompile-runtime-shaders-d3d12 shader_work\cache --top-shaders 50
+native_shader_inspect.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --precompile-runtime-shaders-d3d12 shader_work\cache --precompile-runtime-shaders-report shader_work\cache\precompile_report.jsonl --top-shaders 50
 ```
+
+## Runtime Precompile JSONL Report
+
+Evidence date: 2026-07-03
+
+`native_shader_inspect.exe --precompile-runtime-shaders-report <path>` writes
+machine-readable JSONL for the runtime D3D12 precompile command. The report
+contains one `type:"shader"` object per ranked runtime-used shader and a final
+`type:"summary"` object. Per-shader records include stage, runtime hash, status,
+draw/load counts, payload completeness, generated source provenance, cache path,
+and translator/DXC error text where applicable.
+
+Validation commands:
+
+```powershell
+cmd.exe /d /s /c "call ""C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 >nul && ninja -C ""C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug"" -j12 native_shader_inspect.exe native_render_replay.exe"
+native_shader_inspect.exe --capture native_captures\live_d3d12_mp_028\events.jsonl --precompile-runtime-shaders-d3d12 native_captures\tmp_report_precompile_cache --precompile-runtime-shaders-report native_captures\tmp_report_precompile_cache\precompile_report.jsonl --top-shaders 20
+native_shader_inspect.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --precompile-runtime-shaders-d3d12 native_captures\tmp_mp080_report_cache --precompile-runtime-shaders-report native_captures\tmp_mp080_report_cache\precompile_report.jsonl --top-shaders 20
+```
+
+Verified results:
+
+- Build passed with `-j12`; warnings were existing ReXGlue/platform warnings.
+- MP028 isolated-cache report summary:
+  `attempted=13`, `compiled=6`, `cache_hits=0`, `translator_failed=8`,
+  `dxc_failed=0`, `source_shared=6`, `source_fallback=0`,
+  `source_unknown=0`.
+- MP080 isolated-cache report summary:
+  `attempted=16`, `compiled=8`, `cache_hits=0`, `translator_failed=9`,
+  `dxc_failed=0`, `source_shared=8`, `source_fallback=0`,
+  `source_unknown=0`.
+- The JSONL report explicitly records still-missing translator classes such as
+  `PS 0xFF01D28E1EF3A880` (`tfetch2D`, `mul oC0`), the multi-fetch vertex
+  class `VS 0xCBC9604F48930B36` / `VS 0x261BDD733FEC1F64`, and the old
+  truncated MP080 `PS 0x79E1F538A5074A65` capture.
+- Temporary validation caches were not intended as persistent shader cache
+  artifacts; the persistent path remains `shader_work\cache`.
 
 ## Runtime D3D12 Precompile Checkpoint
 
