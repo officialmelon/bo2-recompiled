@@ -338,6 +338,50 @@ bool TryTranslatePostProcessVertexShader(
   return true;
 }
 
+bool TryTranslateMultiFetchUiVertexShader(
+    const XenosHlslTranslationRequest& request,
+    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
+  if (request.runtime_stage != 0 ||
+      !HasOperation(operations, "vfetch_full", "r2.xyz_", 0) ||
+      request.disassembly.find("Stride=8") == std::string::npos ||
+      request.disassembly.find("vfetch_mini r1.zyxw") == std::string::npos ||
+      request.disassembly.find("DataFormat=FMT_8_8_8_8") == std::string::npos ||
+      request.disassembly.find("vfetch_mini r0.xy__") == std::string::npos ||
+      request.disassembly.find("DataFormat=FMT_32_32_FLOAT") ==
+          std::string::npos ||
+      request.disassembly.find("mad r3.xyz_") == std::string::npos ||
+      request.disassembly.find("dp4 oPos") == std::string::npos ||
+      request.disassembly.find("max o1.xy__") == std::string::npos ||
+      request.disassembly.find("max o0, r1, r1") == std::string::npos) {
+    return false;
+  }
+
+  EmitTranslatedHeader(request, out);
+  EmitScreenSpaceFrameConstants(out);
+  EmitBasicUiVsInput(out);
+  out << "struct VSOutput\n";
+  out << "{\n";
+  out << "  float4 position : SV_Position;\n";
+  out << "  float4 color : COLOR0;\n";
+  out << "  float2 uv : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "VSOutput main(VSInput input)\n";
+  out << "{\n";
+  out << "  VSOutput output;\n";
+  out << "  // Xenos subset: vf0 position, packed color, UV, c20 scale/bias,\n";
+  out << "  // c4-c6/c0-c3 dp4 transform, then max o1.xy and max o0.\n";
+  out << "  // Replay's canonical input layout already exposes the fetched BO2\n";
+  out << "  // position/color/uv streams, so keep the same screen-space projection\n";
+  out << "  // used by the other currently supported UI/quad vertex classes.\n";
+  EmitScreenSpaceNdcBodyPrefix(out);
+  out << "  output.position = float4(ndc, input.position.z, 1.0f);\n";
+  out << "  output.color = saturate(input.color);\n";
+  out << "  output.uv = input.uv;\n";
+  out << "  return output;\n";
+  out << "}\n";
+  return true;
+}
+
 bool TryTranslateVertexlessZeroVertexShader(
     const XenosHlslTranslationRequest& request,
     const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
@@ -544,6 +588,9 @@ bool TryTranslateLimitedXenosHlsl(const XenosHlslTranslationRequest& request,
     return true;
   }
   if (TryTranslatePostProcessVertexShader(request, operations, out)) {
+    return true;
+  }
+  if (TryTranslateMultiFetchUiVertexShader(request, operations, out)) {
     return true;
   }
   if (TryTranslateVertexlessZeroVertexShader(request, operations, out)) {

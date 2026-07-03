@@ -52,6 +52,18 @@ Follow-up automatic shader coverage:
 - MP080 replay validation and D3D12 real replay remained stable at `836`
   supported draws across `9` shader pairs with no diagnostic pipelines.
 
+The shared translator also now handles the common multi-fetch vertex class used
+by `VS 0xCBC9604F48930B36`, `VS 0x261BDD733FEC1F64`, and
+`VS 0xEF95534343684F5B`. These shaders decode as vf95 position, packed color,
+UV, constant transform, `max o1.xy__`, and `max o0`. After this rule:
+
+- MP080 isolated-cache precompile reports `compiled=12`,
+  `translator_failed=5`, `dxc_failed=0`, `source_shared=12`.
+- MP028 isolated-cache precompile reports `compiled=10`,
+  `translator_failed=4`, `dxc_failed=0`, `source_shared=10`.
+- MP080 validation and D3D12 replay remained stable at `836` supported draws
+  across `9` shader pairs with `diagnostic_pipelines=0`.
+
 ## 2026-07-03 shared translator migration checkpoint
 
 More runtime-used limited shader rules have been moved into the shared

@@ -123,6 +123,24 @@ Follow-up `PS 0xFF01D28E1EF3A880` rule validation:
 - MP080 replay validation still passed, and D3D12 real replay still submitted
   `836` supported draws across `9` shader pairs with `diagnostic_pipelines=0`.
 
+Follow-up multi-fetch vertex rule validation:
+
+- Added a shared rule for the common vf95 class used by
+  `VS 0xCBC9604F48930B36`, `VS 0x261BDD733FEC1F64`, and
+  `VS 0xEF95534343684F5B`: `vfetch_full r2.xyz_`, packed color
+  `vfetch_mini r1.zyxw`, UV `vfetch_mini r0.xy__`, transform dp4 chain, then
+  `max o1.xy__` and `max o0`.
+- MP080 isolated-cache precompile improved to `attempted=16`, `compiled=12`,
+  `translator_failed=5`, `dxc_failed=0`, `source_shared=12`.
+- MP028 isolated-cache precompile improved to `attempted=13`, `compiled=10`,
+  `translator_failed=4`, `dxc_failed=0`, `source_shared=10`.
+- MP080 replay validation and D3D12 real replay remained stable at `836`
+  supported draws across `9` shader pairs with `diagnostic_pipelines=0`.
+- Remaining MP080 top misses are now the larger pixel ALU shaders
+  `PS 0x7D1EF030F5710BDA`, `PS 0x8645E8BA65E424B2`,
+  `PS 0xDC168FB6031AFC41`, old truncated `PS 0x79E1F538A5074A65`, and the
+  no-raster/no-fetch utility `VS 0xDDED7E538422AE73`.
+
 ## Runtime D3D12 Precompile Checkpoint
 
 Evidence date: 2026-07-03
