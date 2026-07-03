@@ -2865,3 +2865,18 @@ Results:
   `diagnostic_pipelines=0`, `608` captured texture SRVs, `608` captured sampler
   descriptors, and a nonzero color readback.
 * Capture validation passes: `Validation OK: 18000 events, 55 frames, 3436 draws`.
+
+The same capture previously failed at high replay caps with
+`ID3D12Device::CreateDescriptorHeap(Sampler) failed with HRESULT 0x80070057`
+because the D3D12 replay backend allocated one shader-visible 8-sampler block
+per textured draw. The backend now caches contiguous sampler descriptor sets by
+captured sampler state. Re-running:
+
+```text
+native_render_replay.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --backend d3d12 --skip-unsupported --d3d12-draws 1200 --no-summary
+```
+
+now submits all `836` ready draws across `9` shader pairs. The log reports
+`D3D12 real replay sampler descriptor sets: unique=6 heap_descriptors=56`,
+with `1017` captured texture SRVs, `1017` captured sampler descriptors,
+`diagnostic_pipelines=0`, and a nonzero color readback.

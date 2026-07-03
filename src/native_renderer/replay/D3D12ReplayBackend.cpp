@@ -2202,6 +2202,36 @@ std::string TextureUploadCacheKey(const TextureFetchRecord *fetch,
   return key.str();
 }
 
+std::string SamplerDescriptorSetKey(
+    const std::vector<TextureFetchRecord> &fetches) {
+  std::ostringstream key;
+  for (std::size_t slot = 0; slot < kMaxRealReplayTextureSlots; ++slot) {
+    if (slot) {
+      key << "|";
+    }
+    if (slot >= fetches.size()) {
+      key << "fallback";
+      continue;
+    }
+    const TextureFetchRecord &fetch = fetches[slot];
+    key << "slot=" << slot
+        << ":clamp_present=" << (fetch.clamp_modes_present ? 1 : 0)
+        << ":clamp=" << fetch.clamp_x << "," << fetch.clamp_y << ","
+        << fetch.clamp_z
+        << ":filter=" << fetch.mag_filter << "," << fetch.min_filter << ","
+        << fetch.mip_filter
+        << ":aniso=" << fetch.aniso_filter
+        << ":arb=" << fetch.arbitrary_filter
+        << ":vol=" << fetch.vol_mag_filter << "," << fetch.vol_min_filter
+        << ":mip_level=" << fetch.mip_min_level << "," << fetch.mip_max_level
+        << ":lod_bias=" << fetch.lod_bias
+        << ":border=" << fetch.border_size << "," << fetch.border_color
+        << ":tri=" << fetch.tri_clamp
+        << ":aniso_bias=" << fetch.aniso_bias;
+  }
+  return key.str();
+}
+
 void CopyFramePlanDiagnosticsToLiveBinding(
     const FrameRealReplayPlan &frame_plan, D3D12LiveSubmitBinding &binding) {
   binding.skipped_draws =
@@ -5159,16 +5189,17 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
 
   D3D12_DESCRIPTOR_HEAP_DESC sampler_heap_desc{};
   sampler_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
-  const std::size_t texture_fetch_draw_count =
-      std::count_if(uploaded_draws.begin(), uploaded_draws.end(),
-                    [&](const UploadedRealDraw &uploaded) {
-                      const ReplayDrawState &state =
-                          capture.draws[uploaded.prepared.draw_index];
-                      return !state.draw.texture_fetches.empty();
-                    });
+  std::set<std::string> unique_sampler_sets;
+  for (const UploadedRealDraw &uploaded : uploaded_draws) {
+    const ReplayDrawState &state = capture.draws[uploaded.prepared.draw_index];
+    if (!state.draw.texture_fetches.empty()) {
+      unique_sampler_sets.insert(
+          SamplerDescriptorSetKey(state.draw.texture_fetches));
+    }
+  }
   const std::size_t sampler_descriptor_count =
       std::max<std::size_t>(kMaxRealReplayTextureSlots,
-                            (texture_fetch_draw_count + 1) *
+                            (unique_sampler_sets.size() + 1) *
                                 kMaxRealReplayTextureSlots);
   sampler_heap_desc.NumDescriptors =
       static_cast<UINT>(sampler_descriptor_count);
@@ -5204,6 +5235,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
                               sampler_descriptor_size;
     CreateSampler(device.Get(), nullptr, sampler_descriptor);
   }
+  std::map<std::string, uint32_t> sampler_descriptor_set_cache;
   for (std::size_t i = 0; i < uploaded_draws.size(); ++i) {
     UploadedRealDraw &uploaded = uploaded_draws[i];
     uploaded.texture_srv_base_index =
@@ -5213,10 +5245,21 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         capture.draws[uploaded.prepared.draw_index];
     const bool draw_has_texture_fetches =
         !uploaded_state.draw.texture_fetches.empty();
+    bool create_sampler_descriptors = false;
     if (draw_has_texture_fetches) {
-      uploaded.sampler_descriptor_base_index = next_sampler_descriptor_base;
-      next_sampler_descriptor_base +=
-          static_cast<uint32_t>(kMaxRealReplayTextureSlots);
+      const std::string sampler_key =
+          SamplerDescriptorSetKey(uploaded_state.draw.texture_fetches);
+      auto sampler_it = sampler_descriptor_set_cache.find(sampler_key);
+      if (sampler_it == sampler_descriptor_set_cache.end()) {
+        uploaded.sampler_descriptor_base_index = next_sampler_descriptor_base;
+        sampler_descriptor_set_cache.emplace(
+            sampler_key, uploaded.sampler_descriptor_base_index);
+        next_sampler_descriptor_base +=
+            static_cast<uint32_t>(kMaxRealReplayTextureSlots);
+        create_sampler_descriptors = true;
+      } else {
+        uploaded.sampler_descriptor_base_index = sampler_it->second;
+      }
     } else {
       uploaded.sampler_descriptor_base_index = 0;
     }
@@ -5332,7 +5375,7 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
       }
       CreateTextureSrv(device.Get(), uploaded.textures[slot].Get(),
                        descriptor);
-      if (draw_has_texture_fetches) {
+      if (create_sampler_descriptors) {
         CreateSampler(device.Get(), selected_fetch, sampler_descriptor);
       }
     }
@@ -5473,6 +5516,9 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
               << exact_sampler_clamp_count
               << ", clamp_addressing_fallbacks="
               << fallback_sampler_clamp_count << "\n";
+    std::cout << "D3D12 real replay sampler descriptor sets: unique="
+              << unique_sampler_sets.size()
+              << " heap_descriptors=" << sampler_descriptor_count << "\n";
     if (!semantic_constant_gaps.empty()) {
       std::cout << "D3D12 real replay semantic constant gaps:\n";
       for (const auto &[key, gap] : semantic_constant_gaps) {
