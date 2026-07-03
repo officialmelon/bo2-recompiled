@@ -6603,6 +6603,10 @@ XeniaViewportInfo ComputeXeniaViewport(const RenderStateRecord &state,
     info.z_max = 1.0f;
     info.ndc_scale[2] = scale_z;
     info.ndc_offset[2] = offset_z;
+    // The Xenos NDC convention points +Y down the render target; Direct3D 12
+    // NDC +Y is up, so the final Y transform is negated.
+    info.ndc_scale[1] = -info.ndc_scale[1];
+    info.ndc_offset[1] = -info.ndc_offset[1];
     return info;
   }
   for (uint32_t i = 0; i < 2; ++i) {
@@ -6636,6 +6640,10 @@ XeniaViewportInfo ComputeXeniaViewport(const RenderStateRecord &state,
   }
   info.ndc_scale[2] = 1.0f;
   info.ndc_offset[2] = 0.0f;
+  // The Xenos NDC convention points +Y down the render target; Direct3D 12
+  // NDC +Y is up, so the final Y transform is negated.
+  info.ndc_scale[1] = -info.ndc_scale[1];
+  info.ndc_offset[1] = -info.ndc_offset[1];
   return info;
 }
 
@@ -6695,10 +6703,27 @@ struct XeniaLiveState {
   std::map<uint32_t, XeniaGuestDepthTarget> depth_targets;
   uint32_t width = 0;
   uint32_t height = 0;
-  // GPU resources from the previous live frame, released when the next frame
-  // begins (mirrors the legacy live path's retained-resource lifetime).
-  std::vector<ComPtr<ID3D12Resource>> retained_resources;
-  std::vector<ComPtr<ID3D12DescriptorHeap>> retained_heaps;
+  // Per-frame GPU resources are retained for kRetainedFrameRing frames so the
+  // command frames still in flight (the live backend triple-buffers) never
+  // lose buffers, textures, or descriptor heaps they reference.
+  static constexpr uint32_t kRetainedFrameRing = 4;
+  struct RetainedFrame {
+    std::vector<ComPtr<ID3D12Resource>> resources;
+    std::vector<ComPtr<ID3D12DescriptorHeap>> heaps;
+  };
+  std::array<RetainedFrame, kRetainedFrameRing> retained_ring;
+  uint32_t retained_ring_index = 0;
+  std::vector<ComPtr<ID3D12Resource>> *retained_resources = nullptr;
+  std::vector<ComPtr<ID3D12DescriptorHeap>> *retained_heaps = nullptr;
+
+  void BeginRetainedFrame() {
+    retained_ring_index = (retained_ring_index + 1) % kRetainedFrameRing;
+    RetainedFrame &frame = retained_ring[retained_ring_index];
+    frame.resources.clear();
+    frame.heaps.clear();
+    retained_resources = &frame.resources;
+    retained_heaps = &frame.heaps;
+  }
 };
 
 }  // namespace
@@ -6727,9 +6752,9 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     state_ptr = live_session->xenia.get();
   }
   XeniaLiveState &xenia = *state_ptr;
-  // Release GPU resources retained from the previous live frame.
-  xenia.retained_resources.clear();
-  xenia.retained_heaps.clear();
+  // Rotate the retained-resource ring: frees the oldest frame's GPU
+  // resources while frames still in flight keep theirs alive.
+  xenia.BeginRetainedFrame();
 
   // Resolve the xenia_dxbc shader records for every runtime shader used by
   // the capture, newest record winning per (stage, hash, rect_variant).
@@ -7121,7 +7146,7 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     shared_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     // Defer releasing a previous smaller buffer until the next frame.
     if (xenia.shared_memory) {
-      xenia.retained_resources.push_back(xenia.shared_memory);
+      xenia.retained_resources->push_back(xenia.shared_memory);
       xenia.shared_memory.Reset();
     }
     if (!CheckHr(device->CreateCommittedResource(
@@ -7210,7 +7235,7 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
       upload_offset += (bytes.size() + 255) & ~std::size_t(255);
     }
     shared_upload->Unmap(0, nullptr);
-    xenia.retained_resources.push_back(shared_upload);
+    xenia.retained_resources->push_back(shared_upload);
   }
   if (xenia.shared_memory_in_copy_dest ||
       xenia.shared_memory_needs_first_transition) {
@@ -7253,7 +7278,7 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
                "CreateCommittedResource(xenia constant ring)", error)) {
     return false;
   }
-  xenia.retained_resources.push_back(cb_buffer);
+  xenia.retained_resources->push_back(cb_buffer);
   uint8_t *cb_mapped = nullptr;
   if (!CheckHr(cb_buffer->Map(0, nullptr,
                               reinterpret_cast<void **>(&cb_mapped)),
@@ -7470,9 +7495,9 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   // Keep-alive lists for per-draw texture resources. In live mode these are
   // released at the start of the next frame.
   std::vector<ComPtr<ID3D12Resource>> &texture_resources =
-      xenia.retained_resources;
+      *xenia.retained_resources;
   std::vector<ComPtr<ID3D12Resource>> &texture_uploads =
-      xenia.retained_resources;
+      *xenia.retained_resources;
 
   const D3D12_GPU_DESCRIPTOR_HANDLE shared_memory_table = srv_gpu_base;
   uint64_t submitted = 0;
@@ -7483,8 +7508,8 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   D3D12_RECT scissor{0, 0, LONG(width), LONG(height)};
   ID3D12DescriptorHeap *heaps[] = {srv_heap.Get(), sampler_heap.Get()};
   list->SetDescriptorHeaps(2, heaps);
-  xenia.retained_heaps.push_back(srv_heap);
-  xenia.retained_heaps.push_back(sampler_heap);
+  xenia.retained_heaps->push_back(srv_heap);
+  xenia.retained_heaps->push_back(sampler_heap);
 
   for (std::size_t prepared_index = 0; prepared_index < prepared.size();
        ++prepared_index) {
@@ -7554,8 +7579,10 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
               ? D3D12_CULL_MODE_FRONT
               : (render_state.cull_mode == 2 ? D3D12_CULL_MODE_BACK
                                              : D3D12_CULL_MODE_NONE);
+      // The NDC Y flip (Xenos +Y down vs Direct3D +Y up) inverts the screen
+      // winding, so the guest front-face convention is inverted here.
       pso.RasterizerState.FrontCounterClockwise =
-          render_state.front_face ? TRUE : FALSE;
+          render_state.front_face ? FALSE : TRUE;
       pso.RasterizerState.DepthClipEnable = TRUE;
       pso.DepthStencilState.DepthEnable =
           render_state.depth_test_enable ? TRUE : FALSE;
@@ -8013,6 +8040,8 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   // Select the guest color target that received the most draws this run
   // (the composed scene/UI surface).
   ID3D12Resource *presented_target = nullptr;
+  uint32_t presented_base = 0;
+  uint64_t presented_base_draws = 0;
   {
     uint64_t best_draws = 0;
     uint32_t best_base = 0;
@@ -8023,6 +8052,8 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         presented_target = target.resource.Get();
       }
     }
+    presented_base = best_base;
+    presented_base_draws = best_draws;
     if (log_backend) {
       std::cout << "D3D12 Xenia-translated replay guest color targets:";
       for (const auto &[base, target] : guest_color_targets) {
@@ -8079,6 +8110,9 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     live_binding->submitted_draws = submitted;
     live_binding->shader_pair_count = submitted_pairs.size();
     live_binding->pso_entries = pipelines.size();
+    live_binding->candidate_presented_guest_color_base =
+        uint32_t(presented_base_draws);
+    live_binding->selected_presented_guest_color_base = presented_base;
     live_binding->diagnostic_pipelines = 0;
     live_binding->skipped_draws = 0;
     for (const auto &[reason, count] : unsupported_reasons) {

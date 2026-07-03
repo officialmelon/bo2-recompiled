@@ -89,13 +89,13 @@
     "shader_pairs": 12,
     "captured_texture_srvs": 1522,
     "fallback_texture_srvs": 0,
-    "output_sha256": "B2DF486AEC241C258E89648CD45AE254D54500F65736CFB587679595A3B06038"
+    "output_sha256": "C8E1E97BFED183B57371764BFC70B1D7E7EB1EE2D3E746AD21C940F00E1AEC88"
   },
   "mp028-xenia-replay": {
     "submitted_draws": 1019,
     "shader_pairs": 10,
     "captured_texture_srvs": 302,
     "fallback_texture_srvs": 0,
-    "output_sha256": "BA7DEDB973D66920F7ABAFE1F6DDE345713A2A150279F3D1D90809CE716CBBF1"
+    "output_sha256": "5C6D735402D8F43F1E612364DB4087256BAA3EC1DE1895A53A895407E3E831E7"
   }
 }
