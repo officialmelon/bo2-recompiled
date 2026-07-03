@@ -2,6 +2,7 @@
 #include <array>
 #include <bit>
 #include <cctype>
+#include <cstdlib>
 #include <charconv>
 #include <cstdint>
 #include <filesystem>
@@ -35,6 +36,9 @@
 
 #include "../shader_translation/XenosDisassembly.h"
 #include "../shader_translation/XenosHlslTranslator.h"
+
+#define XXH_INLINE_ALL
+#include "../../../../rexglue-sdk/thirdparty/xxHash/xxhash.h"
 
 // ReXGlue's shader analyzer checks the optional graphics dump_shaders CVar.
 // The standalone inspector keeps that disabled without linking graphics/flags.cpp,
@@ -101,6 +105,10 @@ struct RuntimeShaderUsage {
   std::string payload_sha256_be;
   std::string payload_trimmed_sha256_le;
   std::string payload_trimmed_sha256_be;
+  uint64_t payload_xxh3_host_words = 0;
+  uint64_t payload_xxh3_be_bytes = 0;
+  uint64_t payload_trimmed_xxh3_host_words = 0;
+  uint64_t payload_trimmed_xxh3_be_bytes = 0;
   uint64_t payload_hash_mismatch_count = 0;
   std::vector<uint32_t> first_payload_dwords;
 };
@@ -932,6 +940,32 @@ std::vector<uint8_t> DwordsToBytes(const std::vector<uint32_t> &dwords,
   return bytes;
 }
 
+uint64_t Xxh3Bytes(const std::vector<uint8_t> &bytes) {
+  if (bytes.empty()) {
+    return 0;
+  }
+  return XXH3_64bits(bytes.data(), bytes.size());
+}
+
+uint64_t Xxh3DwordsHost(const std::vector<uint32_t> &dwords) {
+  if (dwords.empty()) {
+    return 0;
+  }
+  return XXH3_64bits(dwords.data(), dwords.size() * sizeof(uint32_t));
+}
+
+std::vector<uint32_t> BeBytesToHostDwords(const std::vector<uint8_t> &bytes) {
+  std::vector<uint32_t> dwords;
+  if (bytes.size() % 4 != 0) {
+    return dwords;
+  }
+  dwords.reserve(bytes.size() / 4);
+  for (std::size_t offset = 0; offset < bytes.size(); offset += 4) {
+    dwords.push_back(ReadBE32(bytes, offset));
+  }
+  return dwords;
+}
+
 std::vector<uint32_t> ParseDwordArray(std::string_view line,
                                       std::string_view key) {
   std::vector<uint32_t> dwords;
@@ -1086,18 +1120,30 @@ void RecordPayloadHashes(RuntimeShaderUsage &usage,
   const std::vector<uint32_t> trimmed = TrimTrailingZeroDwords(dwords);
   const std::string trimmed_le = Sha256Hex(DwordsToBytes(trimmed, true));
   const std::string trimmed_be = Sha256Hex(DwordsToBytes(trimmed, false));
+  const uint64_t raw_xxh3_host = Xxh3DwordsHost(dwords);
+  const uint64_t raw_xxh3_be = Xxh3Bytes(DwordsToBytes(dwords, false));
+  const uint64_t trimmed_xxh3_host = Xxh3DwordsHost(trimmed);
+  const uint64_t trimmed_xxh3_be = Xxh3Bytes(DwordsToBytes(trimmed, false));
 
   if (usage.payload_sha256_le.empty()) {
     usage.payload_sha256_le = raw_le;
     usage.payload_sha256_be = raw_be;
     usage.payload_trimmed_sha256_le = trimmed_le;
     usage.payload_trimmed_sha256_be = trimmed_be;
+    usage.payload_xxh3_host_words = raw_xxh3_host;
+    usage.payload_xxh3_be_bytes = raw_xxh3_be;
+    usage.payload_trimmed_xxh3_host_words = trimmed_xxh3_host;
+    usage.payload_trimmed_xxh3_be_bytes = trimmed_xxh3_be;
     return;
   }
 
   if (usage.payload_sha256_le != raw_le || usage.payload_sha256_be != raw_be ||
       usage.payload_trimmed_sha256_le != trimmed_le ||
-      usage.payload_trimmed_sha256_be != trimmed_be) {
+      usage.payload_trimmed_sha256_be != trimmed_be ||
+      usage.payload_xxh3_host_words != raw_xxh3_host ||
+      usage.payload_xxh3_be_bytes != raw_xxh3_be ||
+      usage.payload_trimmed_xxh3_host_words != trimmed_xxh3_host ||
+      usage.payload_trimmed_xxh3_be_bytes != trimmed_xxh3_be) {
     ++usage.payload_hash_mismatch_count;
   }
 }
@@ -3983,12 +4029,174 @@ void PrintRuntimeShaders(const RuntimeShaderCapture &capture,
   }
 }
 
+struct MicrocodeXxh3Record {
+  std::filesystem::path path;
+  std::uintmax_t byte_size = 0;
+  std::string variant;
+};
+
+struct MicrocodeXxh3Index {
+  std::map<uint64_t, std::vector<MicrocodeXxh3Record>> by_hash;
+  uint64_t files_scanned = 0;
+  uint64_t raw_variants = 0;
+  uint64_t be32_host_variants = 0;
+  uint64_t trimmed_variants = 0;
+};
+
+void AddMicrocodeXxh3Record(MicrocodeXxh3Index &index, uint64_t hash,
+                            const std::filesystem::path &path,
+                            std::uintmax_t byte_size,
+                            std::string_view variant) {
+  if (hash == 0) {
+    return;
+  }
+  index.by_hash[hash].push_back(
+      MicrocodeXxh3Record{path, byte_size, std::string(variant)});
+}
+
+void AddMicrocodeFileToXxh3Index(const std::filesystem::path &path,
+                                 MicrocodeXxh3Index &index) {
+  std::vector<uint8_t> bytes;
+  if (!LoadBinary(path, bytes)) {
+    return;
+  }
+
+  ++index.files_scanned;
+  AddMicrocodeXxh3Record(index, Xxh3Bytes(bytes), path, bytes.size(),
+                         "raw_file_bytes");
+  ++index.raw_variants;
+
+  std::vector<uint8_t> trimmed_bytes = bytes;
+  while (trimmed_bytes.size() >= 4 &&
+         trimmed_bytes[trimmed_bytes.size() - 4] == 0 &&
+         trimmed_bytes[trimmed_bytes.size() - 3] == 0 &&
+         trimmed_bytes[trimmed_bytes.size() - 2] == 0 &&
+         trimmed_bytes[trimmed_bytes.size() - 1] == 0) {
+    trimmed_bytes.resize(trimmed_bytes.size() - 4);
+  }
+  if (trimmed_bytes.size() != bytes.size()) {
+    AddMicrocodeXxh3Record(index, Xxh3Bytes(trimmed_bytes), path, bytes.size(),
+                           "raw_file_bytes_trimmed_zero_dwords");
+    ++index.trimmed_variants;
+  }
+
+  const std::vector<uint32_t> be32_host_dwords = BeBytesToHostDwords(bytes);
+  if (!be32_host_dwords.empty()) {
+    AddMicrocodeXxh3Record(index, Xxh3DwordsHost(be32_host_dwords), path,
+                           bytes.size(), "be32_to_host_words");
+    ++index.be32_host_variants;
+    const std::vector<uint32_t> trimmed =
+        TrimTrailingZeroDwords(be32_host_dwords);
+    if (trimmed.size() != be32_host_dwords.size()) {
+      AddMicrocodeXxh3Record(index, Xxh3DwordsHost(trimmed), path, bytes.size(),
+                             "be32_to_host_words_trimmed_zero_dwords");
+      ++index.trimmed_variants;
+    }
+  }
+}
+
+MicrocodeXxh3Index BuildMicrocodeXxh3Index(
+    const std::filesystem::path &shader_index_path) {
+  MicrocodeXxh3Index index;
+  const std::filesystem::path shader_root =
+      shader_index_path.empty()
+          ? std::filesystem::path("shader_work/shaders")
+          : shader_index_path.parent_path();
+  std::error_code ec;
+  if (!std::filesystem::exists(shader_root, ec)) {
+    return index;
+  }
+
+  const std::array<std::filesystem::path, 2> scan_roots = {
+      shader_root, shader_root / "microcode"};
+  for (const std::filesystem::path &scan_root : scan_roots) {
+    if (!std::filesystem::exists(scan_root, ec)) {
+      ec.clear();
+      continue;
+    }
+    for (std::filesystem::directory_iterator it(
+             scan_root,
+             std::filesystem::directory_options::skip_permission_denied, ec),
+         end;
+         !ec && it != end; it.increment(ec)) {
+      if (!it->is_regular_file(ec)) {
+        continue;
+      }
+      if (it->path().extension() != ".ucode") {
+        continue;
+      }
+      AddMicrocodeFileToXxh3Index(it->path(), index);
+    }
+    ec.clear();
+  }
+  return index;
+}
+
+std::string DescribeMicrocodeXxh3Matches(
+    const std::vector<MicrocodeXxh3Record> *records,
+    const std::filesystem::path &root, std::size_t max_records = 3) {
+  if (records == nullptr || records->empty()) {
+    return "no";
+  }
+  std::ostringstream out;
+  out << "yes";
+  const std::size_t count = std::min(max_records, records->size());
+  for (std::size_t i = 0; i < count; ++i) {
+    std::error_code ec;
+    std::filesystem::path path = records->at(i).path;
+    std::filesystem::path relative = std::filesystem::relative(path, root, ec);
+    if (!ec) {
+      path = relative;
+    }
+    out << (i == 0 ? " [" : "; ") << records->at(i).variant << ":"
+        << path.string() << " bytes=" << records->at(i).byte_size;
+  }
+  if (records->size() > count) {
+    out << "; +" << (records->size() - count) << " more";
+  }
+  out << "]";
+  return out.str();
+}
+
+const std::vector<MicrocodeXxh3Record> *FindMicrocodeXxh3Matches(
+    const MicrocodeXxh3Index &index, uint64_t hash) {
+  const auto it = index.by_hash.find(hash);
+  if (it == index.by_hash.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
 void MatchRuntimeShaders(std::string_view index_text,
+                         const std::filesystem::path &index_path,
                          const RuntimeShaderCapture &capture,
                          std::size_t top_count) {
   const std::string lower_index = ToLower(std::string(index_text));
+  const bool scan_static_microcode_xxh3 =
+      std::getenv("BO2_SHADER_INSPECT_SCAN_UCODE_XXH3") != nullptr;
+  const MicrocodeXxh3Index microcode_xxh3 =
+      scan_static_microcode_xxh3 ? BuildMicrocodeXxh3Index(index_path)
+                                 : MicrocodeXxh3Index{};
+  const std::filesystem::path shader_root =
+      index_path.empty() ? std::filesystem::path("shader_work/shaders")
+                         : index_path.parent_path();
   uint64_t matched = 0;
+  uint64_t runtime_hash_microcode_xxh3_matches = 0;
+  uint64_t runtime_payload_xxh3_self_matches = 0;
   std::cout << "Runtime shader index match:\n";
+  if (scan_static_microcode_xxh3) {
+    std::cout << "Static microcode XXH3 scan: files="
+              << microcode_xxh3.files_scanned
+              << " unique_hashes=" << microcode_xxh3.by_hash.size()
+              << " raw_variants=" << microcode_xxh3.raw_variants
+              << " be32_host_variants=" << microcode_xxh3.be32_host_variants
+              << " trimmed_variants=" << microcode_xxh3.trimmed_variants
+              << "\n";
+  } else {
+    std::cout << "Static microcode XXH3 scan: disabled"
+              << " (set BO2_SHADER_INSPECT_SCAN_UCODE_XXH3=1 or use"
+              << " scripts/shaders/match-runtime-xxh3-microcode.mjs)\n";
+  }
   const std::size_t count =
       std::min<std::size_t>(top_count, capture.shaders.size());
   for (std::size_t i = 0; i < count; ++i) {
@@ -4017,6 +4225,39 @@ void MatchRuntimeShaders(std::string_view index_text,
         usage.payload_trimmed_sha256_be.empty()
             ? std::string::npos
             : lower_index.find(ToLower(usage.payload_trimmed_sha256_be));
+    const std::vector<MicrocodeXxh3Record> *runtime_hash_ucode_matches =
+        scan_static_microcode_xxh3
+            ? FindMicrocodeXxh3Matches(microcode_xxh3, usage.hash)
+            : nullptr;
+    const std::vector<MicrocodeXxh3Record> *payload_host_ucode_matches =
+        scan_static_microcode_xxh3
+            ? FindMicrocodeXxh3Matches(microcode_xxh3,
+                                       usage.payload_xxh3_host_words)
+            : nullptr;
+    const std::vector<MicrocodeXxh3Record> *payload_be_ucode_matches =
+        scan_static_microcode_xxh3
+            ? FindMicrocodeXxh3Matches(microcode_xxh3,
+                                       usage.payload_xxh3_be_bytes)
+            : nullptr;
+    const bool payload_self_host_match =
+        usage.payload_xxh3_host_words != 0 &&
+        usage.payload_xxh3_host_words == usage.hash;
+    const bool payload_self_be_match =
+        usage.payload_xxh3_be_bytes != 0 &&
+        usage.payload_xxh3_be_bytes == usage.hash;
+    const bool payload_self_trimmed_host_match =
+        usage.payload_trimmed_xxh3_host_words != 0 &&
+        usage.payload_trimmed_xxh3_host_words == usage.hash;
+    const bool payload_self_trimmed_be_match =
+        usage.payload_trimmed_xxh3_be_bytes != 0 &&
+        usage.payload_trimmed_xxh3_be_bytes == usage.hash;
+    if (runtime_hash_ucode_matches != nullptr) {
+      ++runtime_hash_microcode_xxh3_matches;
+    }
+    if (payload_self_host_match || payload_self_be_match ||
+        payload_self_trimmed_host_match || payload_self_trimmed_be_match) {
+      ++runtime_payload_xxh3_self_matches;
+    }
     std::cout << "  " << StageName(usage.stage) << " 0x" << std::hex
               << std::uppercase << usage.hash << std::dec
               << " draws=" << usage.draw_count
@@ -4033,6 +4274,14 @@ void MatchRuntimeShaders(std::string_view index_text,
               << (trimmed_le_pos == std::string::npos ? "no" : "yes")
               << " payload_trimmed_be_match="
               << (trimmed_be_pos == std::string::npos ? "no" : "yes")
+              << " runtime_hash_microcode_xxh3_match="
+              << (runtime_hash_ucode_matches == nullptr ? "no" : "yes")
+              << " payload_xxh3_self_match="
+              << ((payload_self_host_match || payload_self_be_match ||
+                   payload_self_trimmed_host_match ||
+                   payload_self_trimmed_be_match)
+                      ? "yes"
+                      : "no")
               << " payload_hash_mismatches="
               << usage.payload_hash_mismatch_count << "\n";
     if (!usage.payload_sha256_le.empty()) {
@@ -4044,6 +4293,33 @@ void MatchRuntimeShaders(std::string_view index_text,
                 << usage.payload_trimmed_sha256_le << "\n"
                 << "    payload_trimmed_sha256_be="
                 << usage.payload_trimmed_sha256_be << "\n";
+      std::cout << "    payload_xxh3_host_words="
+                << Hex64(usage.payload_xxh3_host_words)
+                << " self_match=" << (payload_self_host_match ? "yes" : "no")
+                << " static_ucode_match="
+                << DescribeMicrocodeXxh3Matches(payload_host_ucode_matches,
+                                                shader_root)
+                << "\n"
+                << "    payload_xxh3_be_bytes="
+                << Hex64(usage.payload_xxh3_be_bytes)
+                << " self_match=" << (payload_self_be_match ? "yes" : "no")
+                << " static_ucode_match="
+                << DescribeMicrocodeXxh3Matches(payload_be_ucode_matches,
+                                                shader_root)
+                << "\n"
+                << "    payload_trimmed_xxh3_host_words="
+                << Hex64(usage.payload_trimmed_xxh3_host_words)
+                << " self_match="
+                << (payload_self_trimmed_host_match ? "yes" : "no")
+                << "\n"
+                << "    payload_trimmed_xxh3_be_bytes="
+                << Hex64(usage.payload_trimmed_xxh3_be_bytes)
+                << " self_match="
+                << (payload_self_trimmed_be_match ? "yes" : "no") << "\n"
+                << "    runtime_hash_static_ucode_xxh3="
+                << DescribeMicrocodeXxh3Matches(runtime_hash_ucode_matches,
+                                                shader_root)
+                << "\n";
     }
     if (pos != std::string::npos) {
       ++matched;
@@ -4054,11 +4330,17 @@ void MatchRuntimeShaders(std::string_view index_text,
   }
   std::cout << "Runtime shader direct matches: " << matched << "/" << count
             << "\n";
+  if (scan_static_microcode_xxh3) {
+    std::cout << "Runtime shader static microcode XXH3 matches: "
+              << runtime_hash_microcode_xxh3_matches << "/" << count << "\n";
+  }
+  std::cout << "Runtime shader payload XXH3 self matches: "
+            << runtime_payload_xxh3_self_matches << "/" << count << "\n";
   if (matched != count) {
     std::cout << "Runtime 64-bit shader hashes are not proven to be static "
-                 "container or microcode hashes. Next matching rules need the "
-                 "captured PM4 shader payload bytes, byte-swapped payload "
-                 "hashes, and shader record metadata.\n";
+                 "container SHA-256 substrings. If the XXH3 match counts above "
+                 "are zero, they also are not ReXGlue raw microcode XXH3 "
+                 "hashes for the scanned .ucode corpus.\n";
   }
 
   if (!capture.probes.empty()) {
@@ -4970,7 +5252,7 @@ int main(int argc, char **argv) {
         cli.list_runtime_shaders) {
       std::cout << "\n";
     }
-    MatchRuntimeShaders(text, runtime_capture, cli.top_shaders);
+    MatchRuntimeShaders(text, *resolved, runtime_capture, cli.top_shaders);
   }
   return 0;
 }

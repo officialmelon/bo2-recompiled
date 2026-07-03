@@ -735,6 +735,36 @@ Observed metadata:
 
 Static extracted `.ucode` files remain unresolved for semantic decode. They still dump raw words and raw IR correctly, but the tested static files begin with extracted metadata/constants rather than the exact runtime shader payload layout expected by `Shader::AnalyzeUcode`. A first auto-offset scan was removed because a wrong static offset can make the analyzer run too long. The next static-file task is to reverse the extracted `.ucode` layout or use the container descriptor fields to pass only the true microcode program range to the analyzer.
 
+## Runtime XXH3 shader identity check
+
+The MP080 shader-probe capture was tested against the extracted `.ucode` corpus with:
+
+```powershell
+node scripts/shaders/match-runtime-xxh3-microcode.mjs --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl
+```
+
+Result:
+
+- `runtime_targets=17`
+- `ucode_files=33355`
+- `variants_checked=69674`
+- `runtime_payload_self_matches=16/17`
+- `static_ucode_matches=1/17`
+
+The runtime shader hash is therefore usually `XXH3_64` of the captured PM4 payload encoded as big-endian dwords. Examples:
+
+- `VS 0xB6C9863F710683EC`: captured payload BE XXH3 is `0xB6C9863F710683EC`; host-dword XXH3 is `0xE35EA97ADB2AB935`; no extracted `.ucode` match.
+- `VS 0xDDED7E538422AE73`: captured payload BE XXH3 is `0xDDED7E538422AE73`; host-dword XXH3 is `0xAFCC8377CE2A398F`; no extracted `.ucode` match.
+- `PS 0x3A6876055FEC1674`: captured payload BE XXH3 is `0x3A6876055FEC1674` and it matches `shader_work\shaders\microcode\pixel_4bac86eb643a281fb683c579f5f097e1424917b266af2d64dfc015bc414ab52f.ucode` as raw file bytes.
+
+`PS 0x79E1F538A5074A65` did not self-match in this capture because its event only contains the capped `512` captured dwords, while prior draw-state inspection showed a larger runtime payload. It needs an uncapped shader payload capture before its identity can be tested.
+
+This disproves the simple "ReXGlue host-word `.xsh` hash over extracted `.ucode`" mapping for the current MP080 top shaders. The useful bridge is now:
+
+1. Treat `(stage, runtime_hash)` as `XXH3_64(big-endian captured PM4 payload)` when the payload is complete.
+2. Prefer exact captured payload bytes over static index SHA-256 for live mapping.
+3. For static extracted files, continue by reversing the `.ucode`/container layout or comparing true microcode subranges, because most extracted files are not byte-identical to the runtime PM4 payload.
+
 MP003 `PS=0x79E1F538A5074A65` is now covered by a manual D3D12 override only
 after draw-state inspection. The representative draw has no texture fetches,
 real vf95 quad data, and alpha `0.101961`; the runtime shader payload is

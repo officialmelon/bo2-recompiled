@@ -5,7 +5,8 @@
   "scripts": {
     "shaders:extract": "node scripts/shaders/extract-shader-containers.mjs",
     "shaders:cache": "node scripts/shaders/rexglue-shader-cache.mjs",
-    "shaders:run": "node scripts/shaders/run-native-cache.mjs"
+    "shaders:run": "node scripts/shaders/run-native-cache.mjs",
+    "shaders:match-xxh3": "node scripts/shaders/match-runtime-xxh3-microcode.mjs"
   },
   "dependencies": {
     "xxhash-addon": "2.1.0"
