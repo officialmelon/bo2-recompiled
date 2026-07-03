@@ -3794,6 +3794,9 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
     uint64_t translator_failed = 0;
     uint64_t dxc_failed = 0;
     uint64_t skipped_no_draws = 0;
+    uint64_t source_shared = 0;
+    uint64_t source_fallback = 0;
+    uint64_t source_unknown = 0;
   } counts;
 
   std::cout << "\nRuntime shader compile results:\n";
@@ -3837,6 +3840,27 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
     if (CompileRuntimeTranslatedHlslWithDxc(capture, shader.hash, cache_root,
                                             requested_dxc_path, result,
                                             cache_hit, error)) {
+      std::string source_kind = "unknown";
+      std::ifstream source_file(result.hlsl_path, std::ios::binary);
+      if (source_file) {
+        std::ostringstream source_buffer;
+        source_buffer << source_file.rdbuf();
+        const std::string source_text = source_buffer.str();
+        if (source_text.find("translation_source: shared") !=
+            std::string::npos) {
+          source_kind = "shared";
+          ++counts.source_shared;
+        } else if (source_text.find(
+                       "translation_source: native_shader_inspect_fallback") !=
+                   std::string::npos) {
+          source_kind = "native_shader_inspect_fallback";
+          ++counts.source_fallback;
+        } else {
+          ++counts.source_unknown;
+        }
+      } else {
+        ++counts.source_unknown;
+      }
       if (cache_hit) {
         ++counts.cache_hits;
       } else {
@@ -3846,6 +3870,7 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
                 << Hex64(shader.hash)
                 << " status=" << (cache_hit ? "cache_hit" : "compiled")
                 << " draws=" << shader.draw_count
+                << " source=" << source_kind
                 << " cache=" << result.shader_path.string() << "\n";
       continue;
     }
@@ -3873,7 +3898,10 @@ bool PrecompileRuntimeTranslatedShadersD3D12(
             << " no_payload=" << counts.no_payload
             << " translator_failed=" << counts.translator_failed
             << " dxc_failed=" << counts.dxc_failed
-            << " skipped_no_draws=" << counts.skipped_no_draws << "\n";
+            << " skipped_no_draws=" << counts.skipped_no_draws
+            << " source_shared=" << counts.source_shared
+            << " source_fallback=" << counts.source_fallback
+            << " source_unknown=" << counts.source_unknown << "\n";
   std::cout << "  cache_index="
             << (cache_root / "shader_cache_index.jsonl").string() << "\n";
   return counts.compiled > 0 || counts.cache_hits > 0;

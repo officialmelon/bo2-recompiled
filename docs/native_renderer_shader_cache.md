@@ -184,6 +184,8 @@ Result:
 - `dxc_failed=0`
 - Generated HLSL provenance: `files=10`, `translation_source: shared=10`,
   `native_shader_inspect_fallback=0`.
+- The precompile command now reports provenance directly; the same run prints
+  `source_shared=10 source_fallback=0 source_unknown=0`.
 
 The only shared-translator miss remains `VS 0xDDED7E538422AE73`, which is still
 handled as no-raster/no-fetch utility work by the D3D12 gap classifier rather
