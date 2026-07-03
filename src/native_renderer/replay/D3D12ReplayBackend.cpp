@@ -6,8 +6,11 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -31,6 +34,11 @@
 #include <d3d12.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
+
+// Xenia binding contract definitions (SystemConstants layout, cbuffer/SRV/UAV
+// register assignments, system flag bits) for the d3d12-xenia replay backend.
+// Header-only usage; no SDK translator code is linked into replay targets.
+#include <rex/graphics/pipeline/shader/dxbc_translator.h>
 #endif
 
 namespace bo2::native::replay {
@@ -6310,5 +6318,1728 @@ bool RunD3D12LiveFrameBackend(const ReplayCapture &capture,
   return false;
 #endif
 }
+
+#if defined(_WIN32)
+
+namespace {
+
+using XeniaTranslator = rex::graphics::DxbcShaderTranslator;
+
+struct XeniaTextureBindingRecord {
+  uint32_t fetch_constant = 0;
+  uint32_t dimension = 0;
+  bool is_signed = false;
+};
+
+struct XeniaSamplerBindingRecord {
+  uint32_t fetch_constant = 0;
+  uint32_t mag_filter = 0;
+  uint32_t min_filter = 0;
+  uint32_t mip_filter = 0;
+  uint32_t aniso_filter = 0;
+};
+
+struct XeniaShaderBlob {
+  uint64_t runtime_hash = 0;
+  std::vector<uint8_t> dxbc;
+  uint64_t modification = 0;
+  bool uses_memexport = false;
+  uint64_t float_bitmap[4] = {0, 0, 0, 0};
+  std::vector<XeniaTextureBindingRecord> texture_bindings;
+  std::vector<XeniaSamplerBindingRecord> sampler_bindings;
+};
+
+std::vector<uint32_t> ParseXeniaBindingNumbers(std::string_view text,
+                                               char separator) {
+  std::vector<uint32_t> numbers;
+  uint32_t value = 0;
+  bool has_digits = false;
+  for (const char ch : text) {
+    if (ch >= '0' && ch <= '9') {
+      value = value * 10 + uint32_t(ch - '0');
+      has_digits = true;
+    } else if (ch == separator || ch == ',') {
+      if (has_digits) {
+        numbers.push_back(value);
+      }
+      value = 0;
+      has_digits = false;
+    }
+  }
+  if (has_digits) {
+    numbers.push_back(value);
+  }
+  return numbers;
+}
+
+bool LoadXeniaShaderBlob(const ShaderCacheRecord &record,
+                         const std::filesystem::path &cache_root,
+                         XeniaShaderBlob &blob, std::string &error) {
+  std::filesystem::path path = record.path;
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec) || ec) {
+    const std::filesystem::path relative_to_root = cache_root / record.path;
+    if (std::filesystem::is_regular_file(relative_to_root, ec) && !ec) {
+      path = relative_to_root;
+    }
+  }
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    error = "could not open Xenia DXBC blob " + path.string();
+    return false;
+  }
+  file.seekg(0, std::ios::end);
+  const std::ifstream::pos_type size = file.tellg();
+  file.seekg(0, std::ios::beg);
+  blob.dxbc.resize(static_cast<std::size_t>(size));
+  if (!blob.dxbc.empty()) {
+    file.read(reinterpret_cast<char *>(blob.dxbc.data()),
+              static_cast<std::streamsize>(blob.dxbc.size()));
+  }
+  if (!file) {
+    error = "could not read Xenia DXBC blob " + path.string();
+    return false;
+  }
+  blob.runtime_hash = record.runtime_hash;
+  blob.modification = record.modification;
+  blob.uses_memexport = record.uses_memexport;
+  // "0x...,0x...,0x...,0x..." used-float-constant bitmap.
+  {
+    std::size_t bitmap_index = 0;
+    std::size_t begin = 0;
+    const std::string &text = record.float_bitmap;
+    while (bitmap_index < 4 && begin < text.size()) {
+      std::size_t end = text.find(',', begin);
+      if (end == std::string::npos) {
+        end = text.size();
+      }
+      blob.float_bitmap[bitmap_index++] =
+          std::strtoull(text.substr(begin, end - begin).c_str(), nullptr, 16);
+      begin = end + 1;
+    }
+  }
+  // "fc:dim:signed,..." triples.
+  {
+    const std::vector<uint32_t> numbers =
+        ParseXeniaBindingNumbers(record.texture_bindings, ':');
+    for (std::size_t i = 0; i + 2 < numbers.size() + 1 &&
+                            (i + 3) <= numbers.size();
+         i += 3) {
+      XeniaTextureBindingRecord binding;
+      binding.fetch_constant = numbers[i];
+      binding.dimension = numbers[i + 1];
+      binding.is_signed = numbers[i + 2] != 0;
+      blob.texture_bindings.push_back(binding);
+    }
+  }
+  // "fc:mag:min:mip:aniso,..." tuples.
+  {
+    const std::vector<uint32_t> numbers =
+        ParseXeniaBindingNumbers(record.sampler_bindings, ':');
+    for (std::size_t i = 0; (i + 5) <= numbers.size(); i += 5) {
+      XeniaSamplerBindingRecord binding;
+      binding.fetch_constant = numbers[i];
+      binding.mag_filter = numbers[i + 1];
+      binding.min_filter = numbers[i + 2];
+      binding.mip_filter = numbers[i + 3];
+      binding.aniso_filter = numbers[i + 4];
+      blob.sampler_bindings.push_back(binding);
+    }
+  }
+  return true;
+}
+
+D3D12_TEXTURE_ADDRESS_MODE XeniaClampToAddressMode(uint32_t clamp) {
+  switch (clamp) {
+    case 0:
+      return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    case 1:
+      return D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+    case 2:
+    case 4:
+      return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    case 3:
+    case 5:
+      return D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE;
+    case 6:
+    case 7:
+      return D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    default:
+      return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  }
+}
+
+D3D12_BLEND XenosBlendFactorToD3D12(uint32_t factor) {
+  switch (factor) {
+    case 0:
+      return D3D12_BLEND_ZERO;
+    case 1:
+      return D3D12_BLEND_ONE;
+    case 4:
+      return D3D12_BLEND_SRC_COLOR;
+    case 5:
+      return D3D12_BLEND_INV_SRC_COLOR;
+    case 6:
+      return D3D12_BLEND_SRC_ALPHA;
+    case 7:
+      return D3D12_BLEND_INV_SRC_ALPHA;
+    case 8:
+      return D3D12_BLEND_DEST_COLOR;
+    case 9:
+      return D3D12_BLEND_INV_DEST_COLOR;
+    case 10:
+      return D3D12_BLEND_DEST_ALPHA;
+    case 11:
+      return D3D12_BLEND_INV_DEST_ALPHA;
+    case 12:
+    case 14:
+      return D3D12_BLEND_BLEND_FACTOR;
+    case 13:
+    case 15:
+      return D3D12_BLEND_INV_BLEND_FACTOR;
+    case 16:
+      return D3D12_BLEND_SRC_ALPHA_SAT;
+    default:
+      return D3D12_BLEND_ONE;
+  }
+}
+
+D3D12_BLEND_OP XenosBlendOpToD3D12(uint32_t op) {
+  switch (op) {
+    case 0:
+      return D3D12_BLEND_OP_ADD;
+    case 1:
+      return D3D12_BLEND_OP_SUBTRACT;
+    case 2:
+      return D3D12_BLEND_OP_MIN;
+    case 3:
+      return D3D12_BLEND_OP_MAX;
+    case 4:
+      return D3D12_BLEND_OP_REV_SUBTRACT;
+    default:
+      return D3D12_BLEND_OP_ADD;
+  }
+}
+
+// System-constant NDC transform from captured guest registers, following the
+// SDK's draw_util::GetHostViewportInfo clip-enabled path without resolution
+// scaling. The host viewport is returned in pixels.
+struct XeniaViewportInfo {
+  float host_viewport[4] = {0.0f, 0.0f, 0.0f, 0.0f};  // x, y, width, height
+  float z_min = 0.0f;
+  float z_max = 1.0f;
+  float ndc_scale[3] = {1.0f, 1.0f, 1.0f};
+  float ndc_offset[3] = {0.0f, 0.0f, 0.0f};
+};
+
+XeniaViewportInfo ComputeXeniaViewport(const RenderStateRecord &state,
+                                       uint32_t rt_width, uint32_t rt_height) {
+  XeniaViewportInfo info;
+  const uint32_t vte = state.pa_cl_vte_cntl;
+  const bool scale_ena[2] = {(vte & (1u << 0)) != 0, (vte & (1u << 2)) != 0};
+  const bool offset_ena[2] = {(vte & (1u << 1)) != 0, (vte & (1u << 3)) != 0};
+  const bool z_scale_ena = (vte & (1u << 4)) != 0;
+  const bool z_offset_ena = (vte & (1u << 5)) != 0;
+
+  auto viewport_float = [&state](std::size_t index) -> float {
+    if (index >= state.viewport_registers.size()) {
+      return 0.0f;
+    }
+    float value = 0.0f;
+    const uint32_t bits = state.viewport_registers[index];
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+  };
+
+  const float scale_xy[2] = {scale_ena[0] ? viewport_float(0) : 1.0f,
+                             scale_ena[1] ? viewport_float(2) : 1.0f};
+  const float offset_xy[2] = {offset_ena[0] ? viewport_float(1) : 0.0f,
+                              offset_ena[1] ? viewport_float(3) : 0.0f};
+  const float scale_z = z_scale_ena ? viewport_float(4) : 1.0f;
+  const float offset_z = z_offset_ena ? viewport_float(5) : 0.0f;
+
+  // Window offset for vertices and the D3D9 half-pixel offset.
+  float offset_add_xy[2] = {0.0f, 0.0f};
+  if (state.pa_su_sc_mode_cntl & (1u << 16)) {
+    const uint32_t window_offset = state.pa_sc_window_offset;
+    const int32_t window_x = int32_t(window_offset << 17) >> 17;
+    const int32_t window_y = int32_t(window_offset >> 16 << 17) >> 17;
+    offset_add_xy[0] += float(window_x);
+    offset_add_xy[1] += float(window_y);
+  }
+  // PA_SU_VTX_CNTL pix_center: 0 = D3D9 0.0 center, add the half-pixel offset.
+  if ((state.pa_su_vtx_cntl & 0x1u) == 0) {
+    offset_add_xy[0] += 0.5f;
+    offset_add_xy[1] += 0.5f;
+  }
+
+  const float xy_max[2] = {float(rt_width), float(rt_height)};
+  const bool clip_disable = (state.pa_cl_clip_cntl & (1u << 16)) != 0;
+  if (clip_disable) {
+    // Clipping disabled: huge host viewport covering the target, pixel and
+    // depth offsetting applied in the vertex shader through the NDC transform
+    // (draw_util::GetHostViewportInfo clip-disabled path).
+    for (uint32_t i = 0; i < 2; ++i) {
+      const float extent = xy_max[i];
+      info.host_viewport[i] = 0.0f;
+      info.host_viewport[2 + i] = extent;
+      const float pixels_to_ndc = 2.0f / extent;
+      info.ndc_scale[i] = scale_xy[i] * pixels_to_ndc;
+      info.ndc_offset[i] =
+          (offset_xy[i] - extent * 0.5f + offset_add_xy[i]) * pixels_to_ndc;
+    }
+    info.z_min = 0.0f;
+    info.z_max = 1.0f;
+    info.ndc_scale[2] = scale_z;
+    info.ndc_offset[2] = offset_z;
+    return info;
+  }
+  for (uint32_t i = 0; i < 2; ++i) {
+    const float offset_axis = offset_xy[i] + offset_add_xy[i];
+    const float scale_axis = scale_xy[i];
+    const float scale_axis_abs = std::abs(scale_axis);
+    const float axis_0 =
+        std::clamp(offset_axis - scale_axis_abs, 0.0f, xy_max[i]);
+    const float axis_1 =
+        std::clamp(offset_axis + scale_axis_abs, 0.0f, xy_max[i]);
+    const float axis_0_int = float(uint32_t(axis_0));
+    const float axis_1_int = float(uint32_t(axis_1));
+    const float extent = axis_1_int - axis_0_int;
+    info.host_viewport[i] = axis_0_int;
+    info.host_viewport[2 + i] = extent;
+    if (extent > 0.0f) {
+      info.ndc_scale[i] = scale_axis * 2.0f / extent;
+      info.ndc_offset[i] =
+          (offset_axis - (axis_0_int + extent * 0.5f)) * 2.0f / extent;
+    } else {
+      info.ndc_scale[i] = 1.0f;
+      info.ndc_offset[i] = 0.0f;
+    }
+  }
+
+  // Z: standard D3D depth range through the host viewport.
+  info.z_min = std::clamp(offset_z, 0.0f, 1.0f);
+  info.z_max = std::clamp(offset_z + scale_z, 0.0f, 1.0f);
+  if (info.z_max < info.z_min) {
+    std::swap(info.z_min, info.z_max);
+  }
+  info.ndc_scale[2] = 1.0f;
+  info.ndc_offset[2] = 0.0f;
+  return info;
+}
+
+}  // namespace
+
+bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
+                                const ReplayCliOptions &options,
+                                std::string &error) {
+  // Resolve the xenia_dxbc shader records for every runtime shader used by
+  // the capture, newest record winning per (stage, hash, rect_variant).
+  std::map<std::tuple<int, uint64_t, int>, ShaderCacheRecord> cache_records;
+  {
+    const std::array<std::filesystem::path, 2> indexes = {
+        options.shader_cache_root / "shader_cache_index.jsonl",
+        options.shader_cache_root / "shader_cache_index.json",
+    };
+    bool found_any_index = false;
+    for (const std::filesystem::path &index : indexes) {
+      std::error_code ec;
+      if (!std::filesystem::is_regular_file(index, ec) || ec) {
+        continue;
+      }
+      found_any_index = true;
+      std::vector<ShaderCacheRecord> records;
+      std::string index_error;
+      if (!LoadShaderCacheIndex(index, records, index_error)) {
+        error = index_error;
+        return false;
+      }
+      for (const ShaderCacheRecord &record : records) {
+        if (record.format != "xenia_dxbc" || record.diagnostic) {
+          continue;
+        }
+        const int stage = record.stage == "VS" || record.stage == "vs" ? 0 : 1;
+        const int rect =
+            record.host_vertex_shader_type == "rectangle_strip" ? 1 : 0;
+        cache_records[{stage, record.runtime_hash, rect}] = record;
+      }
+    }
+    if (!found_any_index) {
+      error = "no shader cache index found under " +
+              options.shader_cache_root.string();
+      return false;
+    }
+    if (cache_records.empty()) {
+      error = "no xenia_dxbc shader cache records found under " +
+              options.shader_cache_root.string() +
+              "; run native_shader_inspect --precompile-runtime-shaders-dxbc "
+              "first";
+      return false;
+    }
+  }
+
+  std::map<std::tuple<int, uint64_t, int>, XeniaShaderBlob> blobs;
+  auto load_blob = [&](int stage, uint64_t hash,
+                       int rect) -> const XeniaShaderBlob * {
+    const auto key = std::make_tuple(stage, hash, rect);
+    auto blob_it = blobs.find(key);
+    if (blob_it != blobs.end()) {
+      return blob_it->second.dxbc.empty() ? nullptr : &blob_it->second;
+    }
+    XeniaShaderBlob blob;
+    const auto record_it = cache_records.find(key);
+    if (record_it == cache_records.end()) {
+      blobs[key] = {};
+      return nullptr;
+    }
+    std::string blob_error;
+    if (!LoadXeniaShaderBlob(record_it->second, options.shader_cache_root,
+                             blob, blob_error)) {
+      std::cerr << "d3d12-xenia: " << blob_error << "\n";
+      blobs[key] = {};
+      return nullptr;
+    }
+    auto [inserted_it, inserted] = blobs.insert_or_assign(key, std::move(blob));
+    return &inserted_it->second;
+  };
+
+  // Select the draws this backend can currently submit.
+  struct XeniaPreparedDraw {
+    std::size_t draw_index = 0;
+    const XeniaShaderBlob *vs = nullptr;
+    const XeniaShaderBlob *ps = nullptr;
+    D3D_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE topology_type =
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    // Rectangle-list draws expand each guest rectangle (3 vertices) to a
+    // 4-vertex triangle strip in the vertex shader.
+    bool rectangle_strip = false;
+  };
+  std::vector<XeniaPreparedDraw> prepared;
+  std::map<std::string, uint64_t> unsupported_reasons;
+  uint64_t shared_memory_end = 0;
+  const std::size_t draw_limit =
+      options.d3d12_draw_limit == 0 ? capture.draws.size()
+                                    : options.d3d12_draw_limit;
+
+  for (const ReplayDrawState &draw_state : capture.draws) {
+    if (prepared.size() >= draw_limit) {
+      break;
+    }
+    if (options.draw_index && draw_state.draw_index < *options.draw_index) {
+      continue;
+    }
+    const PM4DrawRecord &draw = draw_state.draw;
+    if (draw.index_count == 0) {
+      continue;
+    }
+    XeniaPreparedDraw item;
+    item.draw_index = draw_state.draw_index;
+    switch (draw.primitive_type) {
+      case 1:
+        item.topology = D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+        item.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+        break;
+      case 2:
+        item.topology = D3D_PRIMITIVE_TOPOLOGY_LINELIST;
+        item.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+        break;
+      case 3:
+        item.topology = D3D_PRIMITIVE_TOPOLOGY_LINESTRIP;
+        item.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+        break;
+      case 4:
+        item.topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        item.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        break;
+      case 6:
+        item.topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+        item.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        break;
+      case 8:
+        // Rectangle list: BO2's guest vertex buffers for these draws carry
+        // the full 4-vertex quad (the fetch constant size covers 4 vertices
+        // even though 3 are drawn), so a single rectangle renders correctly
+        // as a 4-vertex triangle strip with the default vertex shader.
+        if (draw.indexed || draw.index_count != 3) {
+          ++unsupported_reasons["multi_rectangle_list"];
+          continue;
+        }
+        item.topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+        item.topology_type = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        item.rectangle_strip = true;
+        break;
+      default:
+        ++unsupported_reasons["primitive_type_" +
+                              std::to_string(draw.primitive_type)];
+        continue;
+    }
+    item.vs = load_blob(0, draw_state.vertex_shader.hash, 0);
+    item.ps = load_blob(1, draw_state.pixel_shader.hash, 0);
+    if (item.vs == nullptr || item.ps == nullptr) {
+      ++unsupported_reasons[item.vs == nullptr ? "missing_xenia_vs"
+                                               : "missing_xenia_ps"];
+      continue;
+    }
+    if (item.vs->uses_memexport || item.ps->uses_memexport) {
+      ++unsupported_reasons["memexport"];
+      continue;
+    }
+    if (draw.indexed &&
+        (draw.index_payload_missing || draw.index_bytes.empty())) {
+      ++unsupported_reasons["missing_index_payload"];
+      continue;
+    }
+    for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
+      if (!fetch.payload_missing && !fetch.payload_bytes.empty()) {
+        shared_memory_end =
+            std::max<uint64_t>(shared_memory_end,
+                               uint64_t(fetch.address_bytes) +
+                                   fetch.payload_bytes.size());
+      }
+    }
+    prepared.push_back(item);
+  }
+
+  if (prepared.empty()) {
+    error = "no captured draws are supported by the d3d12-xenia backend";
+    for (const auto &[reason, count] : unsupported_reasons) {
+      error += "\n  " + reason + ": " + std::to_string(count);
+    }
+    return false;
+  }
+
+  const ReplaySurfaceSize size = ChooseSurfaceSize(capture);
+  const uint32_t width = std::clamp<uint32_t>(size.width, 64u, 3840u);
+  const uint32_t height = std::clamp<uint32_t>(size.height, 64u, 2160u);
+  const DXGI_FORMAT color_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  const DXGI_FORMAT depth_format = DXGI_FORMAT_D32_FLOAT;
+
+  // BO2_XENIA_DEBUG_LAYER=1 enables the D3D12 debug layer and prints stored
+  // validation messages after execution.
+  bool debug_layer = false;
+  {
+    char env_value[8]{};
+    if (GetEnvironmentVariableA("BO2_XENIA_DEBUG_LAYER", env_value,
+                                sizeof(env_value)) > 0 &&
+        env_value[0] == '1') {
+      debug_layer = true;
+      ComPtr<ID3D12Debug> debug;
+      if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
+        debug->EnableDebugLayer();
+      }
+    }
+  }
+
+  ComPtr<ID3D12Device> device;
+  if (!CheckHr(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
+                                 IID_PPV_ARGS(&device)),
+               "D3D12CreateDevice", error)) {
+    return false;
+  }
+  ComPtr<ID3D12InfoQueue> info_queue;
+  if (debug_layer) {
+    device.As(&info_queue);
+  }
+  ComPtr<ID3D12CommandQueue> queue;
+  D3D12_COMMAND_QUEUE_DESC queue_desc{};
+  queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+  if (!CheckHr(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)),
+               "CreateCommandQueue", error)) {
+    return false;
+  }
+  ComPtr<ID3D12CommandAllocator> allocator;
+  ComPtr<ID3D12GraphicsCommandList> list;
+  if (!CheckHr(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                              IID_PPV_ARGS(&allocator)),
+               "CreateCommandAllocator", error) ||
+      !CheckHr(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                         allocator.Get(), nullptr,
+                                         IID_PPV_ARGS(&list)),
+               "CreateCommandList", error)) {
+    return false;
+  }
+
+  D3D12_HEAP_PROPERTIES default_heap{};
+  default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+  D3D12_HEAP_PROPERTIES upload_heap{};
+  upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+  D3D12_HEAP_PROPERTIES readback_heap{};
+  readback_heap.Type = D3D12_HEAP_TYPE_READBACK;
+
+  // Color and depth targets.
+  D3D12_RESOURCE_DESC color_desc{};
+  color_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  color_desc.Width = width;
+  color_desc.Height = height;
+  color_desc.DepthOrArraySize = 1;
+  color_desc.MipLevels = 1;
+  color_desc.Format = color_format;
+  color_desc.SampleDesc.Count = 1;
+  color_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+  D3D12_CLEAR_VALUE color_clear{};
+  color_clear.Format = color_format;
+  color_clear.Color[3] = 1.0f;
+  ComPtr<ID3D12Resource> color_target;
+  if (!CheckHr(device->CreateCommittedResource(
+                   &default_heap, D3D12_HEAP_FLAG_NONE, &color_desc,
+                   D3D12_RESOURCE_STATE_RENDER_TARGET, &color_clear,
+                   IID_PPV_ARGS(&color_target)),
+               "CreateCommittedResource(xenia color target)", error)) {
+    return false;
+  }
+  D3D12_RESOURCE_DESC depth_desc = color_desc;
+  depth_desc.Format = depth_format;
+  depth_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+  D3D12_CLEAR_VALUE depth_clear{};
+  depth_clear.Format = depth_format;
+  depth_clear.DepthStencil.Depth = 1.0f;
+  ComPtr<ID3D12Resource> depth_target;
+  if (!CheckHr(device->CreateCommittedResource(
+                   &default_heap, D3D12_HEAP_FLAG_NONE, &depth_desc,
+                   D3D12_RESOURCE_STATE_DEPTH_WRITE, &depth_clear,
+                   IID_PPV_ARGS(&depth_target)),
+               "CreateCommittedResource(xenia depth target)", error)) {
+    return false;
+  }
+  ComPtr<ID3D12DescriptorHeap> rtv_heap;
+  D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc{};
+  rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+  rtv_heap_desc.NumDescriptors = 32;
+  ComPtr<ID3D12DescriptorHeap> dsv_heap;
+  D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc{};
+  dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+  dsv_heap_desc.NumDescriptors = 16;
+  if (!CheckHr(device->CreateDescriptorHeap(&rtv_heap_desc,
+                                            IID_PPV_ARGS(&rtv_heap)),
+               "CreateDescriptorHeap(RTV)", error) ||
+      !CheckHr(device->CreateDescriptorHeap(&dsv_heap_desc,
+                                            IID_PPV_ARGS(&dsv_heap)),
+               "CreateDescriptorHeap(DSV)", error)) {
+    return false;
+  }
+  const uint32_t rtv_stride =
+      device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+  const uint32_t dsv_stride =
+      device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+  const D3D12_CPU_DESCRIPTOR_HANDLE rtv =
+      rtv_heap->GetCPUDescriptorHandleForHeapStart();
+  const D3D12_CPU_DESCRIPTOR_HANDLE dsv =
+      dsv_heap->GetCPUDescriptorHandleForHeapStart();
+  device->CreateRenderTargetView(color_target.Get(), nullptr, rtv);
+  device->CreateDepthStencilView(depth_target.Get(), nullptr, dsv);
+
+  // Guest render-target cache: one host color target per guest color base and
+  // one host depth target per guest depth base, so draws to different guest
+  // surfaces (UI composition passes, effects) do not overwrite each other.
+  // The guest base 0-keyed defaults use the targets created above.
+  struct XeniaGuestColorTarget {
+    ComPtr<ID3D12Resource> resource;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+    uint64_t draws = 0;
+  };
+  struct XeniaGuestDepthTarget {
+    ComPtr<ID3D12Resource> resource;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
+  };
+  std::map<uint32_t, XeniaGuestColorTarget> guest_color_targets;
+  std::map<uint32_t, XeniaGuestDepthTarget> guest_depth_targets;
+  uint32_t next_rtv_descriptor = 1;
+  uint32_t next_dsv_descriptor = 1;
+  {
+    XeniaGuestColorTarget default_color;
+    default_color.resource = color_target;
+    default_color.rtv = rtv;
+    guest_color_targets.emplace(0u, std::move(default_color));
+    XeniaGuestDepthTarget default_depth;
+    default_depth.resource = depth_target;
+    default_depth.dsv = dsv;
+    guest_depth_targets.emplace(0u, std::move(default_depth));
+  }
+  auto get_guest_color_target =
+      [&](uint32_t base) -> XeniaGuestColorTarget * {
+    auto it = guest_color_targets.find(base);
+    if (it != guest_color_targets.end()) {
+      return &it->second;
+    }
+    if (next_rtv_descriptor >= rtv_heap_desc.NumDescriptors) {
+      return &guest_color_targets.begin()->second;
+    }
+    XeniaGuestColorTarget target;
+    if (FAILED(device->CreateCommittedResource(
+            &default_heap, D3D12_HEAP_FLAG_NONE, &color_desc,
+            D3D12_RESOURCE_STATE_RENDER_TARGET, &color_clear,
+            IID_PPV_ARGS(&target.resource)))) {
+      return &guest_color_targets.begin()->second;
+    }
+    target.rtv = rtv;
+    target.rtv.ptr += std::size_t(next_rtv_descriptor++) * rtv_stride;
+    device->CreateRenderTargetView(target.resource.Get(), nullptr, target.rtv);
+    list->ClearRenderTargetView(target.rtv, color_clear.Color, 0, nullptr);
+    auto [inserted_it, inserted] =
+        guest_color_targets.emplace(base, std::move(target));
+    return &inserted_it->second;
+  };
+  auto get_guest_depth_target =
+      [&](uint32_t base) -> XeniaGuestDepthTarget * {
+    auto it = guest_depth_targets.find(base);
+    if (it != guest_depth_targets.end()) {
+      return &it->second;
+    }
+    if (next_dsv_descriptor >= dsv_heap_desc.NumDescriptors) {
+      return &guest_depth_targets.begin()->second;
+    }
+    XeniaGuestDepthTarget target;
+    if (FAILED(device->CreateCommittedResource(
+            &default_heap, D3D12_HEAP_FLAG_NONE, &depth_desc,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE, &depth_clear,
+            IID_PPV_ARGS(&target.resource)))) {
+      return &guest_depth_targets.begin()->second;
+    }
+    target.dsv = dsv;
+    target.dsv.ptr += std::size_t(next_dsv_descriptor++) * dsv_stride;
+    device->CreateDepthStencilView(target.resource.Get(), nullptr, target.dsv);
+    list->ClearDepthStencilView(target.dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0,
+                                0, nullptr);
+    auto [inserted_it, inserted] =
+        guest_depth_targets.emplace(base, std::move(target));
+    return &inserted_it->second;
+  };
+
+  // Shared memory buffer holding guest physical memory ranges referenced by
+  // the translated shaders' vertex fetches. Raw guest bytes; the translated
+  // shader applies fetch-constant endian swaps itself.
+  const uint64_t shared_memory_size = std::min<uint64_t>(
+      512ull << 20,
+      std::max<uint64_t>(1ull << 20, (shared_memory_end + 0xFFFFFull) &
+                                         ~uint64_t(0xFFFFF)));
+  D3D12_RESOURCE_DESC shared_desc{};
+  shared_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  shared_desc.Width = shared_memory_size;
+  shared_desc.Height = 1;
+  shared_desc.DepthOrArraySize = 1;
+  shared_desc.MipLevels = 1;
+  shared_desc.SampleDesc.Count = 1;
+  shared_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  shared_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+  ComPtr<ID3D12Resource> shared_memory;
+  if (!CheckHr(device->CreateCommittedResource(
+                   &default_heap, D3D12_HEAP_FLAG_NONE, &shared_desc,
+                   D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                   IID_PPV_ARGS(&shared_memory)),
+               "CreateCommittedResource(xenia shared memory)", error)) {
+    return false;
+  }
+
+  // Upload captured vertex payload ranges into shared memory at their guest
+  // physical addresses.
+  std::vector<std::pair<uint64_t, std::vector<uint8_t>>> shared_ranges;
+  {
+    std::set<std::pair<uint64_t, uint64_t>> seen_ranges;
+    for (const XeniaPreparedDraw &item : prepared) {
+      const PM4DrawRecord &draw = capture.draws[item.draw_index].draw;
+      for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
+        if (fetch.payload_missing || fetch.payload_bytes.empty()) {
+          continue;
+        }
+        const uint64_t begin = fetch.address_bytes;
+        const uint64_t byte_count = fetch.payload_bytes.size();
+        if (begin + byte_count > shared_memory_size) {
+          continue;
+        }
+        if (!seen_ranges.insert({begin, byte_count}).second) {
+          continue;
+        }
+        shared_ranges.emplace_back(begin, fetch.payload_bytes);
+      }
+    }
+  }
+  uint64_t shared_upload_size = 0;
+  for (const auto &[begin, bytes] : shared_ranges) {
+    shared_upload_size += (bytes.size() + 255) & ~std::size_t(255);
+  }
+  ComPtr<ID3D12Resource> shared_upload;
+  if (shared_upload_size != 0) {
+    D3D12_RESOURCE_DESC upload_desc = shared_desc;
+    upload_desc.Width = shared_upload_size;
+    upload_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    if (!CheckHr(device->CreateCommittedResource(
+                     &upload_heap, D3D12_HEAP_FLAG_NONE, &upload_desc,
+                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                     IID_PPV_ARGS(&shared_upload)),
+                 "CreateCommittedResource(xenia shared upload)", error)) {
+      return false;
+    }
+    uint8_t *mapped = nullptr;
+    if (!CheckHr(shared_upload->Map(0, nullptr,
+                                    reinterpret_cast<void **>(&mapped)),
+                 "Map(xenia shared upload)", error)) {
+      return false;
+    }
+    uint64_t upload_offset = 0;
+    for (const auto &[begin, bytes] : shared_ranges) {
+      std::memcpy(mapped + upload_offset, bytes.data(), bytes.size());
+      list->CopyBufferRegion(shared_memory.Get(), begin, shared_upload.Get(),
+                             upload_offset, bytes.size());
+      upload_offset += (bytes.size() + 255) & ~std::size_t(255);
+    }
+    shared_upload->Unmap(0, nullptr);
+  }
+  {
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = shared_memory.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter =
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    list->ResourceBarrier(1, &barrier);
+  }
+
+  // Per-draw constant buffer ring.
+  const uint32_t system_cb_size =
+      (uint32_t(sizeof(XeniaTranslator::SystemConstants)) + 255u) & ~255u;
+  const uint32_t float_cb_size = 256 * 16;
+  const uint32_t bool_loop_cb_size = 256;
+  const uint32_t fetch_cb_size = 768;
+  const uint32_t draw_cb_stride =
+      system_cb_size + 2 * float_cb_size + bool_loop_cb_size + fetch_cb_size;
+  const uint64_t cb_total =
+      uint64_t(draw_cb_stride) * prepared.size() + 256;
+  ComPtr<ID3D12Resource> cb_buffer;
+  D3D12_RESOURCE_DESC cb_desc = shared_desc;
+  cb_desc.Width = cb_total;
+  cb_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+  if (!CheckHr(device->CreateCommittedResource(
+                   &upload_heap, D3D12_HEAP_FLAG_NONE, &cb_desc,
+                   D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                   IID_PPV_ARGS(&cb_buffer)),
+               "CreateCommittedResource(xenia constant ring)", error)) {
+    return false;
+  }
+  uint8_t *cb_mapped = nullptr;
+  if (!CheckHr(cb_buffer->Map(0, nullptr,
+                              reinterpret_cast<void **>(&cb_mapped)),
+               "Map(xenia constant ring)", error)) {
+    return false;
+  }
+  const D3D12_GPU_VIRTUAL_ADDRESS cb_base = cb_buffer->GetGPUVirtualAddress();
+
+  // Shader-visible descriptor heaps: [0] shared memory SRV, [1] shared memory
+  // UAV, then per-draw texture SRVs. Sampler heap holds per-draw samplers.
+  const uint32_t max_texture_descriptors = 2 + uint32_t(prepared.size()) * 8;
+  D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc{};
+  srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+  srv_heap_desc.NumDescriptors = std::min<uint32_t>(
+      max_texture_descriptors, 1u << 20);
+  srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  ComPtr<ID3D12DescriptorHeap> srv_heap;
+  if (!CheckHr(device->CreateDescriptorHeap(&srv_heap_desc,
+                                            IID_PPV_ARGS(&srv_heap)),
+               "CreateDescriptorHeap(xenia SRV)", error)) {
+    return false;
+  }
+  D3D12_DESCRIPTOR_HEAP_DESC sampler_heap_desc{};
+  sampler_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+  sampler_heap_desc.NumDescriptors = std::min<uint32_t>(
+      std::max<uint32_t>(uint32_t(prepared.size()) * 4, 16), 2048);
+  sampler_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  ComPtr<ID3D12DescriptorHeap> sampler_heap;
+  if (!CheckHr(device->CreateDescriptorHeap(&sampler_heap_desc,
+                                            IID_PPV_ARGS(&sampler_heap)),
+               "CreateDescriptorHeap(xenia sampler)", error)) {
+    return false;
+  }
+  const uint32_t srv_stride = device->GetDescriptorHandleIncrementSize(
+      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  const uint32_t sampler_stride = device->GetDescriptorHandleIncrementSize(
+      D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+  const D3D12_CPU_DESCRIPTOR_HANDLE srv_cpu_base =
+      srv_heap->GetCPUDescriptorHandleForHeapStart();
+  const D3D12_GPU_DESCRIPTOR_HANDLE srv_gpu_base =
+      srv_heap->GetGPUDescriptorHandleForHeapStart();
+  const D3D12_CPU_DESCRIPTOR_HANDLE sampler_cpu_base =
+      sampler_heap->GetCPUDescriptorHandleForHeapStart();
+  const D3D12_GPU_DESCRIPTOR_HANDLE sampler_gpu_base =
+      sampler_heap->GetGPUDescriptorHandleForHeapStart();
+
+  // Shared memory SRV + UAV at heap slots 0/1.
+  {
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+    srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srv_desc.Shader4ComponentMapping =
+        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv_desc.Buffer.NumElements = UINT(shared_memory_size >> 2);
+    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    device->CreateShaderResourceView(shared_memory.Get(), &srv_desc,
+                                     srv_cpu_base);
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc{};
+    uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
+    uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uav_desc.Buffer.NumElements = UINT(shared_memory_size >> 2);
+    uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    D3D12_CPU_DESCRIPTOR_HANDLE uav_handle = srv_cpu_base;
+    uav_handle.ptr += srv_stride;
+    device->CreateUnorderedAccessView(shared_memory.Get(), nullptr, &uav_desc,
+                                      uav_handle);
+  }
+  uint32_t next_srv_descriptor = 2;
+  uint32_t next_sampler_descriptor = 0;
+
+  // Root signature cache keyed by (ps_tex, ps_samp, vs_tex, vs_samp).
+  std::map<uint32_t, ComPtr<ID3D12RootSignature>> root_signatures;
+  auto get_root_signature = [&](uint32_t vs_tex, uint32_t vs_samp,
+                                uint32_t ps_tex, uint32_t ps_samp)
+      -> ID3D12RootSignature * {
+    const uint32_t key =
+        ps_tex | (ps_samp << 8) | (vs_tex << 16) | (vs_samp << 24);
+    auto it = root_signatures.find(key);
+    if (it != root_signatures.end()) {
+      return it->second.Get();
+    }
+
+    D3D12_ROOT_PARAMETER params[10]{};
+    UINT param_count = 6;
+    // 0: fetch constants b3, all stages.
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[0].Descriptor.ShaderRegister =
+        uint32_t(XeniaTranslator::CbufferRegister::kFetchConstants);
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // 1: vertex float constants b1.
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[1].Descriptor.ShaderRegister =
+        uint32_t(XeniaTranslator::CbufferRegister::kFloatConstants);
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    // 2: pixel float constants b1.
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[2].Descriptor.ShaderRegister =
+        uint32_t(XeniaTranslator::CbufferRegister::kFloatConstants);
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // 3: system constants b0.
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[3].Descriptor.ShaderRegister =
+        uint32_t(XeniaTranslator::CbufferRegister::kSystemConstants);
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // 4: bool/loop constants b2.
+    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[4].Descriptor.ShaderRegister =
+        uint32_t(XeniaTranslator::CbufferRegister::kBoolLoopConstants);
+    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // 5: shared memory SRV t0 + UAV u0 table.
+    D3D12_DESCRIPTOR_RANGE shared_ranges_desc[2]{};
+    shared_ranges_desc[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    shared_ranges_desc[0].NumDescriptors = 1;
+    shared_ranges_desc[0].BaseShaderRegister =
+        uint32_t(XeniaTranslator::SRVMainRegister::kSharedMemory);
+    shared_ranges_desc[0].RegisterSpace =
+        uint32_t(XeniaTranslator::SRVSpace::kMain);
+    shared_ranges_desc[0].OffsetInDescriptorsFromTableStart = 0;
+    shared_ranges_desc[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    shared_ranges_desc[1].NumDescriptors = 1;
+    shared_ranges_desc[1].BaseShaderRegister =
+        uint32_t(XeniaTranslator::UAVRegister::kSharedMemory);
+    shared_ranges_desc[1].RegisterSpace = 0;
+    shared_ranges_desc[1].OffsetInDescriptorsFromTableStart = 1;
+    params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[5].DescriptorTable.NumDescriptorRanges = 2;
+    params[5].DescriptorTable.pDescriptorRanges = shared_ranges_desc;
+    params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // Extra parameters in the Xenia order: PS textures, PS samplers,
+    // VS textures, VS samplers.
+    D3D12_DESCRIPTOR_RANGE ps_tex_range{}, ps_samp_range{}, vs_tex_range{},
+        vs_samp_range{};
+    if (ps_tex > 0) {
+      ps_tex_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+      ps_tex_range.NumDescriptors = ps_tex;
+      ps_tex_range.BaseShaderRegister =
+          uint32_t(XeniaTranslator::SRVMainRegister::kBindfulTexturesStart);
+      ps_tex_range.RegisterSpace = uint32_t(XeniaTranslator::SRVSpace::kMain);
+      params[param_count].ParameterType =
+          D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+      params[param_count].DescriptorTable.NumDescriptorRanges = 1;
+      params[param_count].DescriptorTable.pDescriptorRanges = &ps_tex_range;
+      params[param_count].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+      ++param_count;
+    }
+    if (ps_samp > 0) {
+      ps_samp_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+      ps_samp_range.NumDescriptors = ps_samp;
+      ps_samp_range.BaseShaderRegister = 0;
+      params[param_count].ParameterType =
+          D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+      params[param_count].DescriptorTable.NumDescriptorRanges = 1;
+      params[param_count].DescriptorTable.pDescriptorRanges = &ps_samp_range;
+      params[param_count].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+      ++param_count;
+    }
+    if (vs_tex > 0) {
+      vs_tex_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+      vs_tex_range.NumDescriptors = vs_tex;
+      vs_tex_range.BaseShaderRegister =
+          uint32_t(XeniaTranslator::SRVMainRegister::kBindfulTexturesStart);
+      vs_tex_range.RegisterSpace = uint32_t(XeniaTranslator::SRVSpace::kMain);
+      params[param_count].ParameterType =
+          D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+      params[param_count].DescriptorTable.NumDescriptorRanges = 1;
+      params[param_count].DescriptorTable.pDescriptorRanges = &vs_tex_range;
+      params[param_count].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+      ++param_count;
+    }
+    if (vs_samp > 0) {
+      vs_samp_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+      vs_samp_range.NumDescriptors = vs_samp;
+      vs_samp_range.BaseShaderRegister = 0;
+      params[param_count].ParameterType =
+          D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+      params[param_count].DescriptorTable.NumDescriptorRanges = 1;
+      params[param_count].DescriptorTable.pDescriptorRanges = &vs_samp_range;
+      params[param_count].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+      ++param_count;
+    }
+
+    D3D12_ROOT_SIGNATURE_DESC desc{};
+    desc.NumParameters = param_count;
+    desc.pParameters = params;
+    ComPtr<ID3DBlob> serialized;
+    ComPtr<ID3DBlob> errors;
+    if (FAILED(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1,
+                                           &serialized, &errors))) {
+      if (errors) {
+        std::cerr << "d3d12-xenia root signature: "
+                  << std::string(
+                         static_cast<const char *>(errors->GetBufferPointer()),
+                         errors->GetBufferSize())
+                  << "\n";
+      }
+      return nullptr;
+    }
+    ComPtr<ID3D12RootSignature> root_signature;
+    if (FAILED(device->CreateRootSignature(
+            0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
+            IID_PPV_ARGS(&root_signature)))) {
+      return nullptr;
+    }
+    auto [inserted_it, inserted] =
+        root_signatures.emplace(key, std::move(root_signature));
+    return inserted_it->second.Get();
+  };
+
+  // PSO cache.
+  struct XeniaPipelineKey {
+    uint64_t vs_hash;
+    uint64_t ps_hash;
+    uint32_t topology_type;
+    uint32_t blend_control;
+    uint32_t color_mask;
+    uint32_t depth_bits;
+    uint32_t cull_bits;
+    uint32_t rect_variant;
+    bool operator<(const XeniaPipelineKey &other) const {
+      return std::tie(vs_hash, ps_hash, topology_type, blend_control,
+                      color_mask, depth_bits, cull_bits, rect_variant) <
+             std::tie(other.vs_hash, other.ps_hash, other.topology_type,
+                      other.blend_control, other.color_mask, other.depth_bits,
+                      other.cull_bits, other.rect_variant);
+    }
+  };
+  std::map<XeniaPipelineKey, ComPtr<ID3D12PipelineState>> pipelines;
+
+  // Keep-alive lists for per-draw texture resources.
+  std::vector<ComPtr<ID3D12Resource>> texture_resources;
+  std::vector<ComPtr<ID3D12Resource>> texture_uploads;
+
+  const D3D12_GPU_DESCRIPTOR_HANDLE shared_memory_table = srv_gpu_base;
+  uint64_t submitted = 0;
+  uint64_t captured_srvs = 0;
+  uint64_t fallback_srvs = 0;
+  std::map<ShaderPairKey, std::size_t> submitted_pairs;
+
+  D3D12_RECT scissor{0, 0, LONG(width), LONG(height)};
+  list->ClearRenderTargetView(rtv, color_clear.Color, 0, nullptr);
+  list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0,
+                              nullptr);
+  ID3D12DescriptorHeap *heaps[] = {srv_heap.Get(), sampler_heap.Get()};
+  list->SetDescriptorHeaps(2, heaps);
+
+  for (std::size_t prepared_index = 0; prepared_index < prepared.size();
+       ++prepared_index) {
+    const XeniaPreparedDraw &item = prepared[prepared_index];
+    const ReplayDrawState &draw_state = capture.draws[item.draw_index];
+    const PM4DrawRecord &draw = draw_state.draw;
+    const RenderStateRecord &render_state = draw.render_state;
+
+    const uint32_t vs_tex = uint32_t(item.vs->texture_bindings.size());
+    const uint32_t vs_samp = uint32_t(item.vs->sampler_bindings.size());
+    const uint32_t ps_tex = uint32_t(item.ps->texture_bindings.size());
+    const uint32_t ps_samp = uint32_t(item.ps->sampler_bindings.size());
+    ID3D12RootSignature *root_signature =
+        get_root_signature(vs_tex, vs_samp, ps_tex, ps_samp);
+    if (root_signature == nullptr) {
+      continue;
+    }
+
+    // PSO.
+    const uint32_t blend_control = render_state.rb_blendcontrol.empty()
+                                       ? 0x00010001u
+                                       : render_state.rb_blendcontrol[0];
+    XeniaPipelineKey pipeline_key{};
+    pipeline_key.vs_hash = item.vs->runtime_hash;
+    pipeline_key.ps_hash = item.ps->runtime_hash;
+    pipeline_key.topology_type = uint32_t(item.topology_type);
+    pipeline_key.blend_control = blend_control & 0x1FFF1FFFu;
+    pipeline_key.color_mask = render_state.rb_color_mask & 0xFu;
+    pipeline_key.depth_bits = (render_state.depth_test_enable ? 1u : 0u) |
+                              (render_state.depth_write_enable ? 2u : 0u) |
+                              (render_state.depth_func << 2);
+    pipeline_key.cull_bits =
+        render_state.cull_mode | (render_state.front_face << 2) |
+        (render_state.fill_mode << 3);
+    pipeline_key.rect_variant = item.rectangle_strip ? 1u : 0u;
+    auto pipeline_it = pipelines.find(pipeline_key);
+    if (pipeline_it == pipelines.end()) {
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+      pso.pRootSignature = root_signature;
+      pso.VS = {item.vs->dxbc.data(), item.vs->dxbc.size()};
+      pso.PS = {item.ps->dxbc.data(), item.ps->dxbc.size()};
+      pso.BlendState.RenderTarget[0].RenderTargetWriteMask =
+          UINT8(pipeline_key.color_mask);
+      const uint32_t blend = pipeline_key.blend_control;
+      const bool blend_enabled = blend != 0x00010001u && blend != 0u;
+      if (blend_enabled) {
+        pso.BlendState.RenderTarget[0].BlendEnable = TRUE;
+        pso.BlendState.RenderTarget[0].SrcBlend =
+            XenosBlendFactorToD3D12(blend & 0x1F);
+        pso.BlendState.RenderTarget[0].BlendOp =
+            XenosBlendOpToD3D12((blend >> 5) & 0x7);
+        pso.BlendState.RenderTarget[0].DestBlend =
+            XenosBlendFactorToD3D12((blend >> 8) & 0x1F);
+        pso.BlendState.RenderTarget[0].SrcBlendAlpha =
+            XenosBlendFactorToD3D12((blend >> 16) & 0x1F);
+        pso.BlendState.RenderTarget[0].BlendOpAlpha =
+            XenosBlendOpToD3D12((blend >> 21) & 0x7);
+        pso.BlendState.RenderTarget[0].DestBlendAlpha =
+            XenosBlendFactorToD3D12((blend >> 24) & 0x1F);
+      }
+      pso.SampleMask = UINT_MAX;
+      pso.RasterizerState.FillMode = render_state.fill_mode == 1
+                                         ? D3D12_FILL_MODE_WIREFRAME
+                                         : D3D12_FILL_MODE_SOLID;
+      pso.RasterizerState.CullMode =
+          render_state.cull_mode == 1
+              ? D3D12_CULL_MODE_FRONT
+              : (render_state.cull_mode == 2 ? D3D12_CULL_MODE_BACK
+                                             : D3D12_CULL_MODE_NONE);
+      pso.RasterizerState.FrontCounterClockwise =
+          render_state.front_face ? TRUE : FALSE;
+      pso.RasterizerState.DepthClipEnable = TRUE;
+      pso.DepthStencilState.DepthEnable =
+          render_state.depth_test_enable ? TRUE : FALSE;
+      pso.DepthStencilState.DepthWriteMask =
+          render_state.depth_write_enable ? D3D12_DEPTH_WRITE_MASK_ALL
+                                          : D3D12_DEPTH_WRITE_MASK_ZERO;
+      pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC(
+          std::clamp<uint32_t>(render_state.depth_func, 0u, 7u) + 1);
+      pso.InputLayout = {nullptr, 0};
+      pso.PrimitiveTopologyType = item.topology_type;
+      if (item.rectangle_strip) {
+        // Generated strip winding does not match guest rectangle winding.
+        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        pso.IBStripCutValue =
+            D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF;
+      }
+      pso.NumRenderTargets = 1;
+      pso.RTVFormats[0] = color_format;
+      pso.DSVFormat = depth_format;
+      pso.SampleDesc.Count = 1;
+      ComPtr<ID3D12PipelineState> pipeline;
+      const HRESULT pso_result =
+          device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&pipeline));
+      if (FAILED(pso_result)) {
+        ++unsupported_reasons["pso_creation_failed"];
+        pipelines.emplace(pipeline_key, nullptr);
+        continue;
+      }
+      pipeline_it = pipelines.emplace(pipeline_key, std::move(pipeline)).first;
+    }
+    if (!pipeline_it->second) {
+      continue;
+    }
+
+    // Constant buffers for this draw.
+    uint8_t *draw_cb = cb_mapped + prepared_index * draw_cb_stride;
+    const D3D12_GPU_VIRTUAL_ADDRESS draw_cb_base =
+        cb_base + prepared_index * draw_cb_stride;
+    uint8_t *system_cb = draw_cb;
+    uint8_t *float_vs_cb = draw_cb + system_cb_size;
+    uint8_t *float_ps_cb = float_vs_cb + float_cb_size;
+    uint8_t *bool_loop_cb = float_ps_cb + float_cb_size;
+    uint8_t *fetch_cb = bool_loop_cb + bool_loop_cb_size;
+
+    // Float constant file: the translated float cbuffer is tightly packed -
+    // only the shader's used registers, gathered in ascending bitmap order.
+    // The captured register file is 512 vec4 (VS window at vec4 0-255,
+    // PS window at vec4 256-511).
+    std::memset(float_vs_cb, 0, float_cb_size);
+    std::memset(float_ps_cb, 0, float_cb_size);
+    auto gather_float_constants = [&draw](const uint64_t bitmap[4],
+                                          uint32_t file_base_vec4,
+                                          uint8_t *destination) {
+      if (draw.float_constants_missing || draw.float_constant_dwords.empty()) {
+        return;
+      }
+      uint32_t written = 0;
+      for (uint32_t block = 0; block < 4; ++block) {
+        uint64_t bits = bitmap[block];
+        while (bits != 0) {
+          const uint32_t bit = uint32_t(std::countr_zero(bits));
+          bits &= bits - 1;
+          const std::size_t vec4_index = file_base_vec4 + block * 64 + bit;
+          const std::size_t dword_offset = vec4_index * 4;
+          if (dword_offset + 4 <= draw.float_constant_dwords.size() &&
+              written + 16 <= 256 * 16) {
+            std::memcpy(destination + written,
+                        draw.float_constant_dwords.data() + dword_offset, 16);
+          }
+          written += 16;
+        }
+      }
+    };
+    gather_float_constants(item.vs->float_bitmap, 0, float_vs_cb);
+    gather_float_constants(item.ps->float_bitmap, 256, float_ps_cb);
+
+    std::memset(bool_loop_cb, 0, bool_loop_cb_size);
+
+    // Fetch constants: 32 slots x 6 dwords. Vertex fetch constants address
+    // 2-dword sub-slots (vf index 0-95), texture fetches full 6-dword slots.
+    std::memset(fetch_cb, 0, fetch_cb_size);
+    uint32_t *fetch_dwords = reinterpret_cast<uint32_t *>(fetch_cb);
+    for (const VertexFetchRecord &fetch : draw.vertex_fetches) {
+      const uint32_t dword_offset = fetch.fetch_constant * 2;
+      if (dword_offset + 1 < 192) {
+        fetch_dwords[dword_offset] = fetch.dword_0;
+        fetch_dwords[dword_offset + 1] = fetch.dword_1;
+      }
+    }
+    for (const TextureFetchRecord &fetch : draw.texture_fetches) {
+      const uint32_t dword_offset = fetch.fetch_constant * 6;
+      if (dword_offset + 5 < 192 && fetch.dwords.size() >= 6) {
+        for (uint32_t d = 0; d < 6; ++d) {
+          fetch_dwords[dword_offset + d] = fetch.dwords[d];
+        }
+      }
+    }
+
+    // System constants.
+    auto &system_constants =
+        *reinterpret_cast<XeniaTranslator::SystemConstants *>(system_cb);
+    std::memset(system_cb, 0, system_cb_size);
+    const XeniaViewportInfo viewport_info =
+        ComputeXeniaViewport(render_state, width, height);
+    uint32_t flags = 0;
+    const uint32_t vte = render_state.pa_cl_vte_cntl;
+    if (vte & (1u << 8)) {
+      flags |= XeniaTranslator::kSysFlag_XYDividedByW;
+    }
+    if (vte & (1u << 9)) {
+      flags |= XeniaTranslator::kSysFlag_ZDividedByW;
+    }
+    if (vte & (1u << 10)) {
+      flags |= XeniaTranslator::kSysFlag_WNotReciprocal;
+    }
+    if (item.topology_type == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE) {
+      flags |= XeniaTranslator::kSysFlag_PrimitivePolygonal;
+    } else if (item.topology_type == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE) {
+      flags |= XeniaTranslator::kSysFlag_PrimitiveLine;
+    }
+    // Alpha test from RB_COLORCONTROL (function bits 0:2, enable bit 3):
+    // when disabled use "always" (less | equal | greater).
+    {
+      const uint32_t colorcontrol = render_state.rb_colorcontrol;
+      const uint32_t alpha_function =
+          (colorcontrol & (1u << 3)) ? (colorcontrol & 0x7u) : 0x7u;
+      flags |= alpha_function << XeniaTranslator::kSysFlag_AlphaPassIfLess_Shift;
+      float alpha_ref = 0.0f;
+      std::memcpy(&alpha_ref, &render_state.rb_alpha_ref, sizeof(alpha_ref));
+      system_constants.alpha_test_reference = alpha_ref;
+    }
+    system_constants.flags = flags;
+    system_constants.line_loop_closing_index = 0;
+    system_constants.vertex_index_endian =
+        static_cast<rex::graphics::xenos::Endian>(
+            draw.indexed ? (draw.index_endianness & 0x3u) : 0u);
+    system_constants.vertex_index_offset = 0;
+    system_constants.vertex_index_min = 0;
+    system_constants.vertex_index_max = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < 3; ++i) {
+      system_constants.ndc_scale[i] = viewport_info.ndc_scale[i];
+      system_constants.ndc_offset[i] = viewport_info.ndc_offset[i];
+    }
+    system_constants.point_vertex_diameter_min = 0.0f;
+    system_constants.point_vertex_diameter_max = 8192.0f;
+    system_constants.point_constant_diameter[0] = 1.0f;
+    system_constants.point_constant_diameter[1] = 1.0f;
+    system_constants.point_screen_diameter_to_ndc_radius[0] =
+        1.0f / float(width);
+    system_constants.point_screen_diameter_to_ndc_radius[1] =
+        1.0f / float(height);
+    for (uint32_t i = 0; i < 4; ++i) {
+      const int32_t exp_bias = i < render_state.color_exp_bias.size()
+                                   ? render_state.color_exp_bias[i]
+                                   : 0;
+      system_constants.color_exp_bias[i] = std::ldexp(1.0f, exp_bias);
+    }
+
+    // Texture SRVs and samplers for both stages.
+    auto bind_stage_textures =
+        [&](const XeniaShaderBlob &blob) -> std::optional<uint32_t> {
+      if (blob.texture_bindings.empty()) {
+        return std::nullopt;
+      }
+      const uint32_t first_descriptor = next_srv_descriptor;
+      for (const XeniaTextureBindingRecord &binding : blob.texture_bindings) {
+        if (next_srv_descriptor >= srv_heap_desc.NumDescriptors) {
+          return std::nullopt;
+        }
+        const TextureFetchRecord *fetch = nullptr;
+        for (const TextureFetchRecord &candidate : draw.texture_fetches) {
+          if (candidate.fetch_constant == binding.fetch_constant) {
+            fetch = &candidate;
+            break;
+          }
+        }
+        std::vector<uint8_t> rgba;
+        uint32_t tex_width = 1;
+        uint32_t tex_height = 1;
+        std::string decode_reason;
+        if (fetch != nullptr &&
+            DecodeTextureRgba8(*fetch, rgba, decode_reason)) {
+          tex_width = std::max<uint32_t>(fetch->width, 1);
+          tex_height = std::max<uint32_t>(fetch->height, 1);
+          ++captured_srvs;
+        } else {
+          rgba.assign(4, 0xFF);
+          ++fallback_srvs;
+        }
+
+        D3D12_RESOURCE_DESC tex_desc{};
+        tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        tex_desc.Width = tex_width;
+        tex_desc.Height = tex_height;
+        tex_desc.DepthOrArraySize = 1;
+        tex_desc.MipLevels = 1;
+        tex_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        tex_desc.SampleDesc.Count = 1;
+        ComPtr<ID3D12Resource> texture;
+        if (FAILED(device->CreateCommittedResource(
+                &default_heap, D3D12_HEAP_FLAG_NONE, &tex_desc,
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&texture)))) {
+          return std::nullopt;
+        }
+        const uint32_t row_pitch =
+            (tex_width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
+            ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+        D3D12_RESOURCE_DESC upload_desc{};
+        upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        upload_desc.Width = uint64_t(row_pitch) * tex_height;
+        upload_desc.Height = 1;
+        upload_desc.DepthOrArraySize = 1;
+        upload_desc.MipLevels = 1;
+        upload_desc.SampleDesc.Count = 1;
+        upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ComPtr<ID3D12Resource> upload;
+        if (FAILED(device->CreateCommittedResource(
+                &upload_heap, D3D12_HEAP_FLAG_NONE, &upload_desc,
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                IID_PPV_ARGS(&upload)))) {
+          return std::nullopt;
+        }
+        uint8_t *tex_mapped = nullptr;
+        if (FAILED(upload->Map(0, nullptr,
+                               reinterpret_cast<void **>(&tex_mapped)))) {
+          return std::nullopt;
+        }
+        for (uint32_t row = 0; row < tex_height; ++row) {
+          const std::size_t src_offset = std::size_t(row) * tex_width * 4;
+          if (src_offset + tex_width * 4 <= rgba.size()) {
+            std::memcpy(tex_mapped + std::size_t(row) * row_pitch,
+                        rgba.data() + src_offset, tex_width * 4);
+          } else {
+            std::memset(tex_mapped + std::size_t(row) * row_pitch, 0,
+                        tex_width * 4);
+          }
+        }
+        upload->Unmap(0, nullptr);
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = texture.Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = upload.Get();
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        src.PlacedFootprint.Footprint.Width = tex_width;
+        src.PlacedFootprint.Footprint.Height = tex_height;
+        src.PlacedFootprint.Footprint.Depth = 1;
+        src.PlacedFootprint.Footprint.RowPitch = row_pitch;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = texture.Get();
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        barrier.Transition.StateAfter =
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        barrier.Transition.Subresource =
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        list->ResourceBarrier(1, &barrier);
+
+        D3D12_CPU_DESCRIPTOR_HANDLE srv_handle = srv_cpu_base;
+        srv_handle.ptr += std::size_t(next_srv_descriptor) * srv_stride;
+        device->CreateShaderResourceView(texture.Get(), nullptr, srv_handle);
+        ++next_srv_descriptor;
+        texture_resources.push_back(std::move(texture));
+        texture_uploads.push_back(std::move(upload));
+      }
+      return first_descriptor;
+    };
+
+    auto bind_stage_samplers =
+        [&](const XeniaShaderBlob &blob) -> std::optional<uint32_t> {
+      if (blob.sampler_bindings.empty()) {
+        return std::nullopt;
+      }
+      const uint32_t first_descriptor = next_sampler_descriptor;
+      for (const XeniaSamplerBindingRecord &binding : blob.sampler_bindings) {
+        if (next_sampler_descriptor >= sampler_heap_desc.NumDescriptors) {
+          return std::nullopt;
+        }
+        const TextureFetchRecord *fetch = nullptr;
+        for (const TextureFetchRecord &candidate : draw.texture_fetches) {
+          if (candidate.fetch_constant == binding.fetch_constant) {
+            fetch = &candidate;
+            break;
+          }
+        }
+        // Filter value 3 means "use the fetch constant's filter".
+        uint32_t mag = binding.mag_filter;
+        uint32_t min = binding.min_filter;
+        uint32_t mip = binding.mip_filter;
+        if (fetch != nullptr) {
+          if (mag == 3) mag = fetch->mag_filter;
+          if (min == 3) min = fetch->min_filter;
+          if (mip == 3) mip = fetch->mip_filter;
+        }
+        D3D12_SAMPLER_DESC sampler{};
+        const bool linear_mag = mag == 1;
+        const bool linear_min = min == 1;
+        const bool linear_mip = mip == 1;
+        sampler.Filter = D3D12_ENCODE_BASIC_FILTER(
+            linear_min ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
+            linear_mag ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
+            linear_mip ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
+            D3D12_FILTER_REDUCTION_TYPE_STANDARD);
+        sampler.AddressU =
+            XeniaClampToAddressMode(fetch != nullptr ? fetch->clamp_x : 2);
+        sampler.AddressV =
+            XeniaClampToAddressMode(fetch != nullptr ? fetch->clamp_y : 2);
+        sampler.AddressW =
+            XeniaClampToAddressMode(fetch != nullptr ? fetch->clamp_z : 2);
+        sampler.MaxLOD = D3D12_FLOAT32_MAX;
+        D3D12_CPU_DESCRIPTOR_HANDLE handle = sampler_cpu_base;
+        handle.ptr += std::size_t(next_sampler_descriptor) * sampler_stride;
+        device->CreateSampler(&sampler, handle);
+        ++next_sampler_descriptor;
+      }
+      return first_descriptor;
+    };
+
+    const std::optional<uint32_t> ps_tex_first =
+        bind_stage_textures(*item.ps);
+    const std::optional<uint32_t> ps_samp_first =
+        bind_stage_samplers(*item.ps);
+    const std::optional<uint32_t> vs_tex_first =
+        bind_stage_textures(*item.vs);
+    const std::optional<uint32_t> vs_samp_first =
+        bind_stage_samplers(*item.vs);
+    if ((ps_tex > 0 && !ps_tex_first) || (ps_samp > 0 && !ps_samp_first) ||
+        (vs_tex > 0 && !vs_tex_first) || (vs_samp > 0 && !vs_samp_first)) {
+      ++unsupported_reasons["descriptor_heap_exhausted"];
+      continue;
+    }
+
+    // Bind and draw.
+    list->SetGraphicsRootSignature(root_signature);
+    list->SetPipelineState(pipeline_it->second.Get());
+    uint64_t cb_offset = 0;
+    const D3D12_GPU_VIRTUAL_ADDRESS system_cb_va = draw_cb_base;
+    const D3D12_GPU_VIRTUAL_ADDRESS float_vs_va =
+        draw_cb_base + system_cb_size;
+    const D3D12_GPU_VIRTUAL_ADDRESS float_ps_va = float_vs_va + float_cb_size;
+    const D3D12_GPU_VIRTUAL_ADDRESS bool_loop_va = float_ps_va + float_cb_size;
+    const D3D12_GPU_VIRTUAL_ADDRESS fetch_va =
+        bool_loop_va + bool_loop_cb_size;
+    (void)cb_offset;
+    list->SetGraphicsRootConstantBufferView(0, fetch_va);
+    list->SetGraphicsRootConstantBufferView(1, float_vs_va);
+    list->SetGraphicsRootConstantBufferView(2, float_ps_va);
+    list->SetGraphicsRootConstantBufferView(3, system_cb_va);
+    list->SetGraphicsRootConstantBufferView(4, bool_loop_va);
+    list->SetGraphicsRootDescriptorTable(5, shared_memory_table);
+    UINT next_param = 6;
+    auto table_handle = [&](uint32_t first, bool sampler_heap_table)
+        -> D3D12_GPU_DESCRIPTOR_HANDLE {
+      D3D12_GPU_DESCRIPTOR_HANDLE handle =
+          sampler_heap_table ? sampler_gpu_base : srv_gpu_base;
+      handle.ptr += std::size_t(first) *
+                    (sampler_heap_table ? sampler_stride : srv_stride);
+      return handle;
+    };
+    if (ps_tex > 0) {
+      list->SetGraphicsRootDescriptorTable(next_param++,
+                                           table_handle(*ps_tex_first, false));
+    }
+    if (ps_samp > 0) {
+      list->SetGraphicsRootDescriptorTable(next_param++,
+                                           table_handle(*ps_samp_first, true));
+    }
+    if (vs_tex > 0) {
+      list->SetGraphicsRootDescriptorTable(next_param++,
+                                           table_handle(*vs_tex_first, false));
+    }
+    if (vs_samp > 0) {
+      list->SetGraphicsRootDescriptorTable(next_param++,
+                                           table_handle(*vs_samp_first, true));
+    }
+
+    // Bind the guest color/depth surfaces this draw targets.
+    XeniaGuestColorTarget *guest_color = get_guest_color_target(
+        render_state.color_base.empty() ? 0u : render_state.color_base[0]);
+    XeniaGuestDepthTarget *guest_depth =
+        get_guest_depth_target(render_state.depth_base);
+    ++guest_color->draws;
+    list->OMSetRenderTargets(1, &guest_color->rtv, FALSE, &guest_depth->dsv);
+
+    const D3D12_VIEWPORT viewport{
+        viewport_info.host_viewport[0], viewport_info.host_viewport[1],
+        std::max(viewport_info.host_viewport[2], 1.0f),
+        std::max(viewport_info.host_viewport[3], 1.0f), viewport_info.z_min,
+        viewport_info.z_max};
+    list->RSSetViewports(1, &viewport);
+    list->RSSetScissorRects(1, &scissor);
+    list->IASetPrimitiveTopology(item.topology);
+
+    if (draw.indexed) {
+      // Raw guest index bytes; the translated vertex shader applies the
+      // captured endian swap through the system constants.
+      D3D12_RESOURCE_DESC ib_desc{};
+      ib_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+      ib_desc.Width = (draw.index_bytes.size() + 255) & ~std::size_t(255);
+      ib_desc.Height = 1;
+      ib_desc.DepthOrArraySize = 1;
+      ib_desc.MipLevels = 1;
+      ib_desc.SampleDesc.Count = 1;
+      ib_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+      ComPtr<ID3D12Resource> index_buffer;
+      if (FAILED(device->CreateCommittedResource(
+              &upload_heap, D3D12_HEAP_FLAG_NONE, &ib_desc,
+              D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+              IID_PPV_ARGS(&index_buffer)))) {
+        ++unsupported_reasons["index_buffer_allocation_failed"];
+        continue;
+      }
+      uint8_t *ib_mapped = nullptr;
+      if (FAILED(index_buffer->Map(0, nullptr,
+                                   reinterpret_cast<void **>(&ib_mapped)))) {
+        ++unsupported_reasons["index_buffer_map_failed"];
+        continue;
+      }
+      std::memcpy(ib_mapped, draw.index_bytes.data(),
+                  draw.index_bytes.size());
+      index_buffer->Unmap(0, nullptr);
+      D3D12_INDEX_BUFFER_VIEW ib_view{};
+      ib_view.BufferLocation = index_buffer->GetGPUVirtualAddress();
+      ib_view.SizeInBytes = UINT(draw.index_bytes.size());
+      ib_view.Format = draw.index_format == 0 ? DXGI_FORMAT_R16_UINT
+                                              : DXGI_FORMAT_R32_UINT;
+      list->IASetIndexBuffer(&ib_view);
+      const uint32_t max_indices =
+          draw.index_format == 0 ? UINT(draw.index_bytes.size() / 2)
+                                 : UINT(draw.index_bytes.size() / 4);
+      list->DrawIndexedInstanced(std::min(draw.index_count, max_indices), 1,
+                                 0, 0, 0);
+      texture_uploads.push_back(std::move(index_buffer));
+    } else if (item.rectangle_strip) {
+      // Single guest rectangle with the full quad present in the vertex
+      // buffer: draw the four buffer vertices as a triangle strip.
+      list->DrawInstanced(4, 1, 0, 0);
+    } else {
+      list->DrawInstanced(draw.index_count, 1, 0, 0);
+    }
+
+    ++submitted;
+    ++submitted_pairs[{draw_state.vertex_shader.hash,
+                       draw_state.pixel_shader.hash}];
+  }
+
+  // Readback and BMP output: export the guest color target that received the
+  // most draws (the composed scene/UI surface).
+  ID3D12Resource *presented_target = color_target.Get();
+  {
+    uint64_t best_draws = 0;
+    uint32_t best_base = 0;
+    for (const auto &[base, target] : guest_color_targets) {
+      if (target.draws >= best_draws) {
+        best_draws = target.draws;
+        best_base = base;
+        presented_target = target.resource.Get();
+      }
+    }
+    std::cout << "D3D12 Xenia-translated replay guest color targets:";
+    for (const auto &[base, target] : guest_color_targets) {
+      std::cout << " base=0x" << std::hex << base << std::dec
+                << " draws=" << target.draws
+                << (base == best_base ? " (presented)" : "");
+    }
+    std::cout << "\n";
+  }
+  {
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = presented_target;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    list->ResourceBarrier(1, &barrier);
+  }
+  const uint32_t readback_pitch =
+      (width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
+      ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+  D3D12_RESOURCE_DESC readback_desc{};
+  readback_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  readback_desc.Width = uint64_t(readback_pitch) * height;
+  readback_desc.Height = 1;
+  readback_desc.DepthOrArraySize = 1;
+  readback_desc.MipLevels = 1;
+  readback_desc.SampleDesc.Count = 1;
+  readback_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  ComPtr<ID3D12Resource> readback;
+  if (!CheckHr(device->CreateCommittedResource(
+                   &readback_heap, D3D12_HEAP_FLAG_NONE, &readback_desc,
+                   D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                   IID_PPV_ARGS(&readback)),
+               "CreateCommittedResource(xenia readback)", error)) {
+    return false;
+  }
+  {
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = readback.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint.Footprint.Format = color_format;
+    dst.PlacedFootprint.Footprint.Width = width;
+    dst.PlacedFootprint.Footprint.Height = height;
+    dst.PlacedFootprint.Footprint.Depth = 1;
+    dst.PlacedFootprint.Footprint.RowPitch = readback_pitch;
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = presented_target;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+  }
+  if (!CheckHr(list->Close(), "Close(xenia command list)", error)) {
+    return false;
+  }
+  ID3D12CommandList *lists[] = {list.Get()};
+  queue->ExecuteCommandLists(1, lists);
+  ComPtr<ID3D12Fence> fence;
+  if (!CheckHr(device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+                                   IID_PPV_ARGS(&fence)),
+               "CreateFence(xenia)", error)) {
+    return false;
+  }
+  queue->Signal(fence.Get(), 1);
+  if (fence->GetCompletedValue() < 1) {
+    HANDLE event_handle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (event_handle == nullptr) {
+      error = "could not create xenia fence event";
+      return false;
+    }
+    fence->SetEventOnCompletion(1, event_handle);
+    WaitForSingleObject(event_handle, 30000);
+    CloseHandle(event_handle);
+  }
+  cb_buffer->Unmap(0, nullptr);
+
+  if (info_queue) {
+    const UINT64 message_count = info_queue->GetNumStoredMessages();
+    std::cout << "D3D12 debug layer stored messages: " << message_count
+              << "\n";
+    std::vector<char> message_buffer;
+    for (UINT64 i = 0; i < std::min<UINT64>(message_count, 64); ++i) {
+      SIZE_T length = 0;
+      info_queue->GetMessage(i, nullptr, &length);
+      message_buffer.resize(length);
+      auto *message =
+          reinterpret_cast<D3D12_MESSAGE *>(message_buffer.data());
+      if (SUCCEEDED(info_queue->GetMessage(i, message, &length)) &&
+          message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING) {
+        std::cout << "  [" << int(message->Severity) << "] "
+                  << message->pDescription << "\n";
+      }
+    }
+  }
+
+  uint8_t *readback_mapped = nullptr;
+  if (!CheckHr(readback->Map(0, nullptr,
+                             reinterpret_cast<void **>(&readback_mapped)),
+               "Map(xenia readback)", error)) {
+    return false;
+  }
+  const std::filesystem::path output =
+      options.d3d12_output_path.empty()
+          ? capture.path.parent_path() /
+                "native-renderer-d3d12-xenia-replay.bmp"
+          : options.d3d12_output_path;
+  const bool bmp_ok =
+      WriteBmp(output, readback_mapped, readback_pitch, width, height, error);
+  readback->Unmap(0, nullptr);
+  if (!bmp_ok) {
+    return false;
+  }
+
+  std::cout << "D3D12 Xenia-translated replay submitted " << submitted
+            << " draw(s) across " << submitted_pairs.size()
+            << " shader pair(s), captured_texture_srvs=" << captured_srvs
+            << " fallback_texture_srvs=" << fallback_srvs
+            << " pso_entries=" << pipelines.size()
+            << " root_signatures=" << root_signatures.size()
+            << " shared_memory_bytes=" << shared_memory_size
+            << " shared_ranges=" << shared_ranges.size() << "\n";
+  for (const auto &[key, count] : submitted_pairs) {
+    std::cout << "  pair VS=" << FormatHex64(std::get<0>(key))
+              << " PS=" << FormatHex64(std::get<1>(key))
+              << " submitted=" << count << "\n";
+  }
+  if (!unsupported_reasons.empty()) {
+    std::cout << "D3D12 Xenia-translated replay unsupported draws:\n";
+    for (const auto &[reason, count] : unsupported_reasons) {
+      std::cout << "  " << reason << ": " << count << "\n";
+    }
+  }
+  return true;
+}
+
+#else
+
+bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
+                                const ReplayCliOptions &options,
+                                std::string &error) {
+  (void)capture;
+  (void)options;
+  error = "D3D12 Xenia-translated replay backend is only available on Windows";
+  return false;
+}
+
+#endif  // defined(_WIN32)
 
 } // namespace bo2::native::replay

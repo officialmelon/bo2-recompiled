@@ -2645,6 +2645,7 @@ enum class ReplayBackendKind {
   Null,
   D3D12Diagnostic,
   D3D12Real,
+  D3D12Xenia,
   VulkanDiagnostic,
   VulkanReal,
   Unknown,
@@ -2659,6 +2660,9 @@ ReplayBackendKind ParseBackendKind(const std::string &backend) {
   }
   if (backend == "d3d12" || backend == "d3d12-real") {
     return ReplayBackendKind::D3D12Real;
+  }
+  if (backend == "d3d12-xenia" || backend == "d3d12-translated") {
+    return ReplayBackendKind::D3D12Xenia;
   }
   if (backend == "vulkan-diagnostic" || backend == "vulkan-debug") {
     return ReplayBackendKind::VulkanDiagnostic;
@@ -2710,7 +2714,11 @@ void PrintHelp() {
       << "  --real-backend-gaps    Rank blockers for D3D12 real replay\n"
       << "  --shader-record-probes Dump captured XEX shader/material probe events\n"
       << "  --backend <name>       Replay backend selector: "
-         "null/d3d12-diagnostic/d3d12/vulkan-diagnostic/vulkan\n"
+         "null/d3d12-diagnostic/d3d12/d3d12-xenia/vulkan-diagnostic/vulkan\n"
+      << "                          d3d12-xenia renders with generic "
+         "Xenia-translated DXBC\n"
+      << "                          shader pairs from xenia_dxbc cache "
+         "records\n"
       << "  --d3d12-output <path>  BMP output for D3D12 replay backends\n"
       << "  --d3d12-depth-output <path>\n"
          "                          Depth/stencil preview BMP for D3D12 real "
@@ -2978,6 +2986,16 @@ bool LoadShaderCacheIndex(const std::filesystem::path &path,
     record.path = GetString(object, "path");
     record.source = GetString(object, "source");
     record.diagnostic = GetBool(object, "diagnostic");
+    record.binding_layout = GetString(object, "binding_layout");
+    record.modification = GetU64(object, "modification");
+    record.uses_vertex_fetch = GetBool(object, "uses_vertex_fetch");
+    record.uses_texture_fetch = GetBool(object, "uses_texture_fetch");
+    record.uses_memexport = GetBool(object, "uses_memexport");
+    record.texture_bindings = GetString(object, "texture_bindings");
+    record.sampler_bindings = GetString(object, "sampler_bindings");
+    record.float_bitmap = GetString(object, "float_bitmap");
+    record.host_vertex_shader_type =
+        GetString(object, "host_vertex_shader_type");
     if (!record.backend.empty() && !record.stage.empty() &&
         record.runtime_hash != 0 && !record.path.empty()) {
       records.push_back(std::move(record));
@@ -4811,6 +4829,20 @@ int RunNativeRenderReplayTool(int argc, char **argv) {
             ? capture.path.parent_path() / "native-renderer-d3d12-replay.bmp"
             : cli.d3d12_output_path;
     std::cout << "D3D12 real replay output: "
+              << std::filesystem::absolute(output).string() << "\n";
+  } else if (backend_kind == ReplayBackendKind::D3D12Xenia) {
+    std::string backend_error;
+    if (!RunD3D12XeniaReplayBackend(capture, cli, backend_error)) {
+      std::cerr << "D3D12 Xenia-translated replay unavailable: "
+                << backend_error << "\n";
+      return 1;
+    }
+    const std::filesystem::path output =
+        cli.d3d12_output_path.empty()
+            ? capture.path.parent_path() /
+                  "native-renderer-d3d12-xenia-replay.bmp"
+            : cli.d3d12_output_path;
+    std::cout << "D3D12 Xenia-translated replay output: "
               << std::filesystem::absolute(output).string() << "\n";
   } else if (backend_kind == ReplayBackendKind::VulkanDiagnostic ||
              backend_kind == ReplayBackendKind::VulkanReal) {

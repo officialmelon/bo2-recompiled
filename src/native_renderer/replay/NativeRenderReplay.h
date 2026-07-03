@@ -630,6 +630,22 @@ struct ShaderCacheRecord {
   std::filesystem::path path;
   std::filesystem::path source;
   bool diagnostic = false;
+  // Xenia-DXBC records (format == "xenia_dxbc") carry the translator
+  // modification bits plus the bindful texture/sampler binding lists as
+  // compact strings ("fc:dim:signed,..." / "fc:mag:min:mip:aniso,...").
+  std::string binding_layout;
+  uint64_t modification = 0;
+  bool uses_vertex_fetch = false;
+  bool uses_texture_fetch = false;
+  bool uses_memexport = false;
+  std::string texture_bindings;
+  std::string sampler_bindings;
+  // Used float constant registers ("0x...,0x...,0x...,0x..."); the translated
+  // float cbuffer is tightly packed in ascending bitmap order.
+  std::string float_bitmap;
+  // "vertex" (default) or "rectangle_strip" for the rectangle-list-expansion
+  // vertex shader variant.
+  std::string host_vertex_shader_type;
 };
 
 const char *ToString(CaptureEventType type);
@@ -673,6 +689,13 @@ bool RunD3D12DiagnosticReplayBackend(const ReplayCapture &capture,
 bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
                                const ReplayCliOptions &options,
                                std::string &error);
+// Renders captured draws with Xenia-translated DXBC shader pairs from
+// format=xenia_dxbc cache records, using the Xenia binding contract
+// (system/float/bool-loop/fetch constant buffers plus shared-memory vertex
+// pulling) instead of the legacy layout8 canonicalized-vertex pipeline.
+bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
+                                const ReplayCliOptions &options,
+                                std::string &error);
 bool DumpD3D12DecodedTexturePreview(const ReplayCapture &capture,
                                     const ReplayCliOptions &options,
                                     std::string &error);
