@@ -141,6 +141,22 @@ Follow-up multi-fetch vertex rule validation:
   `PS 0xDC168FB6031AFC41`, old truncated `PS 0x79E1F538A5074A65`, and the
   no-raster/no-fetch utility `VS 0xDDED7E538422AE73`.
 
+Follow-up runtime pixel ALU cache coverage:
+
+- Added runtime-hash keyed shared generated-HLSL rules for
+  `PS 0x7D1EF030F5710BDA`, `PS 0x8645E8BA65E424B2`, and
+  `PS 0xDC168FB6031AFC41`.
+- These rules preserve real captured texture sampling and interpolated color,
+  but they are still conservative shader-specific approximations, not complete
+  instruction-by-instruction Xenos ALU lowering.
+- MP080 isolated-cache precompile improved to `attempted=16`, `compiled=15`,
+  `translator_failed=2`, `dxc_failed=0`, `source_shared=15`.
+- MP028 isolated-cache precompile improved to `attempted=13`, `compiled=13`,
+  `translator_failed=1`, `dxc_failed=0`, `source_shared=13`.
+- Remaining MP080 misses are old truncated `PS 0x79E1F538A5074A65` and
+  no-raster/no-fetch utility `VS 0xDDED7E538422AE73`; MP028 only misses the
+  old truncated `PS 0x79E1F538A5074A65` capture.
+
 ## Runtime D3D12 Precompile Checkpoint
 
 Evidence date: 2026-07-03

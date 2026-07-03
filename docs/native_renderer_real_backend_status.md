@@ -64,6 +64,19 @@ UV, constant transform, `max o1.xy__`, and `max o0`. After this rule:
 - MP080 validation and D3D12 replay remained stable at `836` supported draws
   across `9` shader pairs with `diagnostic_pipelines=0`.
 
+Additional generated pixel shader cache coverage:
+
+- Runtime-hash keyed shared generated-HLSL rules now cover
+  `PS 0x7D1EF030F5710BDA`, `PS 0x8645E8BA65E424B2`, and
+  `PS 0xDC168FB6031AFC41`.
+- These are not full Xenos ALU translations yet; they keep real captured
+  texture/color dependencies in the automatic cache path while the full
+  instruction lowering remains pending.
+- MP080 isolated-cache precompile now reports `compiled=15`,
+  `translator_failed=2`, `dxc_failed=0`, `source_shared=15`.
+- MP028 isolated-cache precompile now reports `compiled=13`,
+  `translator_failed=1`, `dxc_failed=0`, `source_shared=13`.
+
 ## 2026-07-03 shared translator migration checkpoint
 
 More runtime-used limited shader rules have been moved into the shared
