@@ -82,6 +82,21 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
   last_error_ = "native_d3d12 live backend requires Windows";
   return false;
 #else
+  // BO2_XENIA_DEBUG_LAYER=1 turns on the D3D12 debug layer for the live
+  // device; validation messages are drained into the game log per frame.
+  {
+    char env_value[8]{};
+    if (GetEnvironmentVariableA("BO2_XENIA_DEBUG_LAYER", env_value,
+                                sizeof(env_value)) > 0 &&
+        env_value[0] == '1') {
+      Microsoft::WRL::ComPtr<ID3D12Debug> debug;
+      if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
+        debug->EnableDebugLayer();
+        debug_layer_enabled_ = true;
+        REXLOG_INFO("BO2 native D3D12 debug layer enabled for live device");
+      }
+    }
+  }
   HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
                                  IID_PPV_ARGS(&device_));
   if (FAILED(hr)) {
@@ -89,6 +104,9 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
     REXLOG_ERROR("BO2 native D3D12 backend init failed hr={:#010x}",
                  static_cast<uint32_t>(hr));
     return false;
+  }
+  if (debug_layer_enabled_) {
+    device_.As(&info_queue_);
   }
 
   D3D12_COMMAND_QUEUE_DESC queue_desc{};
@@ -375,6 +393,31 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
       }
     }
     PumpNativeWindowMessages();
+  }
+  if (device_) {
+    const HRESULT removed_reason = device_->GetDeviceRemovedReason();
+    if (FAILED(removed_reason)) {
+      REXLOG_ERROR(
+          "BO2 native D3D12 DEVICE REMOVED frame={} reason={:#010x}",
+          frame_index, static_cast<uint32_t>(removed_reason));
+    }
+  }
+  if (info_queue_) {
+    const UINT64 message_count = info_queue_->GetNumStoredMessages();
+    std::vector<char> message_buffer;
+    for (UINT64 i = 0; i < message_count && i < 32; ++i) {
+      SIZE_T length = 0;
+      info_queue_->GetMessage(i, nullptr, &length);
+      message_buffer.resize(length);
+      auto *message =
+          reinterpret_cast<D3D12_MESSAGE *>(message_buffer.data());
+      if (SUCCEEDED(info_queue_->GetMessage(i, message, &length)) &&
+          message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING) {
+        REXLOG_WARN("BO2 native D3D12 debug[{}]: {}", int(message->Severity),
+                    message->pDescription);
+      }
+    }
+    info_queue_->ClearStoredMessages();
   }
 #endif
 

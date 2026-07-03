@@ -192,6 +192,16 @@ replay::PM4DrawRecord ConvertDraw(const PM4DrawInfo &draw) {
     out.texture_fetches.push_back(ConvertTextureFetch(draw.texture_fetches[i]));
   }
   out.render_state = ConvertRenderState(draw.render_state);
+  // The translated d3d12-xenia live pipeline reads the guest float constant
+  // register file per draw; without this copy the live constant buffers are
+  // all zero and every constant-driven shader renders black.
+  out.float_constant_dword_count = std::min<uint32_t>(
+      draw.float_constant_dword_count,
+      uint32_t(PM4DrawInfo::kFloatConstantDwordCount));
+  out.float_constant_dwords.assign(
+      draw.float_constant_dwords.begin(),
+      draw.float_constant_dwords.begin() + out.float_constant_dword_count);
+  out.float_constants_missing = draw.float_constants_missing;
   out.major_mode = draw.major_mode;
   out.explicit_major_mode = draw.explicit_major_mode;
   out.viz_query_condition = draw.viz_query_condition;

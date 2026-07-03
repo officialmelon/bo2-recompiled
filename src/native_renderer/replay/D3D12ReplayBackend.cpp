@@ -6921,6 +6921,23 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   }
 
   if (prepared.empty()) {
+    if (live_submit) {
+      // Nothing supported this frame. Return success WITHOUT recording any
+      // commands: if this function records barriers or clears and then
+      // fails, the live backend discards the command list while the CPU-side
+      // state tracking (shared memory barrier state, target clears) has
+      // already advanced, and every later frame records mismatched barriers,
+      // which black-screens the device permanently.
+      live_binding->submitted_draws = 0;
+      live_binding->shader_pair_count = 0;
+      live_binding->presentable_frame = false;
+      live_binding->copied_retained_frame = false;
+      for (const auto &[reason, count] : unsupported_reasons) {
+        live_binding->skipped_draws += count;
+        live_binding->unsupported_reasons.emplace_back(reason, count);
+      }
+      return true;
+    }
     error = "no captured draws are supported by the d3d12-xenia backend";
     for (const auto &[reason, count] : unsupported_reasons) {
       error += "\n  " + reason + ": " + std::to_string(count);
@@ -8106,6 +8123,85 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         D3D12_RESOURCE_STATE_COPY_DEST;
     restore_barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
     list->ResourceBarrier(2, restore_barriers);
+
+    // BO2_XENIA_LIVE_DUMP=1: record a readback of the presented guest target
+    // and write a BMP every 32nd frame for live-output ground truth.
+    {
+      static uint64_t live_dump_frame = 0;
+      static int live_dump_enabled = -1;
+      if (live_dump_enabled < 0) {
+        char env_value[8]{};
+        live_dump_enabled =
+            (GetEnvironmentVariableA("BO2_XENIA_LIVE_DUMP", env_value,
+                                     sizeof(env_value)) > 0 &&
+             env_value[0] == '1')
+                ? 1
+                : 0;
+      }
+      const uint64_t dump_index = live_dump_frame++;
+      if (live_dump_enabled == 1 && (dump_index % 32) == 0) {
+        const uint32_t dump_pitch =
+            (width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
+            ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+        D3D12_RESOURCE_DESC dump_desc{};
+        dump_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        dump_desc.Width = uint64_t(dump_pitch) * height;
+        dump_desc.Height = 1;
+        dump_desc.DepthOrArraySize = 1;
+        dump_desc.MipLevels = 1;
+        dump_desc.SampleDesc.Count = 1;
+        dump_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ComPtr<ID3D12Resource> dump_readback;
+        if (SUCCEEDED(device->CreateCommittedResource(
+                &readback_heap, D3D12_HEAP_FLAG_NONE, &dump_desc,
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&dump_readback)))) {
+          D3D12_RESOURCE_BARRIER dump_barrier{};
+          dump_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+          dump_barrier.Transition.pResource = presented_target;
+          dump_barrier.Transition.StateBefore =
+              D3D12_RESOURCE_STATE_RENDER_TARGET;
+          dump_barrier.Transition.StateAfter =
+              D3D12_RESOURCE_STATE_COPY_SOURCE;
+          dump_barrier.Transition.Subresource =
+              D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+          list->ResourceBarrier(1, &dump_barrier);
+          D3D12_TEXTURE_COPY_LOCATION dump_dst{};
+          dump_dst.pResource = dump_readback.Get();
+          dump_dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+          dump_dst.PlacedFootprint.Footprint.Format = color_format;
+          dump_dst.PlacedFootprint.Footprint.Width = width;
+          dump_dst.PlacedFootprint.Footprint.Height = height;
+          dump_dst.PlacedFootprint.Footprint.Depth = 1;
+          dump_dst.PlacedFootprint.Footprint.RowPitch = dump_pitch;
+          D3D12_TEXTURE_COPY_LOCATION dump_src{};
+          dump_src.pResource = presented_target;
+          dump_src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+          list->CopyTextureRegion(&dump_dst, 0, 0, 0, &dump_src, nullptr);
+          std::swap(dump_barrier.Transition.StateBefore,
+                    dump_barrier.Transition.StateAfter);
+          list->ResourceBarrier(1, &dump_barrier);
+          // Write the previous dump (GPU completed at least a frame ago).
+          static ComPtr<ID3D12Resource> pending_dump;
+          static uint64_t pending_dump_index = 0;
+          if (pending_dump) {
+            uint8_t *mapped = nullptr;
+            if (SUCCEEDED(pending_dump->Map(
+                    0, nullptr, reinterpret_cast<void **>(&mapped)))) {
+              std::string dump_error;
+              WriteBmp(std::filesystem::path("logs") / "live" /
+                           ("xenia-live-dump-" +
+                            std::to_string(pending_dump_index) + ".bmp"),
+                       mapped, dump_pitch, width, height, dump_error);
+              pending_dump->Unmap(0, nullptr);
+            }
+          }
+          pending_dump = dump_readback;
+          pending_dump_index = dump_index;
+          xenia.retained_resources->push_back(dump_readback);
+        }
+      }
+    }
 
     live_binding->submitted_draws = submitted;
     live_binding->shader_pair_count = submitted_pairs.size();

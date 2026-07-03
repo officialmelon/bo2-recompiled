@@ -150,6 +150,8 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   };
 
   Microsoft::WRL::ComPtr<ID3D12Device> device_;
+  Microsoft::WRL::ComPtr<ID3D12InfoQueue> info_queue_;
+  bool debug_layer_enabled_ = false;
   Microsoft::WRL::ComPtr<ID3D12CommandQueue> command_queue_;
   std::array<CommandFrameContext, kLiveCommandFrameCount> command_frames_;
   CommandFrameContext* active_command_frame_ = nullptr;
