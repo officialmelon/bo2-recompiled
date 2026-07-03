@@ -72,6 +72,7 @@ struct CliOptions {
   std::filesystem::path hlsl_compile_cache_path;
   std::filesystem::path hlsl_dxc_compile_cache_path;
   std::filesystem::path translated_hlsl_dxc_compile_cache_path;
+  std::filesystem::path precompile_runtime_d3d12_cache_path;
   std::filesystem::path xenosrecomp_path;
   std::filesystem::path xenosrecomp_header_path =
       "thirdparty/XenosRecomp/XenosRecomp/shader_common.h";
@@ -256,6 +257,9 @@ void PrintHelp() {
             << "                     Compile diagnostic HLSL to DXIL with DXC\n"
             << "  --compile-translated-hlsl-dxc <path>\n"
             << "                     Compile limited translated HLSL to DXIL with DXC\n"
+            << "  --precompile-runtime-shaders-d3d12 <path>\n"
+            << "                     Compile top runtime-used translated shaders from a\n"
+            << "                     capture into a persistent D3D12 cache\n"
             << "  --xenosrecomp <path>\n"
             << "                     XenosRecomp.exe path for container-to-HLSL\n"
             << "  --xenosrecomp-header <path>\n"
@@ -3763,6 +3767,117 @@ bool CompileRuntimeTranslatedHlslWithDxc(
 #endif
 }
 
+bool PrecompileRuntimeTranslatedShadersD3D12(
+    const RuntimeShaderCapture &capture, const std::filesystem::path &cache_root,
+    const std::filesystem::path &requested_dxc_path, std::size_t top_count) {
+  std::cout << "Runtime D3D12 translated shader precompile\n";
+  std::cout << "  capture=" << capture.path.string() << "\n";
+  std::cout << "  cache_root=" << cache_root.string() << "\n";
+  std::cout << "  shader_limit=" << top_count << "\n";
+
+  const std::size_t pair_count =
+      std::min<std::size_t>(top_count, capture.pairs.size());
+  std::cout << "\nTop runtime shader pairs:\n";
+  for (std::size_t i = 0; i < pair_count; ++i) {
+    const RuntimeShaderPairUsage &pair = capture.pairs[i];
+    std::cout << "  pair[" << i << "] VS=" << Hex64(pair.vertex_hash)
+              << " PS=" << Hex64(pair.pixel_hash)
+              << " draws=" << pair.draw_count << "\n";
+  }
+
+  struct PrecompileCounts {
+    uint64_t attempted = 0;
+    uint64_t compiled = 0;
+    uint64_t cache_hits = 0;
+    uint64_t no_payload = 0;
+    uint64_t translator_failed = 0;
+    uint64_t dxc_failed = 0;
+    uint64_t skipped_no_draws = 0;
+  } counts;
+
+  std::cout << "\nRuntime shader compile results:\n";
+  const std::size_t shader_count =
+      std::min<std::size_t>(top_count, capture.shaders.size());
+  for (std::size_t i = 0; i < shader_count; ++i) {
+    const RuntimeShaderUsage &shader = capture.shaders[i];
+    if (shader.draw_count == 0) {
+      ++counts.skipped_no_draws;
+      std::cout << "  " << StageName(shader.stage) << " "
+                << Hex64(shader.hash) << " status=skipped_no_draws"
+                << " loads=" << shader.load_count << "\n";
+      continue;
+    }
+    if (shader.first_payload_dwords.empty() || shader.payload_missing_count) {
+      ++counts.no_payload;
+      std::cout << "  " << StageName(shader.stage) << " "
+                << Hex64(shader.hash) << " status=no_payload"
+                << " draws=" << shader.draw_count
+                << " loads=" << shader.load_count
+                << " missing_payload=" << shader.payload_missing_count
+                << "\n";
+      continue;
+    }
+    if (shader.payload_truncated_count) {
+      ++counts.translator_failed;
+      std::cout << "  " << StageName(shader.stage) << " "
+                << Hex64(shader.hash) << " status=translator_failed"
+                << " reason=payload_truncated"
+                << " draws=" << shader.draw_count
+                << " payload_dwords=" << shader.payload_dwords
+                << " max_payload=" << shader.max_payload_dwords
+                << " truncated=" << shader.payload_truncated_count << "\n";
+      continue;
+    }
+
+    ++counts.attempted;
+    D3D12HlslCompileResult result;
+    bool cache_hit = false;
+    std::string error;
+    if (CompileRuntimeTranslatedHlslWithDxc(capture, shader.hash, cache_root,
+                                            requested_dxc_path, result,
+                                            cache_hit, error)) {
+      if (cache_hit) {
+        ++counts.cache_hits;
+      } else {
+        ++counts.compiled;
+      }
+      std::cout << "  " << StageName(shader.stage) << " "
+                << Hex64(shader.hash)
+                << " status=" << (cache_hit ? "cache_hit" : "compiled")
+                << " draws=" << shader.draw_count
+                << " cache=" << result.shader_path.string() << "\n";
+      continue;
+    }
+
+    const bool translator_error =
+        error.find("no limited translated-HLSL rule") != std::string::npos ||
+        error.find("ReXGlue shader analysis failed") != std::string::npos ||
+        error.find("translator") != std::string::npos;
+    if (translator_error) {
+      ++counts.translator_failed;
+    } else {
+      ++counts.dxc_failed;
+    }
+    std::cout << "  " << StageName(shader.stage) << " " << Hex64(shader.hash)
+              << " status="
+              << (translator_error ? "translator_failed" : "dxc_failed")
+              << " draws=" << shader.draw_count
+              << " error=\"" << JsonEscape(error) << "\"\n";
+  }
+
+  std::cout << "\nRuntime D3D12 translated shader precompile summary:\n";
+  std::cout << "  attempted=" << counts.attempted
+            << " compiled=" << counts.compiled
+            << " cache_hits=" << counts.cache_hits
+            << " no_payload=" << counts.no_payload
+            << " translator_failed=" << counts.translator_failed
+            << " dxc_failed=" << counts.dxc_failed
+            << " skipped_no_draws=" << counts.skipped_no_draws << "\n";
+  std::cout << "  cache_index="
+            << (cache_root / "shader_cache_index.jsonl").string() << "\n";
+  return counts.compiled > 0 || counts.cache_hits > 0;
+}
+
 std::optional<PayloadPrefixMatch> FindPayloadPrefixMatch(
     const std::vector<uint32_t> &secondary_dwords,
     const std::vector<uint32_t> &payload_dwords) {
@@ -4812,6 +4927,12 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.translated_hlsl_dxc_compile_cache_path = value;
+    } else if (arg == "--precompile-runtime-shaders-d3d12") {
+      const char *value = require_value("--precompile-runtime-shaders-d3d12");
+      if (!value) {
+        return 2;
+      }
+      cli.precompile_runtime_d3d12_cache_path = value;
     } else if (arg == "--xenosrecomp") {
       const char *value = require_value("--xenosrecomp");
       if (!value) {
@@ -4872,6 +4993,7 @@ int main(int argc, char **argv) {
       !cli.hlsl_compile_cache_path.empty() ||
       !cli.hlsl_dxc_compile_cache_path.empty() ||
       !cli.translated_hlsl_dxc_compile_cache_path.empty() ||
+      !cli.precompile_runtime_d3d12_cache_path.empty() ||
       !cli.xenosrecomp_hlsl_output_path.empty();
   if (!cli.show_summary && !cli.find_hash && !cli.list_runtime_shaders &&
       !cli.match_runtime_shaders && !cli.semantic_disassemble &&
@@ -4950,6 +5072,12 @@ int main(int argc, char **argv) {
       (cli.capture_path.empty() || cli.hash.empty())) {
     std::cerr << "--compile-translated-hlsl-dxc requires --capture "
                  "<events.jsonl> and --hash <runtime_shader_hash>\n";
+    return 2;
+  }
+  if (!cli.precompile_runtime_d3d12_cache_path.empty() &&
+      cli.capture_path.empty()) {
+    std::cerr << "--precompile-runtime-shaders-d3d12 requires --capture "
+                 "<events.jsonl>\n";
     return 2;
   }
   if (!cli.xenosrecomp_hlsl_output_path.empty()) {
@@ -5084,7 +5212,8 @@ int main(int argc, char **argv) {
                              !cli.hlsl_compile_cache_path.empty() ||
                              !cli.hlsl_dxc_compile_cache_path.empty() ||
                              !cli.translated_hlsl_dxc_compile_cache_path
-                                  .empty();
+                                  .empty() ||
+                             !cli.precompile_runtime_d3d12_cache_path.empty();
   if (!needs_index && !needs_capture && !needs_xenosrecomp) {
     return 0;
   }
@@ -5147,6 +5276,20 @@ int main(int argc, char **argv) {
               << "xenosrecomp_hlsl="
               << cli.xenosrecomp_hlsl_output_path.string() << "\n"
               << "xenosrecomp_log=" << log_path.string() << "\n";
+    printed_anything = true;
+  }
+
+  if (!cli.precompile_runtime_d3d12_cache_path.empty()) {
+    if (printed_anything) {
+      std::cout << "\n";
+    }
+    if (!PrecompileRuntimeTranslatedShadersD3D12(
+            runtime_capture, cli.precompile_runtime_d3d12_cache_path,
+            cli.dxc_path, cli.top_shaders)) {
+      std::cerr << "no runtime shaders were compiled or found in translated "
+                   "D3D12 cache\n";
+      return 1;
+    }
     printed_anything = true;
   }
 

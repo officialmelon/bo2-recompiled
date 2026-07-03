@@ -1,6 +1,6 @@
 # Native Renderer Shader Cache
 
-Last updated: 2026-06-29
+Last updated: 2026-07-03
 
 ## Implemented
 
@@ -14,15 +14,17 @@ A first manual D3D12 override pair exists for the draw `1209` runtime shader has
 
 The D3D12 replay backend now resolves shaders in this order:
 
-1. `shader_work\cache\shader_cache_index.json` runtime-hash cache hit.
-2. `shader_work\cache\shader_cache_index.jsonl` runtime-hash cache hit.
-3. Parsed `shader_work\native_overrides\overrides.json`.
-4. Deterministic runtime-hash filenames under `shader_work\native_overrides\d3d12`.
-5. Explicit diagnostic shader only when `--allow-diagnostic-shader` is supplied.
-6. Fail closed.
+1. Non-manual `shader_work\cache\shader_cache_index.json` runtime-hash cache hit.
+2. Non-manual `shader_work\cache\shader_cache_index.jsonl` runtime-hash cache hit.
+3. Non-manual deterministic translated cache filenames under `shader_work\cache\d3d12`.
+4. Parsed `shader_work\native_overrides\overrides.json`.
+5. Deterministic runtime-hash filenames under `shader_work\native_overrides\d3d12`.
+6. Explicit diagnostic shader only when `--allow-diagnostic-shader` is supplied.
+7. Fail closed.
 
 Real replay ignores cache entries marked `"diagnostic": true`; JSONL cache entries may point at either `.dxbc` or `.dxil` blobs.
 JSONL cache entries may also include a `source` HLSL path and `entry`; if the cache blob is missing, the D3D12 replay backend can compile that source into the requested cache path.
+Real replay now deliberately skips cache records whose cache key starts with `manual_` when it is looking for automatic translated cache hits. Manual shaders remain available only through the explicit override fallback path.
 
 The manual D3D12 replay override cache still stores D3DCompile output (`.dxbc`). A separate generated diagnostic DXC path now stores `.dxil`; real translated-shader DXC/DXIL is still required for the final shader pipeline.
 
@@ -68,7 +70,59 @@ native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\eve
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --compile-hlsl-dxc shader_work\cache
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --write-translated-hlsl shader_work\cache\hlsl
 native_shader_inspect.exe --capture native_captures\shader_probe_capture_007\events.jsonl --hash <runtime_shader_hash> --compile-translated-hlsl-dxc shader_work\cache
+native_shader_inspect.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --precompile-runtime-shaders-d3d12 shader_work\cache --top-shaders 50
 ```
+
+## Runtime D3D12 Precompile Checkpoint
+
+Evidence date: 2026-07-03
+
+`native_shader_inspect.exe --precompile-runtime-shaders-d3d12 <cache_root>` now precompiles the top runtime-used captured shaders into the persistent D3D12 shader cache. The command ranks captured shader pairs by draw count, skips draw-unused shaders, skips incomplete PM4 payloads, and reports each shader as `compiled`, `cache_hit`, `translator_failed`, `dxc_failed`, or `no_payload`.
+
+Validation command:
+
+```powershell
+C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\native_shader_inspect.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --precompile-runtime-shaders-d3d12 shader_work\cache --top-shaders 50
+```
+
+Verified result:
+
+- `attempted=16`
+- `compiled=1`
+- `cache_hits=7`
+- `no_payload=0`
+- `translator_failed=9`
+- `dxc_failed=0`
+- cache index: `shader_work\cache\shader_cache_index.jsonl`
+
+Important successful runtime shaders:
+
+| Stage | Runtime hash | Result |
+|---|---|---|
+| PS | `0xA4A965C189287B99` | cache hit |
+| VS | `0xB6C9863F710683EC` | cache hit |
+| PS | `0xEDC17DCC3FFDB040` | cache hit |
+| VS | `0x3C4F6D40D699817B` | cache hit |
+| VS | `0x1E6883FCCDE1F688` | cache hit |
+| VS | `0xAB1E86137A0240E8` | cache hit |
+| PS | `0x3A6876055FEC1674` | cache hit |
+| VS | `0x5B9B7484417FB9B6` | compiled |
+
+Top remaining translator failures from this capture:
+
+| Stage | Runtime hash | Draws | Current blocker |
+|---|---:|---:|---|
+| PS | `0xFF01D28E1EF3A880` | 197 | no limited translated-HLSL rule for `tfetch2D`, `mul oC0`, and alpha/color path |
+| VS | `0xCBC9604F48930B36` | 169 | no rule for multi-fetch vertex shader with `vfetch_full` plus multiple `vfetch_mini` ops |
+| VS | `0x261BDD733FEC1F64` | 154 | same multi-fetch vertex shader class as above |
+| PS | `0x7D1EF030F5710BDA` | 88 | no rule for `mul`, `addsc`, `frc`, `frcs`, `cndge` ALU path |
+| PS | `0x8645E8BA65E424B2` | 44 | no rule for larger multi-texture/ALU shader |
+| PS | `0x79E1F538A5074A65` | 37 | captured PM4 payload is truncated at `512` dwords; needs uncapped payload capture before translation |
+| VS | `0xDDED7E538422AE73` | 25 | no-raster/no-fetch utility shader; currently classified outside scene rendering |
+| VS | `0xEF95534343684F5B` | 9 | no limited translated-HLSL rule yet |
+| PS | `0xDC168FB6031AFC41` | 9 | no limited translated-HLSL rule yet |
+
+The truncated-payload skip is intentional: running ReXGlue's analyzer on incomplete shader PM4 payloads can assert. The correct fix for `PS 0x79E1F538A5074A65` is capture completeness, not a guessed shader replacement.
 
 Verified summary:
 

@@ -185,6 +185,9 @@ bool FindCacheShaderPath(const std::filesystem::path& root,
           !StageMatches(record.stage, short_stage, long_stage)) {
         continue;
       }
+      if (record.cache_key.rfind("manual_", 0) == 0) {
+        continue;
+      }
       const std::string format = LowerAscii(record.format);
       if (!format.empty() && format != "dxbc" && format != "dxil") {
         continue;
@@ -218,6 +221,10 @@ bool FindCacheShaderPath(const std::filesystem::path& root,
       }
       const std::string filename = entry.path().filename().string();
       if (filename.rfind(stage_prefix, 0) != 0) {
+        continue;
+      }
+      if (filename.find(".manual_") != std::string::npos ||
+          filename.rfind("manual_", 0) == 0) {
         continue;
       }
       if (filename.ends_with(".d3dcompile.dxbc") ||
@@ -272,6 +279,36 @@ bool ResolveD3D12ShaderStage(const replay::ReplayCliOptions& options,
   stage.entry = std::string(short_stage[0] == 'v' ? "VSMain" : "PSMain");
   stage.profile = std::string(short_stage) + "_5_0";
 
+  std::string cache_error;
+  if (FindCacheShaderPath(options.shader_cache_root, short_stage, long_stage,
+                          hash, stage, cache_error)) {
+    if (!stage.cache_key.empty()) {
+      stage.log_path =
+          options.shader_cache_root / "logs" / (stage.cache_key + ".log");
+    }
+    if (stage.path.empty()) {
+      stage.path = stage.cache_path;
+    } else {
+      std::error_code ec;
+      if (std::filesystem::is_regular_file(stage.path, ec) && !ec &&
+          !ReadTextFile(stage.path, stage.source, error)) {
+        return false;
+      }
+      if (!stage.source.empty() && stage.cache_path.extension() == ".dxil") {
+        stage.profile = std::string(short_stage) + "_5_0";
+        stage.cache_path = options.shader_cache_root / "d3d12" /
+                           (stage.cache_key + ".d3dcompile.dxbc");
+        stage.log_path = options.shader_cache_root / "logs" /
+                         (stage.cache_key + ".d3dcompile.log");
+      }
+    }
+    return true;
+  }
+  if (!cache_error.empty()) {
+    error = cache_error;
+    return false;
+  }
+
   std::string manifest_error;
   std::filesystem::path override_path;
   if (!FindManifestOverridePath(options.shader_override_root, short_stage,
@@ -299,47 +336,6 @@ bool ResolveD3D12ShaderStage(const replay::ReplayCliOptions& options,
         options.shader_cache_root / "logs" / (stage.cache_key + ".log");
     stage.manual_override = true;
     return true;
-  }
-
-  std::string cache_error;
-  if (FindCacheShaderPath(options.shader_cache_root, short_stage, long_stage,
-                          hash, stage, cache_error)) {
-    if (!stage.cache_key.empty()) {
-      stage.log_path =
-          options.shader_cache_root / "logs" / (stage.cache_key + ".log");
-    }
-    if (stage.path.empty()) {
-      stage.path = stage.cache_path;
-    } else {
-      std::error_code ec;
-      if (std::filesystem::is_regular_file(stage.path, ec) && !ec &&
-          !ReadTextFile(stage.path, stage.source, error)) {
-        return false;
-      }
-      if (!stage.source.empty() && stage.cache_key.rfind("manual_", 0) == 0) {
-        const std::string source_cache_key = MakeOverrideCacheKey(
-            short_stage, hash, stage.profile, stage.source);
-        if (source_cache_key != stage.cache_key) {
-          stage.cache_key = source_cache_key;
-          stage.cache_path = options.shader_cache_root / "d3d12" /
-                             (stage.cache_key + ".dxbc");
-          stage.log_path = options.shader_cache_root / "logs" /
-                           (stage.cache_key + ".log");
-        }
-      }
-      if (!stage.source.empty() && stage.cache_path.extension() == ".dxil") {
-        stage.profile = std::string(short_stage) + "_5_0";
-        stage.cache_path = options.shader_cache_root / "d3d12" /
-                           (stage.cache_key + ".d3dcompile.dxbc");
-        stage.log_path = options.shader_cache_root / "logs" /
-                         (stage.cache_key + ".d3dcompile.log");
-      }
-    }
-    return true;
-  }
-  if (!cache_error.empty()) {
-    error = cache_error;
-    return false;
   }
 
   error = "no translated, cached, or override shader is available for " +

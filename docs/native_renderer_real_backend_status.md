@@ -1,10 +1,46 @@
 # Native Renderer Real Backend Status
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 ## Status
 
 Real native rendering is not complete.
+
+## 2026-07-03 translated-cache-first shader checkpoint
+
+The D3D12 replay shader resolver now prefers automatic non-manual translated
+cache records before falling back to manual shader overrides. Manual HLSL is
+still supported as a fallback, but it is no longer the first path when a
+runtime hash has a generated translated cache entry.
+
+Validation:
+
+- Built `native_shader_inspect.exe`, exit `0`.
+- Ran runtime D3D12 translated precompile on
+  `native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl`.
+  Result: `attempted=16`, `compiled=1`, `cache_hits=7`,
+  `translator_failed=9`, `dxc_failed=0`.
+- Built `native_render_replay.exe`, exit `0`.
+- Replay validation on the same capture passed:
+  `Validation OK: 18000 events, 55 frames, 3436 draws`.
+- Real-backend gap report on the same capture found `836` ready draws:
+  `639` scene-candidate, `151` depth-only zero-color, and `46` utility.
+  The report had no top blockers for the ready set; `2600` utility/no-raster
+  draws were intentionally ignored.
+- Real D3D12 replay submitted `836` supported draws across `9` shader pairs
+  with `diagnostic_pipelines=0`.
+- The replay bound `1017` captured texture SRVs and `1017` captured sampler
+  descriptors, with `5671` fallback texture SRVs and `3599` fallback sampler
+  descriptors still needed by the fixed layout/root-signature coverage.
+- Output was written to
+  `C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\native-renderer-d3d12-replay.bmp`.
+
+This proves the automatic shader cache can be used ahead of manual overrides
+without regressing the current MP080 D3D12 replay. It does not prove final
+native rendering. The visible remaining work is still shader lowering for the
+unsupported runtime shader classes, uncapped capture for truncated shader
+payloads, and reducing fallback texture/sampler binding by translating the real
+per-shader resource interface.
 
 ## 2026-07-02 shader pipeline boundary checkpoint
 

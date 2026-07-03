@@ -1,6 +1,6 @@
 # Native Renderer Shader Notes
 
-Evidence date: 2026-06-29
+Evidence date: 2026-07-03
 
 ## Existing shader work
 
@@ -258,6 +258,42 @@ Current limitation:
   payload SHA-256, trimmed little-endian payload SHA-256, or trimmed big-endian
   payload SHA-256. Example top runtime shader:
   `PS 0xA4A965C189287B99`, `draws=797`, `payload_sha256_le=f73f655ea80c22bde4bc93575f87664e81056b6f4714bef3a4defaa18994d18a`.
+
+## Runtime Shader Hash Checkpoint
+
+Evidence date: 2026-07-03
+
+The runtime shader hash is now proven for complete captured payloads: it is the
+`XXH3_64` hash of the big-endian captured PM4 shader payload. This matches the
+ReXGlue command-processor trace identity space, not the static extractor's
+SHA-256 container or microcode index space.
+
+Validation command:
+
+```powershell
+C:\Users\braxt\bo2-recompiled\default\out\build\win-amd64-clangmsvc-debug\native_shader_inspect.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --match-runtime-shaders --top-shaders 20
+```
+
+Verified result:
+
+- Unique runtime shaders: `17`
+- Runtime shader pairs: `14`
+- Direct static index matches: `0/17`
+- Payload `XXH3_64` self matches: `16/17`
+- Shader record probe runtime payload-prefix matches: `20/20`
+- The only non-self-match in this capture is the truncated shader payload class.
+
+Example mapped shader-record probes:
+
+| Stage | Runtime hash | Source | Offset | Matched dwords | Draws | Loads |
+|---|---|---|---:|---:|---:|---:|
+| VS | `0xB6C9863F710683EC` | write | `6` | `24` | `2523` | `108` |
+| VS | `0xDDED7E538422AE73` | write | `10` | `15` | `25` | `25` |
+
+This means runtime shader identity is no longer the main blocker for complete
+shader replacement. The current blocker is translating enough decoded Xenos
+semantic operations, plus capturing full payloads for shaders that exceed the
+current PM4 snapshot cap.
 - The next renderer step is to recover the material/pass shader-record mapping
   or the missing PM4 payload-to-container transform, then let D3D12 shader
   resolution prefer XenosRecomp-generated HLSL/DXIL over manual overrides.
