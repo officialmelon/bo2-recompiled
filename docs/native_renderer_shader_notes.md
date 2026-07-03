@@ -793,6 +793,24 @@ That slice dumps the exact 15 runtime dwords for `0xEDC17DCC3FFDB040` and ReXGlu
 
 The emitted semantic IR records `source_byte_offset=134` and confirms the static subrange is analyzer-readable. This is the first verified path from a live runtime hash back to a non-whole-file static microcode subrange.
 
+The two MP080 pixel shaders with static/runtime byte evidence now also compile through the translated-HLSL DXC path:
+
+```powershell
+native_shader_inspect.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --hash 0xEDC17DCC3FFDB040 --compile-translated-hlsl-dxc shader_work\cache
+native_shader_inspect.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --hash 0x3A6876055FEC1674 --compile-translated-hlsl-dxc shader_work\cache
+```
+
+Verified generated outputs:
+
+- `shader_work\cache\hlsl\PS_0xEDC17DCC3FFDB040.translated.v8.dxc.hlsl`
+- `shader_work\cache\d3d12\PS_0xEDC17DCC3FFDB040.translated.v8.dxc.dxil`
+- `shader_work\cache\logs\PS_0xEDC17DCC3FFDB040.translated.v8.dxc.dxc.log`, `status=ok`, `target=ps_6_0`
+- `shader_work\cache\hlsl\PS_0x3A6876055FEC1674.translated.v8.dxc.hlsl`
+- `shader_work\cache\d3d12\PS_0x3A6876055FEC1674.translated.v8.dxc.dxil`
+- `shader_work\cache\logs\PS_0x3A6876055FEC1674.translated.v8.dxc.dxc.log`, `status=ok`, `target=ps_6_0`
+
+The paired `VS 0xDDED7E538422AE73` remains deliberately unsupported for D3D12 scene rendering. Its runtime semantic IR writes only `oPos` via `sqrt oPos, -r_abs[0].x`, has no vertex/fetch/constants, and no interpolator exports. This is the no-fetch point class that still needs real Xenos register initialization semantics; a synthetic vertexless substitute would not count as real BO2 shader translation.
+
 MP003 `PS=0x79E1F538A5074A65` is now covered by a manual D3D12 override only
 after draw-state inspection. The representative draw has no texture fetches,
 real vf95 quad data, and alpha `0.101961`; the runtime shader payload is
