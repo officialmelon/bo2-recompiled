@@ -39,6 +39,21 @@ manual HLSL overrides for the currently covered runtime shader classes and
 keeps the D3D12 replay path working while the remaining real shader lowering
 work continues.
 
+MP028 second-capture proof:
+
+- Replay validation on
+  `native_captures\live_d3d12_mp_028\events.jsonl` passed:
+  `Validation OK: 5000 events, 20 frames, 1022 draws`.
+- Isolated-cache runtime precompile on MP028 compiled `6` shaders from shared
+  translated HLSL with `source_shared=6`, `source_fallback=0`, and
+  `dxc_failed=0`.
+- Real-backend gap report found `165` ready draws:
+  `107` scene-candidate, `46` depth-only zero-color, and `12` utility.
+- D3D12 real replay submitted `165` supported draws across `8` shader pairs
+  with `diagnostic_pipelines=0`.
+- Output was written to
+  `C:\Users\braxt\bo2-recompiled\native_captures\live_d3d12_mp_028\native-renderer-d3d12-replay.bmp`.
+
 ## 2026-07-03 translated-cache-first shader checkpoint
 
 The D3D12 replay shader resolver now prefers automatic non-manual translated

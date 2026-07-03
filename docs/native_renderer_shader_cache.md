@@ -191,6 +191,33 @@ The only shared-translator miss remains `VS 0xDDED7E538422AE73`, which is still
 handled as no-raster/no-fetch utility work by the D3D12 gap classifier rather
 than as visible scene geometry.
 
+MP028 validation:
+
+```powershell
+native_render_replay.exe --capture native_captures\live_d3d12_mp_028\events.jsonl --validate --no-summary
+native_shader_inspect.exe --capture native_captures\live_d3d12_mp_028\events.jsonl --precompile-runtime-shaders-d3d12 native_captures\tmp_mp028_precompile_cache --top-shaders 20
+native_render_replay.exe --capture native_captures\live_d3d12_mp_028\events.jsonl --backend d3d12 --skip-unsupported --d3d12-draws 1200 --no-summary
+```
+
+Results:
+
+- Replay validation passed:
+  `Validation OK: 5000 events, 20 frames, 1022 draws`.
+- Isolated-cache precompile reported `attempted=13`, `compiled=6`,
+  `cache_hits=0`, `translator_failed=8`, `dxc_failed=0`,
+  `source_shared=6`, `source_fallback=0`, `source_unknown=0`.
+- Shared automatic compiler coverage on MP028 includes:
+  `PS 0xA4A965C189287B99`, `VS 0xB6C9863F710683EC`,
+  `PS 0xEDC17DCC3FFDB040`, `VS 0x1E6883FCCDE1F688`,
+  `VS 0x3C4F6D40D699817B`, and `VS 0xAB1E86137A0240E8`.
+- Remaining MP028 translator misses are:
+  `VS 0xCBC9604F48930B36`, `PS 0xFF01D28E1EF3A880`,
+  `VS 0x261BDD733FEC1F64`, `PS 0x7D1EF030F5710BDA`,
+  `PS 0x8645E8BA65E424B2`, `VS 0xEF95534343684F5B`,
+  `PS 0xDC168FB6031AFC41`, and truncated `PS 0x79E1F538A5074A65`.
+- D3D12 real replay submitted `165` supported draws across `8` shader pairs
+  with `diagnostic_pipelines=0`.
+
 Verified summary:
 
 - Zones: `142`
