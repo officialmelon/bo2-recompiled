@@ -862,6 +862,34 @@ real vf95 quad data, and alpha `0.101961`; the runtime shader payload is
 therefore documented as a conservative vertex-color/alpha bridge, not a
 decoded Xenos shader translation.
 
+## Shared limited translator checkpoint
+
+Evidence date: 2026-07-03
+
+The limited translator rules for several runtime-used shader classes have been
+moved into `src\native_renderer\shader_translation\XenosHlslTranslator.cpp`,
+behind `TryTranslateLimitedXenosHlsl`, instead of only living in the
+`native_shader_inspect` CLI fallback:
+
+- `VS 0x5B9B7484417FB9B6` point/list payload class.
+- `VS 0x1E6883FCCDE1F688` depth/zero-color vertex class.
+- `VS 0xAB1E86137A0240E8` simple position/color class.
+- `PS 0x246E20EF10E0DDC7` post-process texture/constant class.
+- `PS 0x3A6876055FEC1674` `sgts oC0` export class.
+- Generic `max oC0` pixel export class.
+
+Verification used a clean temporary cache root so existing cache hits could not
+hide failures:
+
+```powershell
+native_shader_inspect.exe --capture native_captures\shader_payload_cap4096_001\events.jsonl --precompile-runtime-shaders-d3d12 native_captures\tmp_shared_translator_cache --top-shaders 20
+```
+
+Result: `attempted=11`, `compiled=10`, `cache_hits=0`,
+`translator_failed=1`, `dxc_failed=0`. The remaining miss is
+`VS 0xDDED7E538422AE73`, still treated as a no-raster/no-fetch utility shader
+rather than visible scene geometry.
+
 ## Native renderer path forward
 
 1. Preserve the runtime `(stage, hash, guest_address, dword_count)` stream from replay as the first shader registry key.

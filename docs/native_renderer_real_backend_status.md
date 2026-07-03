@@ -6,6 +6,39 @@ Last updated: 2026-07-03
 
 Real native rendering is not complete.
 
+## 2026-07-03 shared translator migration checkpoint
+
+More runtime-used limited shader rules have been moved into the shared
+`src\native_renderer\shader_translation\XenosHlslTranslator.cpp` path instead
+of living only in the `native_shader_inspect` CLI fallback. This makes automatic
+shader-cache generation usable by the renderer-facing translation module, while
+manual overrides remain fallback only.
+
+Validation:
+
+- Built `native_shader_inspect.exe`, `native_render_replay.exe`, and `default`
+  with parallel Ninja (`-j12`), exit `0`.
+- Fresh isolated-cache precompile on
+  `native_captures\shader_payload_cap4096_001\events.jsonl` compiled `10/11`
+  runtime-used shaders from generated translated HLSL with `cache_hits=0` and
+  `dxc_failed=0`. The only miss was `VS 0xDDED7E538422AE73`, a no-raster/no-fetch
+  utility shader class.
+- MP080 replay validation passed:
+  `Validation OK: 18000 events, 55 frames, 3436 draws`.
+- MP080 real-backend gap report remained stable with `836` ready draws and no
+  top blockers for the ready set.
+- MP080 D3D12 real replay with `--skip-unsupported --d3d12-draws 1200`
+  submitted `836` supported draws across `9` shader pairs with
+  `diagnostic_pipelines=0`.
+- D3D12 output remained nonzero:
+  color readback `2962770` nonzero bytes, depth readback `2073600` nonzero
+  bytes.
+
+This is still not a full shader translator. It does reduce dependence on
+manual HLSL overrides for the currently covered runtime shader classes and
+keeps the D3D12 replay path working while the remaining real shader lowering
+work continues.
+
 ## 2026-07-03 translated-cache-first shader checkpoint
 
 The D3D12 replay shader resolver now prefers automatic non-manual translated

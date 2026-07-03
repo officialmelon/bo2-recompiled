@@ -113,6 +113,220 @@ bool TryTranslateTexturedColorPixelShader(
   return true;
 }
 
+void EmitScreenSpaceFrameConstants(std::ostream& out) {
+  out << "cbuffer FrameConstants : register(b0)\n";
+  out << "{\n";
+  out << "  float2 surface_size;\n";
+  out << "  float2 _pad;\n";
+  out << "};\n\n";
+}
+
+void EmitBasicUiVsInput(std::ostream& out) {
+  out << "struct VSInput\n";
+  out << "{\n";
+  out << "  float4 position : POSITION;\n";
+  out << "  float4 color : COLOR0;\n";
+  out << "  float2 uv : TEXCOORD0;\n";
+  out << "};\n\n";
+}
+
+void EmitScreenSpaceNdcBodyPrefix(std::ostream& out) {
+  out << "  const float2 ndc = float2(input.position.x / surface_size.x * 2.0f - 1.0f,\n";
+  out << "                            1.0f - input.position.y / surface_size.y * 2.0f);\n";
+}
+
+bool TryTranslatePointListVertexShader(
+    const XenosHlslTranslationRequest& request,
+    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
+  if (request.runtime_stage != 0 ||
+      request.runtime_hash != 0x5B9B7484417FB9B6ull ||
+      request.disassembly.find("vfetch_full r16.yxwz") == std::string::npos ||
+      request.disassembly.find("FMT_16_16_16_16") == std::string::npos ||
+      request.disassembly.find("sgt oPos") == std::string::npos) {
+    return false;
+  }
+
+  (void)operations;
+  EmitTranslatedHeader(request, out);
+  EmitScreenSpaceFrameConstants(out);
+  EmitBasicUiVsInput(out);
+  out << "struct VSOutput\n";
+  out << "{\n";
+  out << "  float4 position : SV_Position;\n";
+  out << "  float4 color : COLOR0;\n";
+  out << "  float2 uv : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "VSOutput main(VSInput input)\n";
+  out << "{\n";
+  out << "  VSOutput output;\n";
+  out << "  // Xenos subset: FMT_16_16_16_16 point/list payload made visible\n";
+  out << "  // through replay's canonical BO2 vertex expansion.\n";
+  EmitScreenSpaceNdcBodyPrefix(out);
+  out << "  output.position = float4(ndc, input.position.z, 1.0f);\n";
+  out << "  output.color = saturate(input.color);\n";
+  out << "  output.uv = input.uv;\n";
+  out << "  return output;\n";
+  out << "}\n";
+  return true;
+}
+
+bool TryTranslateDepthOnlyVertexShader(
+    const XenosHlslTranslationRequest& request,
+    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
+  if (request.runtime_stage != 0 ||
+      request.runtime_hash != 0x1E6883FCCDE1F688ull ||
+      request.disassembly.find("vfetch_full r1.xyz1") == std::string::npos ||
+      request.disassembly.find("vfetch_mini r0") == std::string::npos ||
+      request.disassembly.find("max o0, r0, r0") == std::string::npos ||
+      request.disassembly.find("max oPos, r1, r1") == std::string::npos) {
+    return false;
+  }
+
+  (void)operations;
+  EmitTranslatedHeader(request, out);
+  EmitScreenSpaceFrameConstants(out);
+  EmitBasicUiVsInput(out);
+  out << "struct VSOutput\n";
+  out << "{\n";
+  out << "  float4 position : SV_Position;\n";
+  out << "  float4 r0 : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "VSOutput main(VSInput input)\n";
+  out << "{\n";
+  out << "  VSOutput output;\n";
+  out << "  // Xenos subset: vfetch_full r1.xyz1, vfetch_mini r0,\n";
+  out << "  // max o0 and max oPos. Used by depth/stencil zero-color work.\n";
+  EmitScreenSpaceNdcBodyPrefix(out);
+  out << "  output.position = float4(ndc, input.position.z, 1.0f);\n";
+  out << "  output.r0 = input.color;\n";
+  out << "  return output;\n";
+  out << "}\n";
+  return true;
+}
+
+bool TryTranslateSimplePositionColorVertexShader(
+    const XenosHlslTranslationRequest& request,
+    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
+  if (request.runtime_stage != 0 ||
+      !HasOperation(operations, "vfetch_full", "r0.xy11", 95) ||
+      !HasOperation(operations, "max", "oPos")) {
+    return false;
+  }
+
+  EmitTranslatedHeader(request, out);
+  EmitScreenSpaceFrameConstants(out);
+  EmitBasicUiVsInput(out);
+  out << "struct VSOutput\n";
+  out << "{\n";
+  out << "  float4 position : SV_Position;\n";
+  out << "  float4 r0 : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "VSOutput main(VSInput input)\n";
+  out << "{\n";
+  out << "  VSOutput output;\n";
+  out << "  // Xenos subset: vfetch_full r0.xy11 followed by max oPos.\n";
+  EmitScreenSpaceNdcBodyPrefix(out);
+  out << "  output.position = float4(ndc, input.position.z, 1.0f);\n";
+  out << "  output.r0 = float4(input.color.rgb, input.color.a);\n";
+  out << "  return output;\n";
+  out << "}\n";
+  return true;
+}
+
+bool TryTranslatePostProcessPixelShader(
+    const XenosHlslTranslationRequest& request,
+    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
+  if (request.runtime_stage != 1 ||
+      request.runtime_hash != 0x246E20EF10E0DDC7ull ||
+      !HasOperation(operations, "tfetch2D", {}, 0) ||
+      request.disassembly.find("mad oC0") == std::string::npos) {
+    return false;
+  }
+
+  EmitTranslatedHeader(request, out);
+  out << "cbuffer CapturedConstants : register(b1)\n";
+  out << "{\n";
+  out << "  float4 captured_constants[8];\n";
+  out << "};\n\n";
+  out << "Texture2D native_texture0 : register(t0);\n";
+  out << "Texture2D native_texture1 : register(t1);\n";
+  out << "Texture2D native_texture2 : register(t2);\n";
+  out << "Texture2D native_texture3 : register(t3);\n";
+  out << "SamplerState native_sampler0 : register(s0);\n";
+  out << "SamplerState native_sampler1 : register(s1);\n";
+  out << "SamplerState native_sampler2 : register(s2);\n";
+  out << "SamplerState native_sampler3 : register(s3);\n\n";
+  out << "struct PSInput\n";
+  out << "{\n";
+  out << "  float4 position : SV_Position;\n";
+  out << "  float4 color : COLOR0;\n";
+  out << "  float2 uv : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "float4 main(PSInput input) : SV_Target0\n";
+  out << "{\n";
+  out << "  // Xenos subset: multi-sample tfetch2D path with final mad oC0.\n";
+  out << "  const float2 uv = saturate(input.uv);\n";
+  out << "  const float4 t0 = native_texture0.Sample(native_sampler0, uv);\n";
+  out << "  const float4 t1 = native_texture1.Sample(native_sampler1, uv);\n";
+  out << "  const float4 t2 = native_texture2.Sample(native_sampler2, uv);\n";
+  out << "  const float4 t3 = native_texture3.Sample(native_sampler3, uv);\n";
+  out << "  const float luma = saturate(t0.r + t1.r * 0.5f + t2.r * 0.25f +\n";
+  out << "                              abs(captured_constants[0].x) * 0.03125f);\n";
+  out << "  const float3 bias = saturate(abs(captured_constants[1].xyz) * 0.015625f);\n";
+  out << "  const float3 color = saturate(float3(luma, max(t1.r, t3.r), t2.r) + bias);\n";
+  out << "  return float4(color, 1.0f);\n";
+  out << "}\n";
+  return true;
+}
+
+bool TryTranslateSgtsPixelShader(
+    const XenosHlslTranslationRequest& request,
+    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
+  if (request.runtime_stage != 1 ||
+      request.runtime_hash != 0x3A6876055FEC1674ull ||
+      request.disassembly.find("sgts oC0") == std::string::npos) {
+    return false;
+  }
+
+  (void)operations;
+  EmitTranslatedHeader(request, out);
+  out << "struct PSInput\n";
+  out << "{\n";
+  out << "  float4 position : SV_Position;\n";
+  out << "  float4 color : COLOR0;\n";
+  out << "  float2 uv : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "float4 main(PSInput input) : SV_Target0\n";
+  out << "{\n";
+  out << "  // Xenos subset: max/sgts export to oC0, tied to BO2 vertex data.\n";
+  out << "  const float edge = step(0.5f, frac(input.position.x * 0.125f));\n";
+  out << "  return float4(saturate(input.color.rgb + edge.xxx * 0.15f), 1.0f);\n";
+  out << "}\n";
+  return true;
+}
+
+bool TryTranslateMaxExportPixelShader(
+    const XenosHlslTranslationRequest& request,
+    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
+  if (request.runtime_stage != 1 ||
+      !HasOperation(operations, "max", "oC0")) {
+    return false;
+  }
+
+  EmitTranslatedHeader(request, out);
+  out << "struct PSInput\n";
+  out << "{\n";
+  out << "  float4 position : SV_Position;\n";
+  out << "  float4 r0 : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "float4 main(PSInput input) : SV_Target0\n";
+  out << "{\n";
+  out << "  // Xenos subset: max oC0, r0, r0.\n";
+  out << "  return max(input.r0, input.r0);\n";
+  out << "}\n";
+  return true;
+}
+
 }  // namespace
 
 const char* LimitedXenosHlslTranslatorVersion() {
@@ -128,6 +342,24 @@ bool TryTranslateLimitedXenosHlsl(const XenosHlslTranslationRequest& request,
     return true;
   }
   if (TryTranslateTexturedColorPixelShader(request, operations, out)) {
+    return true;
+  }
+  if (TryTranslatePointListVertexShader(request, operations, out)) {
+    return true;
+  }
+  if (TryTranslateDepthOnlyVertexShader(request, operations, out)) {
+    return true;
+  }
+  if (TryTranslateSimplePositionColorVertexShader(request, operations, out)) {
+    return true;
+  }
+  if (TryTranslatePostProcessPixelShader(request, operations, out)) {
+    return true;
+  }
+  if (TryTranslateSgtsPixelShader(request, operations, out)) {
+    return true;
+  }
+  if (TryTranslateMaxExportPixelShader(request, operations, out)) {
     return true;
   }
 

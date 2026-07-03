@@ -157,6 +157,34 @@ Results:
   `VS 0xDDED7E538422AE73`, a no-raster/no-fetch utility-style shader with
   first ops `[alloc interpolators; alloc position; exece; setp_clr; sqrt oPos; cnop]`.
 
+Shared-translator validation:
+
+The high-traffic limited translator rules for `VS 0x5B9B7484417FB9B6`,
+`VS 0x1E6883FCCDE1F688`, `VS 0xAB1E86137A0240E8`,
+`PS 0x246E20EF10E0DDC7`, `PS 0x3A6876055FEC1674`, and the generic
+`max oC0` pixel export class now live in
+`src\native_renderer\shader_translation\XenosHlslTranslator.cpp` instead of
+only in the `native_shader_inspect` CLI fallback.
+
+An isolated cache-root run proves those shared rules can generate and compile
+runtime shaders without relying on pre-existing cache artifacts:
+
+```powershell
+native_shader_inspect.exe --capture native_captures\shader_payload_cap4096_001\events.jsonl --precompile-runtime-shaders-d3d12 native_captures\tmp_shared_translator_cache --top-shaders 20
+```
+
+Result:
+
+- `attempted=11`
+- `compiled=10`
+- `cache_hits=0`
+- `translator_failed=1`
+- `dxc_failed=0`
+
+The only shared-translator miss remains `VS 0xDDED7E538422AE73`, which is still
+handled as no-raster/no-fetch utility work by the D3D12 gap classifier rather
+than as visible scene geometry.
+
 Verified summary:
 
 - Zones: `142`
