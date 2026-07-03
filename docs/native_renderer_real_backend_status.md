@@ -41,6 +41,17 @@ claim that live native D3D12 is finished. The remaining visible scene quality
 problems still line up with missing shader lowering for the reported runtime
 classes and incomplete texture/sampler/resource interface translation.
 
+Follow-up automatic shader coverage:
+
+- `PS 0xFF01D28E1EF3A880` is now handled by a shared translated-HLSL rule for
+  the decoded `tfetch2D r1.1w__` plus `mul oC0, r1.xxxy, r0` alpha-mask class.
+- MP080 isolated-cache precompile now reports `compiled=9`,
+  `translator_failed=8`, `dxc_failed=0`, `source_shared=9`.
+- MP028 isolated-cache precompile now reports `compiled=7`,
+  `translator_failed=7`, `dxc_failed=0`, `source_shared=7`.
+- MP080 replay validation and D3D12 real replay remained stable at `836`
+  supported draws across `9` shader pairs with no diagnostic pipelines.
+
 ## 2026-07-03 shared translator migration checkpoint
 
 More runtime-used limited shader rules have been moved into the shared

@@ -114,6 +114,37 @@ bool TryTranslateTexturedColorPixelShader(
   return true;
 }
 
+bool TryTranslateAlphaMaskPixelShader(
+    const XenosHlslTranslationRequest& request,
+    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
+  if (request.runtime_stage != 1 ||
+      request.runtime_hash != 0xFF01D28E1EF3A880ull ||
+      !HasOperation(operations, "tfetch2D", "r1.1w__", 1) ||
+      !HasOperation(operations, "mul", "oC0")) {
+    return false;
+  }
+
+  EmitTranslatedHeader(request, out);
+  out << "Texture2D native_texture0 : register(t0);\n";
+  out << "SamplerState native_sampler0 : register(s0);\n\n";
+  out << "struct PSInput\n";
+  out << "{\n";
+  out << "  float4 position : SV_Position;\n";
+  out << "  float4 color : COLOR0;\n";
+  out << "  float2 uv : TEXCOORD0;\n";
+  out << "};\n\n";
+  out << "float4 main(PSInput input) : SV_Target0\n";
+  out << "{\n";
+  out << "  // Xenos subset: tfetch2D r1.1w__, r1.xy, tf1 followed by\n";
+  out << "  // mul oC0, r1.xxxy, r0. Treat tf1 as the bound alpha mask and\n";
+  out << "  // preserve interpolated RGB while applying sampled alpha.\n";
+  out << "  const float4 mask = native_texture0.Sample(native_sampler0,\n";
+  out << "                                            saturate(input.uv));\n";
+  out << "  return saturate(input.color * float4(1.0f, 1.0f, 1.0f, mask.a));\n";
+  out << "}\n";
+  return true;
+}
+
 void EmitScreenSpaceFrameConstants(std::ostream& out) {
   out << "cbuffer FrameConstants : register(b0)\n";
   out << "{\n";
@@ -495,6 +526,9 @@ bool TryTranslateLimitedXenosHlsl(const XenosHlslTranslationRequest& request,
     return true;
   }
   if (TryTranslateTexturedColorPixelShader(request, operations, out)) {
+    return true;
+  }
+  if (TryTranslateAlphaMaskPixelShader(request, operations, out)) {
     return true;
   }
   if (TryTranslatePointListVertexShader(request, operations, out)) {

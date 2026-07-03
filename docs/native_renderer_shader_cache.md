@@ -111,6 +111,18 @@ Verified results:
 - Temporary validation caches were not intended as persistent shader cache
   artifacts; the persistent path remains `shader_work\cache`.
 
+Follow-up `PS 0xFF01D28E1EF3A880` rule validation:
+
+- Added a narrow shared translator rule for the decoded alpha-mask class:
+  `tfetch2D r1.1w__, r1.xy, tf1` followed by `mul oC0, r1.xxxy, r0`.
+- MP080 isolated-cache precompile improved from `compiled=8` /
+  `translator_failed=9` to `compiled=9` / `translator_failed=8`; the shader now
+  compiles from shared generated HLSL with `source=shared`.
+- MP028 isolated-cache precompile improved from `compiled=6` /
+  `translator_failed=8` to `compiled=7` / `translator_failed=7`.
+- MP080 replay validation still passed, and D3D12 real replay still submitted
+  `836` supported draws across `9` shader pairs with `diagnostic_pipelines=0`.
+
 ## Runtime D3D12 Precompile Checkpoint
 
 Evidence date: 2026-07-03
