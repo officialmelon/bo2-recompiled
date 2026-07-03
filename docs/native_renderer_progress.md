@@ -1,6 +1,37 @@
 # Native Renderer Progress
 
-Last updated: 2026-07-03
+Last updated: 2026-07-04
+
+## 2026-07-04 live native rendering milestone
+
+- The running game renders through the native translated pipeline in real
+  time: `default_mp.exe --native_renderer_mode native_d3d12
+  --native_renderer_live_pipeline xenia` shows the complete BO2 multiplayer
+  menu in the native window at ~60 FPS, navigable with keyboard input
+  (`--mnk_mode true`; Space = A, arrows = d-pad) into the LOCAL lobby.
+- Live/emulated parity: the ReXGlue window and the native window render the
+  same menu side by side (`logs/live/xenia-nav2-*.png`).
+- Live frame pacing was fixed by forwarding VdSwap in native_d3d12 mode
+  (suppressing it stalled the guest ~300ms per frame on swap writeback),
+  and a frame-builder mutex fixed a CP-thread/swap-thread race that crashed
+  the process within seconds whenever the capture writer was disabled.
+- The live frame builder now copies the guest float constant register file
+  per draw; without it the live pipeline bound all-zero constants and
+  rendered black while offline replay of the same stream was correct.
+- Performance: persistent guest-keyed texture cache, a 64 MiB upload ring,
+  persistent SRV/sampler descriptor rings, and first-sight gating of guest
+  texture recaptures. Soak: 3390 frames in 90 seconds with zero failed
+  frames and zero diagnostic pipelines.
+- Live on-demand shader translation: shaders without cache records are
+  translated from their live PM4 payloads and persisted to the shader cache.
+  With the SDK trace payload cap raised from 512 to 4096 dwords (local SDK
+  change), the previously untranslatable `PS 0x79E1F538A5074A65` (1293
+  dwords) translated live to 82 KB of DXBC, and unsupported draws dropped
+  from 3446 missing pixel shaders to 30 memexport-only skips.
+- Known open items: memexport draws are skipped (point-sprite class), and
+  the Aftermath map load stalls/takes extremely long after the match
+  countdown (frame counter freezes during load; also needs an emulated-mode
+  baseline to attribute; pre-existing `D:\ui_mp.ipak` open failures).
 
 ## 2026-07-03 generic translated pipeline milestone
 
