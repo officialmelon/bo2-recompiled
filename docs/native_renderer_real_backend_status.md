@@ -2826,3 +2826,42 @@ Result: bounded live run stayed responsive and the capture validates:
 show frames `1-3` as `retained_color_blocked=true`, frame `4` as the first
 presented native seed, and later frames as `retained_color_ready=true` with
 per-frame PSO cache and elided-draw counters populated.
+
+## 2026-07-03 DDED no-raster point classification
+
+The previous MP080 strict blocker for `VS=0xDDED7E538422AE73` /
+`PS=0x3A6876055FEC1674` has been narrowed into a proven no-raster utility
+classification for the exact captured single-point no-fetch shape. Evidence:
+
+```text
+native_shader_inspect.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --hash 0xDDED7E538422AE73 --semantic-disassemble
+```
+
+ReXGlue decodes the VS as no vertex/fetch/constants and `sqrt oPos,
+-r_abs[0].x`. Its DXBC translator zeroes vertex GPRs before loading the
+auto-indexed vertex id into `r0.x`; for non-indexed one-point draws,
+`r0.x == 0`. The scalar export has the default `1111` `oPos` write mask, so the
+result is `oPos = 0000`, which matches ReXGlue's documented D3D9 internal
+no-raster point class.
+
+The D3D12 backend now elides only that exact class: non-indexed point list, no
+vertex fetches, no texture fetches, `index_count=1`, and
+`VS=0xDDED7E538422AE73`. This removes a false unsupported-frame blocker without
+turning DDED into synthetic visible geometry.
+
+Validation:
+
+```text
+ninja -C default\out\build\win-amd64-clangmsvc-debug -j12 native_render_replay.exe
+native_render_replay.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --draw 801 --backend d3d12 --d3d12-draws 1 --skip-unsupported --no-summary
+native_render_replay.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --backend d3d12 --skip-unsupported --d3d12-draws 512 --no-summary
+native_render_replay.exe --capture native_captures\live_d3d12_mp_080_shader_probe_write_snapshot\events.jsonl --validate --no-summary
+```
+
+Results:
+
+* Direct draw `801` now reports `selected draw is a known ignored utility/no-raster draw and has no D3D12 geometry to submit`.
+* Full MP080 replay submits `512` supported draws across `9` shader pairs with
+  `diagnostic_pipelines=0`, `608` captured texture SRVs, `608` captured sampler
+  descriptors, and a nonzero color readback.
+* Capture validation passes: `Validation OK: 18000 events, 55 frames, 3436 draws`.

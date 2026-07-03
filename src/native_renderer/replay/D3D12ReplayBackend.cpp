@@ -1447,11 +1447,17 @@ bool IsKnownNoRasterNoFetchDraw(const ReplayDrawState &state) {
     return false;
   }
 
-  // DDED7E no-fetch point draws in MP080 can have color writes enabled
-  // (for example paired with PS 0x3A6876055FEC1674), so they are not a
-  // safe utility/no-raster class. Keep them fail-closed until Xenos
-  // register initialization semantics for `sqrt oPos, -r_abs[0].x` are
-  // implemented instead of silently dropping enabled-color draws.
+  // ReXGlue's vertex prologue zeroes guest GPRs and then writes the auto-indexed
+  // vertex id into r0.x. For a single non-indexed point draw, DDED7E evaluates
+  // `sqrt oPos, -r_abs[0].x` with r0.x == 0 and the scalar export replicates to
+  // all four oPos components, producing oPos = 0000. This is the D3D9 internal
+  // no-raster point class described in ReXGlue's Shader::AnalyzeUcode notes,
+  // not a missing real scene draw.
+  if (state.vertex_shader.hash == 0xDDED7E538422AE73ull &&
+      draw.index_count == 1) {
+    return true;
+  }
+
   return false;
 }
 
@@ -1695,6 +1701,9 @@ std::string DescribeRealDrawGeometrySupport(const ReplayCapture &capture,
       return "no captured vertex/fetch state, but render state has no modeled "
              "color/depth/stencil side effects";
     }
+    if (IsKnownNoRasterNoFetchDraw(state)) {
+      return "known no-raster no-fetch utility point draw";
+    }
     if (state.vertex_shader.hash == 0xB6C9863F710683ECull &&
         state.pixel_shader.hash == 0xA4A965C189287B99ull &&
         TopologyForPrimitive(draw.primitive_type) ==
@@ -1815,12 +1824,18 @@ bool PrepareFirstRealDraw(const ReplayCapture &capture,
     }
   }
 
-  error =
-      options.draw_index
-          ? "selected draw has no complete vertex/index snapshot that "
-            "the current D3D12 real replay path can bind"
-          : "capture has no complete vertex/index snapshot that the "
-            "current D3D12 real replay path can bind";
+  if (options.draw_index && begin < capture.draws.size() &&
+      IsKnownIgnoredUtilityDraw(capture.draws[begin])) {
+    error = "selected draw is a known ignored utility/no-raster draw and has "
+            "no D3D12 geometry to submit";
+  } else {
+    error =
+        options.draw_index
+            ? "selected draw has no complete vertex/index snapshot that "
+              "the current D3D12 real replay path can bind"
+            : "capture has no complete vertex/index snapshot that the "
+              "current D3D12 real replay path can bind";
+  }
   return false;
 }
 

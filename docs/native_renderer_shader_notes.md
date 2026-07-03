@@ -809,14 +809,15 @@ Verified generated outputs:
 - `shader_work\cache\d3d12\PS_0x3A6876055FEC1674.translated.v8.dxc.dxil`
 - `shader_work\cache\logs\PS_0x3A6876055FEC1674.translated.v8.dxc.dxc.log`, `status=ok`, `target=ps_6_0`
 
-The paired `VS 0xDDED7E538422AE73` remains deliberately unsupported for D3D12 scene rendering. Its runtime semantic IR writes only `oPos` via `sqrt oPos, -r_abs[0].x`, has no vertex/fetch/constants, and no interpolator exports. This is the no-fetch point class that still needs real Xenos register initialization semantics; a synthetic vertexless substitute would not count as real BO2 shader translation.
+The paired `VS 0xDDED7E538422AE73` is now decoded narrowly as a no-raster D3D9 utility point for the captured single-point no-fetch class, not as real scene geometry. Its runtime semantic IR writes only `oPos` via `sqrt oPos, -r_abs[0].x`, has no vertex/fetch/constants, and no interpolator exports. ReXGlue's DXBC translator zeroes vertex GPRs and then writes the auto-indexed vertex id into `r0.x`; for the captured non-indexed one-point draws, `r0.x == 0`, and scalar Xenos ALU exports replicate the scalar result to all masked components. Because `sqrt oPos` has the default `1111` write mask, the export becomes `oPos = 0000`, matching the ReXGlue analyzer note about D3D9 internal no-raster point draws with invalid/no-coverage position state.
 
-MP080 draw-state evidence confirms this is not safe to ignore broadly:
+MP080 draw-state evidence confirms this must still stay narrow:
 `DDED7E/3A6876` appears as color-enabled point draws with no vertex/fetch
 payload (`index_count=1`, `primitive_type=1`, `color_mask=0x0000000F`,
-`rb_blendcontrol[0]=0x010B0706`). The D3D12 backend now keeps this class
-fail-closed instead of classifying all `DDED7E` no-fetch points as no-raster
-utility traffic.
+`rb_blendcontrol[0]=0x010B0706`). The D3D12 backend only elides this exact
+single-point no-fetch pattern after applying the ReXGlue register-init/export
+semantics above; it does not synthesize visible DDED geometry and does not make
+other no-fetch point shaders scene-renderable.
 
 MP003 `PS=0x79E1F538A5074A65` is now covered by a manual D3D12 override only
 after draw-state inspection. The representative draw has no texture fetches,
