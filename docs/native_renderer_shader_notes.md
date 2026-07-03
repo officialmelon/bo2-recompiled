@@ -811,6 +811,13 @@ Verified generated outputs:
 
 The paired `VS 0xDDED7E538422AE73` remains deliberately unsupported for D3D12 scene rendering. Its runtime semantic IR writes only `oPos` via `sqrt oPos, -r_abs[0].x`, has no vertex/fetch/constants, and no interpolator exports. This is the no-fetch point class that still needs real Xenos register initialization semantics; a synthetic vertexless substitute would not count as real BO2 shader translation.
 
+MP080 draw-state evidence confirms this is not safe to ignore broadly:
+`DDED7E/3A6876` appears as color-enabled point draws with no vertex/fetch
+payload (`index_count=1`, `primitive_type=1`, `color_mask=0x0000000F`,
+`rb_blendcontrol[0]=0x010B0706`). The D3D12 backend now keeps this class
+fail-closed instead of classifying all `DDED7E` no-fetch points as no-raster
+utility traffic.
+
 MP003 `PS=0x79E1F538A5074A65` is now covered by a manual D3D12 override only
 after draw-state inspection. The representative draw has no texture fetches,
 real vf95 quad data, and alpha `0.101961`; the runtime shader payload is

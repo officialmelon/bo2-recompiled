@@ -985,10 +985,11 @@ Rules added:
 
 - No-fetch draws with color writes disabled and depth/stencil disabled are
   reported as `ignored utility/no-raster no-fetch draw`.
-- The exact decoded `VS=0xDDED7E538422AE73` no-fetch point class is also
-  ignored as no-raster utility evidence. Its semantic IR has no constants, no
-  vertex fetches, no texture fetches, and exports position through
-  `sqrt oPos, -r_abs[0].x` after `setp_clr`.
+- `VS=0xDDED7E538422AE73` no-fetch point draws are not ignored just because
+  the VS has no fetches. MP080 proves the `DDED7E/3A6876` pair can have
+  `color_mask=0x0000000F` with blending enabled, so the backend keeps that
+  class fail-closed until Xenos register initialization semantics for
+  `sqrt oPos, -r_abs[0].x` are implemented.
 - `PS=0xA4A965C189287B99` zero-color/pass-through draws remain blocked for
   pure color-only passes, but are now allowed when captured render state uses
   depth or stencil. Those passes have real side effects even if the color

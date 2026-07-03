@@ -1447,11 +1447,12 @@ bool IsKnownNoRasterNoFetchDraw(const ReplayDrawState &state) {
     return false;
   }
 
-  // Semantic IR for this MP class has no constants, no vertex fetches, and
-  // exports position through `sqrt oPos, -r_abs[0].x` after `setp_clr`.
-  // Treat it as an intentional no-raster point until a capture proves visible
-  // output; do not synthesize substitute point geometry.
-  return state.vertex_shader.hash == 0xDDED7E538422AE73ull;
+  // DDED7E no-fetch point draws in MP080 can have color writes enabled
+  // (for example paired with PS 0x3A6876055FEC1674), so they are not a
+  // safe utility/no-raster class. Keep them fail-closed until Xenos
+  // register initialization semantics for `sqrt oPos, -r_abs[0].x` are
+  // implemented instead of silently dropping enabled-color draws.
+  return false;
 }
 
 bool TextureDecodesAllZeroRgba(const TextureFetchRecord &fetch) {
