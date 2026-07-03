@@ -31,6 +31,14 @@ std::string OperandRegisterText(std::string_view operand) {
   return ToString(TrimView(base));
 }
 
+std::string OperandMaskText(std::string_view operand) {
+  const std::size_t dot = operand.find('.');
+  if (dot == std::string_view::npos) {
+    return {};
+  }
+  return ToString(TrimView(operand.substr(dot + 1)));
+}
+
 std::string OperandRegisterFile(std::string_view reg) {
   if (reg.empty()) {
     return {};
@@ -146,6 +154,41 @@ std::optional<int> FetchConstantIndex(
 
 }  // namespace
 
+ParsedShaderOperand ParseShaderOperand(std::string_view operand) {
+  ParsedShaderOperand result;
+  operand = TrimView(operand);
+  result.text = ToString(operand);
+
+  if (!operand.empty() && operand.front() == '-') {
+    result.negate = true;
+    operand.remove_prefix(1);
+    operand = TrimView(operand);
+  }
+
+  if (operand.rfind("r_abs[", 0) == 0) {
+    result.absolute = true;
+    const std::size_t close = operand.find(']');
+    if (close != std::string_view::npos) {
+      const std::string inner = ToString(operand.substr(6, close - 6));
+      result.register_text = "r" + inner;
+      const std::size_t dot = operand.find('.', close);
+      if (dot != std::string_view::npos) {
+        result.mask = ToString(TrimView(operand.substr(dot + 1)));
+      }
+      result.register_file = OperandRegisterFile(result.register_text);
+      result.register_index = OperandRegisterIndex(result.register_text);
+      return result;
+    }
+  }
+
+  result.relative = operand.find('[') != std::string_view::npos;
+  result.register_text = OperandRegisterText(operand);
+  result.register_file = OperandRegisterFile(result.register_text);
+  result.register_index = OperandRegisterIndex(result.register_text);
+  result.mask = OperandMaskText(operand);
+  return result;
+}
+
 std::vector<ParsedShaderOperation>
 ParseDisassemblyOperations(const std::string& disassembly) {
   std::vector<ParsedShaderOperation> operations;
@@ -196,6 +239,10 @@ ParseDisassemblyOperations(const std::string& disassembly) {
     operation.opcode = ToString(opcode);
     operation.operands = ToString(operands);
     operation.operand_parts = SplitOperands(operands);
+    operation.parsed_operands.reserve(operation.operand_parts.size());
+    for (const std::string& part : operation.operand_parts) {
+      operation.parsed_operands.push_back(ParseShaderOperand(part));
+    }
     operation.has_destination = !operation.operand_parts.empty() &&
                                 opcode != "exec" && opcode != "exece" &&
                                 opcode != "cnop" && opcode != "alloc";

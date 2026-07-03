@@ -54,6 +54,7 @@ using bo2::native::CountOperations;
 using bo2::native::DisassemblyContains;
 using bo2::native::HasOperation;
 using bo2::native::ParseDisassemblyOperations;
+using bo2::native::ParsedShaderOperand;
 using bo2::native::ParsedShaderOperation;
 using bo2::native::TryTranslateLimitedXenosHlsl;
 using bo2::native::XenosHlslTranslationRequest;
@@ -2048,18 +2049,24 @@ std::vector<std::string> SplitOperands(std::string_view operands) {
   return result;
 }
 
-void EmitOperandJson(std::ostream &out, std::string_view operand) {
-  const std::string text = ToString(TrimView(operand));
-  const std::string reg = OperandRegisterText(text);
-  const std::string mask = OperandMask(text);
-  const std::string file = OperandRegisterFile(reg);
-  out << "{\"text\":\"" << JsonEscape(text) << "\",\"register\":\""
-      << JsonEscape(reg) << "\",\"file\":\"" << JsonEscape(file) << "\"";
-  if (const std::optional<int> index = OperandRegisterIndex(reg)) {
+void EmitOperandJson(std::ostream &out, const ParsedShaderOperand &operand) {
+  out << "{\"text\":\"" << JsonEscape(operand.text) << "\",\"register\":\""
+      << JsonEscape(operand.register_text) << "\",\"file\":\""
+      << JsonEscape(operand.register_file) << "\"";
+  if (const std::optional<int> index = operand.register_index) {
     out << ",\"index\":" << *index;
   }
-  if (!mask.empty()) {
-    out << ",\"mask\":\"" << JsonEscape(mask) << "\"";
+  if (!operand.mask.empty()) {
+    out << ",\"mask\":\"" << JsonEscape(operand.mask) << "\"";
+  }
+  if (operand.negate) {
+    out << ",\"negate\":true";
+  }
+  if (operand.absolute) {
+    out << ",\"absolute\":true";
+  }
+  if (operand.relative) {
+    out << ",\"relative\":true";
   }
   out << "}";
 }
@@ -2084,16 +2091,16 @@ void EmitDisassemblyOperationsJson(std::ostream &out,
         << ", \"category\": \"" << JsonEscape(operation.category) << "\"";
     if (operation.has_destination) {
       out << ", \"dest\": ";
-      EmitOperandJson(out, operation.operand_parts.front());
+      EmitOperandJson(out, operation.parsed_operands.front());
     }
     out << ", \"sources\": [";
     const std::size_t first_source = operation.has_destination ? 1u : 0u;
-    for (std::size_t i = first_source; i < operation.operand_parts.size();
+    for (std::size_t i = first_source; i < operation.parsed_operands.size();
          ++i) {
       if (i != first_source) {
         out << ", ";
       }
-      EmitOperandJson(out, operation.operand_parts[i]);
+      EmitOperandJson(out, operation.parsed_operands[i]);
     }
     out << "]";
     if (operation.fetch_constant) {
