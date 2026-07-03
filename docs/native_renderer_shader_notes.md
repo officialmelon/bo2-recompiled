@@ -1,5 +1,100 @@
 # Native Renderer Shader Notes
 
+## 2026-07-03 d3d12-xenia translated pipeline checkpoint
+
+`native_render_replay.exe --backend d3d12-xenia` is the first shader-correct
+BO2 rendering path. On MP080 it submits `3374` draws across `12` shader pairs
+with `1522` captured texture SRVs, `0` fallbacks, and `0` diagnostic
+pipelines, and the output BMP is the recognizable BO2 multiplayer menu
+(hex-pattern background plus orange starburst particles). Golden:
+`mp080-xenia-replay` in `scripts/regression/goldens.json`, SHA-256
+`B2DF486AEC241C258E89648CD45AE254D54500F65736CFB587679595A3B06038`.
+
+The backend (`RunD3D12XeniaReplayBackend` in
+`src/native_renderer/replay/D3D12ReplayBackend.cpp`) implements the Xenia
+bindful binding contract: fetch/float-VS/float-PS/system/bool-loop root CBVs,
+shared-memory SRV+UAV table, then per-stage texture/sampler tables. Vertex
+data is pulled from a guest-addressed shared memory buffer (no input layouts,
+no CPU vertex decode); indexed draws bind raw big-endian guest index bytes and
+the translated VS un-swaps them via the `vertex_index_endian` system constant.
+Per-draw PSOs cover captured blend/color-mask/depth/cull/fill state, and a
+guest render-target cache keyed by `color_base`/`depth_base` separates UI
+composition surfaces (MP080 uses bases `0x0`, `0x260`, `0x530`; the
+most-drawn base is exported).
+
+Correctness pitfalls proven in bring-up (do not rediscover):
+
+1. The translated float cbuffer is tightly packed: only registers set in
+   `Shader::constant_register_map().float_bitmap`, gathered ascending.
+   VS reads the captured register file vec4 window 0-255, PS 256-511.
+   Copying the raw file renders black.
+2. Both `GetHostViewportInfo` branches are required; BO2 UI runs with
+   `PA_CL_CLIP_CNTL.clip_disable` set and needs the huge-viewport NDC path.
+3. Rectangle lists: the SDK DXBC translator's VS-expansion path is not
+   implemented (asserts; the SDK D3D12 backend uses generated geometry
+   shaders). BO2 single-rect draws carry the full 4-vertex quad in the guest
+   vertex buffer, so they render as 4-vertex triangle strips with the default
+   VS and culling disabled.
+
+Remaining gaps tracked in the task list: memexport draws are skipped, the
+truncated >512-dword payload class needs the SDK trace cap raised, menu text
+is still not visible (compose/resolve path under investigation), and frame
+windowing currently reuses `--draw <n>` as a start offset.
+
+## 2026-07-03 generic Xenos DXBC translation checkpoint
+
+The generic shader translation engine decision is made: the ReXGlue SDK's
+Xenia-derived `DxbcShaderTranslator` is now linked into
+`native_shader_inspect.exe` and translates raw captured runtime PM4 shader
+payloads into complete SM 5.1 DXBC. This is real decoded-operation lowering
+for every shader class (full ALU, control flow, vertex fetch through shared
+memory, texture fetch, memexport), not pattern rules, so it satisfies the
+no-runtime-hash-only policy generically.
+
+New pieces:
+
+- `src/native_renderer/shader_translation/XenosDxbcTranslator.h/.cpp`:
+  `TranslateXenosPayloadToDxbc` wraps analysis (`Shader::AnalyzeUcode`) plus
+  `DxbcShaderTranslator::TranslateAnalyzedShader` with stage-default
+  modifications (full interpolator mask, so default VS/PS pairs always have
+  matching linkage).
+- `native_shader_inspect.exe --precompile-runtime-shaders-dxbc <cache_root>`:
+  translates ranked runtime shaders from a capture, validates each container
+  with `D3DDisassemble`, writes `d3d12/{VS|PS}_0x<hash>.xenia.dxbc` blobs and
+  `shader_cache_index.jsonl` records with `format=xenia_dxbc`,
+  `binding_layout=xenia_v1`, and the translator modification bits. The legacy
+  layout8 shader resolution skips these records because it only accepts
+  `dxbc`/`dxil` formats.
+- `default/CMakeLists.txt` links the SDK sources `dxbc.cpp`,
+  `dxbc_translator*.cpp`, and `thirdparty/dxbc/DXBCChecksum.cpp` into the
+  inspect tool, with two more standalone-tool stubs
+  (`FLAGS_use_fuzzy_alpha_epsilon_storage_`,
+  `draw_util::kD3D10StandardSamplePositions4x`).
+
+Verified results (2026-07-03):
+
+- MP080: `attempted=16 translated=16 translator_failed=0 validation_failed=0`.
+  The only skip is the truncated-payload shader `PS 0x79E1F538A5074A65`.
+- MP028: `attempted=13 translated=13 translator_failed=0`.
+- `shader_payload_cap4096_001`: `attempted=11 translated=11 translator_failed=0`.
+- This includes the previously rejected hash-only classes
+  (`PS 0x7D1EF030F5710BDA`, `PS 0x8645E8BA65E424B2`, `PS 0xDC168FB6031AFC41`)
+  and the memexport point shader `VS 0x5B9B7484417FB9B6` (194 KB DXBC).
+
+XenosRecomp remains pinned for the static-corpus path only: it requires full
+`0x102A1100` containers with constant tables, which runtime PM4 payloads do
+not have.
+
+The emitted DXBC uses the Xenia binding contract (system/float/bool-loop/fetch
+constant cbuffers in space0 plus shared-memory `t0`/`u0` vertex pulling), so
+the next renderer step is a translated-shader pipeline in the D3D12 backend
+that builds the matching root signature and fills those buffers from captured
+draw state.
+
+Regression coverage: `node scripts/regression/native-renderer-regression.mjs`
+now includes `mp080-dxbc`, `mp028-dxbc`, and `cap4096-dxbc` cases with golden
+counts.
+
 ## 2026-07-03 no-runtime-hash-only rule
 
 Do not add runtime-hash-only HLSL approximations as the main renderer solution.

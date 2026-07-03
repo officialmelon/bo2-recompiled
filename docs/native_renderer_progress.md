@@ -1,6 +1,33 @@
 # Native Renderer Progress
 
-Last updated: 2026-06-30
+Last updated: 2026-07-03
+
+## 2026-07-03 generic translated pipeline milestone
+
+- The renderer now has a generic Xenos shader translation engine and a
+  shader-correct D3D12 replay pipeline. See the top sections of
+  `docs/native_renderer_shader_notes.md` for the full evidence.
+- `native_shader_inspect.exe --precompile-runtime-shaders-dxbc` translates
+  every complete captured runtime shader payload to SM 5.1 DXBC through the
+  SDK's Xenia-derived translator (40/40 across MP080/MP028/cap4096, zero
+  failures, including previously untranslatable multi-texture and memexport
+  shaders).
+- `native_render_replay.exe --backend d3d12-xenia` renders captured draws with
+  those shaders using the Xenia binding contract: packed float constant file,
+  fetch constants, shared-memory vertex pulling, raw big-endian guest index
+  buffers, per-draw PSO state, and a guest render-target cache. On MP080 it
+  submits 3374 draws across 12 shader pairs with all texture SRVs captured and
+  renders the recognizable BO2 multiplayer menu.
+- The default shader cache `shader_work/cache/shader_cache_index.jsonl` is
+  seeded with xenia_dxbc records for the MP080/MP028/cap4096 shader sets.
+- Regression harness: `node scripts/regression/native-renderer-regression.mjs`
+  (goldens in `scripts/regression/goldens.json`), covering validation, the
+  legacy real backend, DXBC precompile counts, and the d3d12-xenia backend.
+- Next: live-path integration of the translated pipeline (render the game
+  window through `RunD3D12XeniaReplayBackend` with the live submit binding and
+  translate newly seen shaders at runtime), resolve/compose handling for UI
+  text, memexport draw support, and raising the SDK shader payload trace cap
+  for the >512-dword shader class.
 
 ## Current status
 
