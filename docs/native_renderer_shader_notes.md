@@ -874,7 +874,11 @@ behind `TryTranslateLimitedXenosHlsl`, instead of only living in the
 - `VS 0x5B9B7484417FB9B6` point/list payload class.
 - `VS 0x1E6883FCCDE1F688` depth/zero-color vertex class.
 - `VS 0xAB1E86137A0240E8` simple position/color class.
+- `VS 0xB6C9863F710683EC` vertexless no-fetch class.
+- `VS 0x81311AC4B1FBD082` post-process quad class.
+- `VS 0x5D918D91043B3ED0` resource-backed quad class.
 - `PS 0x246E20EF10E0DDC7` post-process texture/constant class.
+- `PS 0xC4ED2979F29C9139` four-texture mask class.
 - `PS 0x3A6876055FEC1674` `sgts oC0` export class.
 - Generic `max oC0` pixel export class.
 

@@ -159,9 +159,11 @@ Results:
 
 Shared-translator validation:
 
-The high-traffic limited translator rules for `VS 0x5B9B7484417FB9B6`,
-`VS 0x1E6883FCCDE1F688`, `VS 0xAB1E86137A0240E8`,
-`PS 0x246E20EF10E0DDC7`, `PS 0x3A6876055FEC1674`, and the generic
+The high-traffic limited translator rules for `VS 0xB6C9863F710683EC`,
+`VS 0x5B9B7484417FB9B6`, `VS 0x1E6883FCCDE1F688`,
+`VS 0xAB1E86137A0240E8`, `VS 0x81311AC4B1FBD082`,
+`VS 0x5D918D91043B3ED0`, `PS 0x246E20EF10E0DDC7`,
+`PS 0xC4ED2979F29C9139`, `PS 0x3A6876055FEC1674`, and the generic
 `max oC0` pixel export class now live in
 `src\native_renderer\shader_translation\XenosHlslTranslator.cpp` instead of
 only in the `native_shader_inspect` CLI fallback.
