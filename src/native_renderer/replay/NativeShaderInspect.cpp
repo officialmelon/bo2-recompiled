@@ -2474,6 +2474,7 @@ bool TryEmitLimitedTranslatedRuntimeHlsl(
   out << "// BO2 native renderer translated HLSL from decoded Xenos "
          "operations.\n";
   out << "// Translator subset: " << kLimitedXenosTranslatorVersion << ".\n";
+  out << "// translation_source: native_shader_inspect_fallback\n";
   out << "// Unsupported shaders fail closed instead of using this path.\n";
   out << "// capture: " << capture.path.string() << "\n";
   out << "// runtime_hash: " << Hex64(runtime_shader.hash) << "\n";

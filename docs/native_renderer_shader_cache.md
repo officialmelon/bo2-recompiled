@@ -182,6 +182,8 @@ Result:
 - `cache_hits=0`
 - `translator_failed=1`
 - `dxc_failed=0`
+- Generated HLSL provenance: `files=10`, `translation_source: shared=10`,
+  `native_shader_inspect_fallback=0`.
 
 The only shared-translator miss remains `VS 0xDDED7E538422AE73`, which is still
 handled as no-raster/no-fetch utility work by the D3D12 gap classifier rather

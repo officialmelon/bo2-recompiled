@@ -21,6 +21,7 @@ void EmitTranslatedHeader(const XenosHlslTranslationRequest& request,
          "operations.\n";
   out << "// Translator subset: " << LimitedXenosHlslTranslatorVersion()
       << ".\n";
+  out << "// translation_source: shared\n";
   out << "// Unsupported shaders fail closed instead of using this path.\n";
   out << "// capture: " << request.capture_path.string() << "\n";
   out << "// runtime_hash: " << Hex64(request.runtime_hash) << "\n";
