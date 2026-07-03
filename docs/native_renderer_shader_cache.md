@@ -124,6 +124,14 @@ Top remaining translator failures from this capture:
 
 The truncated-payload skip is intentional: running ReXGlue's analyzer on incomplete shader PM4 payloads can assert. The correct fix for `PS 0x79E1F538A5074A65` is capture completeness, not a guessed shader replacement.
 
+Capture-side follow-up:
+
+- `PM4ShaderInfo::kMaxPayloadDwords` was raised from `512` to `4096` dwords.
+- The known truncated MP080 shader reports `max_dwords=1293`, so the new cap
+  should allow future captures to contain its full PM4 shader payload.
+- Constant payload capture remains capped separately at `64` dwords; this
+  change is shader-specific.
+
 Verified summary:
 
 - Zones: `142`

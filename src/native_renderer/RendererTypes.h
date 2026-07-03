@@ -377,7 +377,7 @@ struct PM4DrawInfo {
 };
 
 struct PM4ShaderInfo {
-  static constexpr std::size_t kMaxPayloadDwords = 512;
+  static constexpr std::size_t kMaxPayloadDwords = 4096;
 
   uint64_t event_index = 0;
   uint32_t opcode = 0;
