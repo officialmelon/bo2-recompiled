@@ -40,6 +40,33 @@ cached, not to a temporary list of runtime hashes. Rebuilt
 `native_render_replay.exe` with `-j12`; bounded MP080 replay remained stable at
 `120` supported draws across `9` shader pairs with `diagnostic_pipelines=0`.
 
+The D3D12 shader resolver also no longer injects pair-specific pixel shader
+variants in the normal path after resolving cache/override stages. Manual
+shader variants can still be used through the explicit override/cache fallback,
+but generated cache hits are no longer silently replaced by hardcoded
+pair-specific source. Validation after this removal:
+
+- Built `native_render_replay.exe` and `native_shader_inspect.exe` with Ninja
+  `-j12`, exit `0`.
+- MP080 precompile: `attempted=16`, `cache_hits=15`, `translator_failed=2`,
+  `dxc_failed=0`, `source_shared=15`, `source_fallback=0`.
+- MP080 validation: `Validation OK: 18000 events, 55 frames, 3436 draws`.
+- MP080 gaps: `ready=836`, `scene_candidate_ready=639`,
+  `depth_only_zero_color_ready=151`, `utility_ready=46`.
+- MP080 D3D12 replay: `836` supported draws across `9` shader pairs,
+  `diagnostic_pipelines=0`, output nonzero.
+- MP028 precompile: `attempted=13`, `cache_hits=13`, `translator_failed=1`,
+  `dxc_failed=0`, `source_shared=13`, `source_fallback=0`.
+- MP028 validation: `Validation OK: 5000 events, 20 frames, 1022 draws`.
+- MP028 gaps: `ready=165`, `scene_candidate_ready=107`,
+  `depth_only_zero_color_ready=46`, `utility_ready=12`.
+- MP028 D3D12 replay: `165` supported draws across `8` shader pairs,
+  `diagnostic_pipelines=0`, output nonzero.
+
+This does not finish native rendering. The visible blockers remain broader
+shader lowering, uncapped/truthful payload capture for truncated shader
+`0x79E1F538A5074A65`, and reducing fallback texture/SRV usage.
+
 ## 2026-07-03 shader precompile report checkpoint
 
 `native_shader_inspect.exe` now supports

@@ -30,6 +30,22 @@ derive the runtime shader identity from that payload, generate/compile/cache
 native shaders from decoded operations, and let replay/live resolve cache
 entries before manual overrides. Manual overrides remain a fallback only.
 
+Follow-up resolver cleanup: `ResolveD3D12ShaderProgramSource` no longer applies
+normal-path pair-specific pixel shader variants after cache/override lookup.
+The resolver now returns the resolved stage sources directly: automatic
+translated cache first, then explicit manual override fallback, then a loud
+missing-shader failure unless diagnostics were requested by the replay caller.
+Validated after removal:
+
+- MP080 precompile: `attempted=16`, `cache_hits=15`, `translator_failed=2`,
+  `source_shared=15`, `source_fallback=0`.
+- MP080 D3D12 replay: `836` supported draws across `9` shader pairs,
+  `diagnostic_pipelines=0`.
+- MP028 precompile: `attempted=13`, `cache_hits=13`, `translator_failed=1`,
+  `source_shared=13`, `source_fallback=0`.
+- MP028 D3D12 replay: `165` supported draws across `8` shader pairs,
+  `diagnostic_pipelines=0`.
+
 ## Implemented
 
 `native_shader_inspect.exe` has been added as the first shader registry inspection tool.

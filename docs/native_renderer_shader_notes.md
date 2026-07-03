@@ -27,6 +27,13 @@ resolution. This is still a lightweight metadata bridge, but it follows the
 actual generated/compiled shader instead of treating specific runtime hashes as
 special cases.
 
+`ResolveD3D12ShaderProgramSource` no longer applies implicit pair-specific
+pixel shader variants after resolving shader stages. The renderer-facing lookup
+order is now the intended one: generated/compiled automatic cache, explicit
+manual override fallback, then failure unless a diagnostic shader is explicitly
+allowed by the caller. MP080 and MP028 replay counts stayed stable after this
+removal, with `source_fallback=0` in both precompile reports.
+
 Evidence date: 2026-07-03
 
 ## Existing shader work

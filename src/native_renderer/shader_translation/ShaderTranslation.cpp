@@ -343,39 +343,6 @@ bool ResolveD3D12ShaderStage(const replay::ReplayCliOptions& options,
   return false;
 }
 
-bool ApplyShaderVariant(D3D12ShaderStageSource& stage,
-                        const std::filesystem::path& shader_cache_root,
-                        const char* profile, const char* cache_key,
-                        const char* source_name, std::string& error) {
-  stage.cache_key = cache_key;
-  stage.path = shader_cache_root / "hlsl" / source_name;
-  stage.cache_path = shader_cache_root / "d3d12" /
-                     (std::string(cache_key) + ".d3dcompile.dxbc");
-  stage.log_path = shader_cache_root / "logs" /
-                   (std::string(cache_key) + ".d3dcompile.log");
-  stage.entry = "main";
-  stage.profile = profile;
-  stage.source.clear();
-  stage.translated_cache = true;
-  return ReadTextFile(stage.path, stage.source, error);
-}
-
-void ApplyInlinePixelVariant(D3D12ShaderStageSource& stage,
-                             const std::filesystem::path& shader_cache_root,
-                             const char* cache_key, const char* source_name,
-                             const char* source) {
-  stage.cache_key = cache_key;
-  stage.path = shader_cache_root / "hlsl" / source_name;
-  stage.cache_path = shader_cache_root / "d3d12" /
-                     (std::string(cache_key) + ".d3dcompile.dxbc");
-  stage.log_path = shader_cache_root / "logs" /
-                   (std::string(cache_key) + ".d3dcompile.log");
-  stage.entry = "main";
-  stage.profile = "ps_5_0";
-  stage.source = source ? source : "";
-  stage.translated_cache = true;
-}
-
 }  // namespace
 
 bool ResolveD3D12ShaderProgramSource(
@@ -415,69 +382,6 @@ bool ResolveD3D12ShaderProgramSource(
             ". Re-run with --allow-diagnostic-shader only for the temporary "
             "resource-backed geometry diagnostic path.";
     return false;
-  }
-
-  const bool ab1e_vertex_shader =
-      draw_state.vertex_shader.hash == 0xAB1E86137A0240E8ull;
-  if (draw_state.pixel_shader.hash == 0xC4ED2979F29C9139ull) {
-    if (ab1e_vertex_shader) {
-      if (!ApplyShaderVariant(program.pixel, options.shader_cache_root,
-                              "ps_5_0",
-                              "PS_0xC4ED2979F29C9139.translated.v7.dxc",
-                              "PS_0xC4ED2979F29C9139.translated.v7.dxc.hlsl",
-                              pixel_error)) {
-        error = "could not load pair-specific pixel shader variant for draw " +
-                std::to_string(draw_state.draw_index) + " VS=" +
-                replay::FormatHex64(draw_state.vertex_shader.hash) + " PS=" +
-                replay::FormatHex64(draw_state.pixel_shader.hash) + ": " +
-                pixel_error;
-        return false;
-      }
-    } else if (!ApplyShaderVariant(
-                   program.pixel, options.shader_cache_root, "ps_5_0",
-                   "PS_0xC4ED2979F29C9139.translated.v5.dxc",
-                   "PS_0xC4ED2979F29C9139.translated.v5.dxc.hlsl",
-                   pixel_error)) {
-      error = "could not load pair-specific pixel shader variant for draw " +
-              std::to_string(draw_state.draw_index) + " VS=" +
-              replay::FormatHex64(draw_state.vertex_shader.hash) + " PS=" +
-              replay::FormatHex64(draw_state.pixel_shader.hash) + ": " +
-              pixel_error;
-      return false;
-    }
-  } else if (draw_state.pixel_shader.hash == 0x246E20EF10E0DDC7ull) {
-    if (!ApplyShaderVariant(program.pixel, options.shader_cache_root, "ps_5_0",
-                            "PS_0x246E20EF10E0DDC7.translated.v8.dxc",
-                            "PS_0x246E20EF10E0DDC7.translated.v8.dxc.hlsl",
-                            pixel_error)) {
-      error = "could not load pair-specific pixel shader variant for draw " +
-              std::to_string(draw_state.draw_index) + " VS=" +
-              replay::FormatHex64(draw_state.vertex_shader.hash) + " PS=" +
-              replay::FormatHex64(draw_state.pixel_shader.hash) + ": " +
-              pixel_error;
-      return false;
-    }
-  } else if (ab1e_vertex_shader &&
-             draw_state.pixel_shader.hash == 0xA4A965C189287B99ull) {
-    static constexpr const char* kAb1eA4ZeroPixelShader = R"(
-// BO2 native renderer pair-specific zero-output PS.
-// VS 0xAB1E86137A0240E8 exports position only; it does not declare an
-// interpolator feeding A4's r0 input. Replaying this pair with the generic A4
-// r0 passthrough produced an unproven diagonal fullscreen artifact.
-struct PSInput
-{
-  float4 position : SV_Position;
-};
-
-float4 main(PSInput input) : SV_Target0
-{
-  return input.position.xxxx * 0.0f;
-}
-)";
-    ApplyInlinePixelVariant(program.pixel, options.shader_cache_root,
-                            "PS_0xA4A965C189287B99.ab1e_zero.v1.dxc",
-                            "PS_0xA4A965C189287B99.ab1e_zero.v1.dxc.hlsl",
-                            kAb1eA4ZeroPixelShader);
   }
 
   return true;
