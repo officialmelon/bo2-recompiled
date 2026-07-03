@@ -4193,6 +4193,17 @@ void MatchRuntimeShaders(std::string_view index_text,
               << "/" << probe_count << "\n";
 
     uint64_t probe_runtime_payload_matches = 0;
+    struct MappingSummary {
+      uint32_t stage = 0;
+      uint64_t hash = 0;
+      std::string source;
+      std::size_t offset = 0;
+      std::size_t matched = 0;
+      uint64_t probes = 0;
+      uint64_t draws = 0;
+      uint64_t loads = 0;
+    };
+    std::map<std::string, MappingSummary> mapping_summaries;
     std::cout << "\nShader record probe runtime payload-prefix match:\n";
     for (std::size_t i = 0; i < probe_count; ++i) {
       const ShaderRecordProbeUsage &probe = capture.probes[i];
@@ -4207,6 +4218,20 @@ void MatchRuntimeShaders(std::string_view index_text,
 
       ++probe_runtime_payload_matches;
       const RuntimeShaderUsage &shader = *match->shader;
+      std::ostringstream summary_key;
+      summary_key << shader.stage << ":" << std::hex << shader.hash << ":"
+                  << match->source << ":" << std::dec
+                  << match->prefix.secondary_offset << ":"
+                  << match->prefix.matched_dwords;
+      MappingSummary &summary = mapping_summaries[summary_key.str()];
+      summary.stage = shader.stage;
+      summary.hash = shader.hash;
+      summary.source = std::string(match->source);
+      summary.offset = match->prefix.secondary_offset;
+      summary.matched = match->prefix.matched_dwords;
+      ++summary.probes;
+      summary.draws = shader.draw_count;
+      summary.loads = shader.load_count;
       std::cout << " runtime_payload_prefix_match=yes"
                 << " runtime_hash=0x" << std::hex << std::uppercase
                 << shader.hash << std::dec
@@ -4228,6 +4253,20 @@ void MatchRuntimeShaders(std::string_view index_text,
     }
     std::cout << "Shader record probe runtime payload-prefix matches: "
               << probe_runtime_payload_matches << "/" << probe_count << "\n";
+    if (!mapping_summaries.empty()) {
+      std::cout << "\nShader record probe runtime mapping summary:\n";
+      for (const auto &entry : mapping_summaries) {
+        const MappingSummary &summary = entry.second;
+        std::cout << "  " << StageName(summary.stage) << " 0x" << std::hex
+                  << std::uppercase << summary.hash << std::dec
+                  << " source=" << summary.source
+                  << " offset=" << summary.offset
+                  << " matched_dwords=" << summary.matched
+                  << " probes=" << summary.probes
+                  << " draws=" << summary.draws
+                  << " loads=" << summary.loads << "\n";
+      }
+    }
   }
 }
 
