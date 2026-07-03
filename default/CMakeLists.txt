@@ -50,6 +50,7 @@ set(NATIVE_RENDERER_SOURCES
     ../src/native_renderer/shader_translation/XenosDisassembly.cpp
     ../src/native_renderer/shader_translation/XenosHlslTranslator.cpp
     ../src/native_renderer/shader_translation/ShaderTranslation.cpp
+    ../src/native_renderer/shader_translation/XenosDxbcTranslator.cpp
 )
 
 set(NATIVE_RENDER_REPLAY_SOURCES
@@ -114,6 +115,9 @@ endif()
 
 if(WIN32)
     add_executable(default WIN32 ${DEFAULT_SOURCES})
+    # Live on-demand Xenos->DXBC translation (SDK translator linked via the
+    # ReXGlue graphics library).
+    target_compile_definitions(default PRIVATE BO2_HAVE_XENOS_DXBC_TRANSLATOR)
 elseif(ANDROID)
     add_library(default SHARED ${DEFAULT_SOURCES})
 else()

@@ -1,5 +1,12 @@
 #include "D3D12LiveRendererBackend.h"
 
+#if defined(BO2_HAVE_XENOS_DXBC_TRANSLATOR)
+#include <cstdio>
+#include <fstream>
+#include <sstream>
+#include "../shader_translation/XenosDxbcTranslator.h"
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <sstream>
@@ -308,6 +315,17 @@ void D3D12LiveRendererBackend::SubmitPM4Shader(const PM4ShaderInfo &shader) {
   ++ActiveStats().shaders;
   capture_.WritePM4Shader(shader);
   ActiveFrameBuilder().BindShader(shader, shader.event_index);
+  if (!shader.payload_missing && !shader.payload_truncated &&
+      shader.payload_dword_count > 0 && shader.shader_hash != 0) {
+    auto &payload = live_shader_payloads_[{shader.shader_type,
+                                           shader.shader_hash}];
+    if (payload.empty()) {
+      payload.assign(shader.payload_dwords.begin(),
+                     shader.payload_dwords.begin() +
+                         std::min<std::size_t>(shader.payload_dword_count,
+                                               shader.payload_dwords.size()));
+    }
+  }
 }
 
 void D3D12LiveRendererBackend::SubmitPM4Constants(
@@ -451,6 +469,126 @@ D3D12LiveFrameBuilder &D3D12LiveRendererBackend::ActiveFrameBuilder() {
   return in_frame_ ? frame_builder_ : pending_frame_builder_;
 }
 
+#if defined(BO2_HAVE_XENOS_DXBC_TRANSLATOR)
+namespace {
+bool TranslateLiveXeniaShaderThunk(void *context, uint32_t stage,
+                                   uint64_t runtime_hash,
+                                   replay::XeniaTranslatedShaderResult &result,
+                                   std::string &error) {
+  return static_cast<D3D12LiveRendererBackend *>(context)->TranslateLiveShader(
+      stage, runtime_hash, result, error);
+}
+}  // namespace
+#endif
+
+bool D3D12LiveRendererBackend::TranslateLiveShader(
+    uint32_t stage, uint64_t runtime_hash,
+    replay::XeniaTranslatedShaderResult &result, std::string &error) {
+#if !defined(BO2_HAVE_XENOS_DXBC_TRANSLATOR)
+  (void)stage;
+  (void)runtime_hash;
+  (void)result;
+  error = "live shader translation is not compiled into this target";
+  return false;
+#else
+  std::vector<uint32_t> payload;
+  {
+    std::lock_guard<std::mutex> builder_lock(frame_builder_mutex_);
+    auto it = live_shader_payloads_.find({stage, runtime_hash});
+    if (it == live_shader_payloads_.end() || it->second.empty()) {
+      error = "no complete live payload for this shader";
+      return false;
+    }
+    payload = it->second;
+  }
+
+  XenosDxbcTranslationInput input;
+  input.runtime_stage = stage;
+  input.runtime_hash = runtime_hash;
+  input.payload_dwords = payload.data();
+  input.payload_dword_count = payload.size();
+  XenosDxbcTranslationResult translated;
+  if (!TranslateXenosPayloadToDxbc(input, translated, error)) {
+    return false;
+  }
+
+  auto hex64 = [](uint64_t value) {
+    char buffer[19];
+    std::snprintf(buffer, sizeof(buffer), "0x%016llX",
+                  static_cast<unsigned long long>(value));
+    return std::string(buffer);
+  };
+  std::ostringstream texture_bindings;
+  for (std::size_t i = 0; i < translated.texture_bindings.size(); ++i) {
+    const auto &binding = translated.texture_bindings[i];
+    if (i != 0) texture_bindings << ",";
+    texture_bindings << binding.fetch_constant << ":" << binding.dimension
+                     << ":" << (binding.is_signed ? 1 : 0);
+  }
+  std::ostringstream sampler_bindings;
+  for (std::size_t i = 0; i < translated.sampler_bindings.size(); ++i) {
+    const auto &binding = translated.sampler_bindings[i];
+    if (i != 0) sampler_bindings << ",";
+    sampler_bindings << binding.fetch_constant << ":" << binding.mag_filter
+                     << ":" << binding.min_filter << ":" << binding.mip_filter
+                     << ":" << binding.aniso_filter;
+  }
+  std::ostringstream float_bitmap;
+  float_bitmap << hex64(translated.float_bitmap[0]) << ","
+               << hex64(translated.float_bitmap[1]) << ","
+               << hex64(translated.float_bitmap[2]) << ","
+               << hex64(translated.float_bitmap[3]);
+
+  result.dxbc = translated.dxbc;
+  result.modification = translated.modification;
+  result.uses_memexport = translated.uses_memexport;
+  result.float_bitmap = float_bitmap.str();
+  result.texture_bindings = texture_bindings.str();
+  result.sampler_bindings = sampler_bindings.str();
+
+  // Persist to the shader cache so later runs load from disk.
+  const std::string stage_name = stage == 0 ? "VS" : "PS";
+  const std::string stem = stage_name + "_" + hex64(runtime_hash) + ".xenia";
+  const std::filesystem::path blob_path =
+      shader_cache_root_ / "d3d12" / (stem + ".dxbc");
+  std::error_code ec;
+  std::filesystem::create_directories(blob_path.parent_path(), ec);
+  std::ofstream blob_file(blob_path, std::ios::binary | std::ios::trunc);
+  if (blob_file) {
+    blob_file.write(reinterpret_cast<const char *>(translated.dxbc.data()),
+                    std::streamsize(translated.dxbc.size()));
+  }
+  std::ostringstream record;
+  record << "{\"backend\":\"d3d12\",\"format\":\"xenia_dxbc\","
+         << "\"compiler\":\"DxbcShaderTranslator\",\"diagnostic\":false,"
+         << "\"translator\":\"" << XenosDxbcTranslatorVersion() << "\","
+         << "\"binding_layout\":\"xenia_v1\","
+         << "\"stage\":\"" << stage_name << "\","
+         << "\"runtime_hash\":\"" << hex64(runtime_hash) << "\","
+         << "\"modification\":\"" << hex64(translated.modification)
+         << "\","
+         << "\"uses_vertex_fetch\":"
+         << (translated.uses_vertex_fetch ? "true" : "false") << ","
+         << "\"uses_texture_fetch\":"
+         << (translated.uses_texture_fetch ? "true" : "false") << ","
+         << "\"uses_memexport\":"
+         << (translated.uses_memexport ? "true" : "false") << ","
+         << "\"float_bitmap\":\"" << float_bitmap.str() << "\","
+         << "\"texture_bindings\":\"" << texture_bindings.str() << "\","
+         << "\"sampler_bindings\":\"" << sampler_bindings.str() << "\","
+         << "\"cache_key\":\"" << stem << "\","
+         << "\"path\":\"" << blob_path.generic_string() << "\"}\n";
+  std::ofstream index_file(shader_cache_root_ / "shader_cache_index.jsonl",
+                           std::ios::binary | std::ios::app);
+  if (index_file) {
+    index_file << record.str();
+  }
+  REXLOG_INFO("BO2 native D3D12 live-translated shader {} {} ({} bytes)",
+              stage_name, hex64(runtime_hash), translated.dxbc.size());
+  return true;
+#endif
+}
+
 replay::ReplayCliOptions D3D12LiveRendererBackend::BuildReplayOptions() const {
   replay::ReplayCliOptions options{};
   options.shader_cache_root = shader_cache_root_;
@@ -460,6 +598,11 @@ replay::ReplayCliOptions D3D12LiveRendererBackend::BuildReplayOptions() const {
   options.frame_index = 0;
   if (live_pipeline_ == "xenia" || live_pipeline_ == "d3d12-xenia") {
     options.backend = "d3d12-xenia";
+#if defined(BO2_HAVE_XENOS_DXBC_TRANSLATOR)
+    options.translate_xenia_shader = &TranslateLiveXeniaShaderThunk;
+    options.translate_xenia_shader_context =
+        const_cast<D3D12LiveRendererBackend *>(this);
+#endif
   }
   return options;
 }

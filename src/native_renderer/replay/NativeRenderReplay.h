@@ -614,6 +614,10 @@ struct ReplayCliOptions {
   struct D3D12LiveSubmitBinding *live_binding = nullptr;
   struct D3D12LiveReplaySession *live_session = nullptr;
 #endif
+  // Installed by app targets that link the SDK shader translator; the
+  // d3d12-xenia backend calls it for runtime shaders without cache records.
+  XeniaShaderTranslateFn translate_xenia_shader = nullptr;
+  void *translate_xenia_shader_context = nullptr;
   std::optional<std::size_t> frame_index;
   std::optional<std::size_t> draw_index;
   std::optional<std::size_t> frontbuffer_index;

@@ -99,6 +99,16 @@ class D3D12LiveRendererBackend final : public RendererBackend {
 
   FrameStats& ActiveStats();
   D3D12LiveFrameBuilder& ActiveFrameBuilder();
+
+ public:
+  // Translates a runtime shader payload seen on the live PM4 stream to DXBC
+  // and persists it to the shader cache. Only functional in app targets that
+  // compile the SDK-backed translator (BO2_HAVE_XENOS_DXBC_TRANSLATOR).
+  bool TranslateLiveShader(uint32_t stage, uint64_t runtime_hash,
+                           replay::XeniaTranslatedShaderResult& result,
+                           std::string& error);
+
+ private:
   bool BeginCommandFrame(uint64_t frame_index);
   void EndCommandFrame(uint64_t frame_index, bool execute);
   bool WaitForFenceValue(uint64_t fence_value);
@@ -130,6 +140,10 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   std::mutex frame_builder_mutex_;
   D3D12LiveFrameBuilder frame_builder_;
   D3D12LiveFrameBuilder pending_frame_builder_;
+  // Complete runtime shader payloads from the live PM4 stream, kept for
+  // on-demand translation of shaders without cache records.
+  std::map<std::pair<uint32_t, uint64_t>, std::vector<uint32_t>>
+      live_shader_payloads_;
   FrameStats frame_stats_;
   FrameStats pending_stats_;
   LiveSubmitStats last_submit_stats_;

@@ -48,6 +48,7 @@ set(NATIVE_RENDERER_SOURCES
     ../src/native_renderer/replay/NativeRenderReplay.cpp
     ../src/native_renderer/replay/D3D12ReplayBackend.cpp
     ../src/native_renderer/shader_translation/ShaderTranslation.cpp
+    ../src/native_renderer/shader_translation/XenosDxbcTranslator.cpp
 )
 
 set(DEFAULTMP_SOURCES
@@ -62,6 +63,9 @@ set(DEFAULTMP_SOURCES
 
 if(WIN32)
     add_executable(default_mp WIN32 ${DEFAULTMP_SOURCES})
+    # Live on-demand Xenos->DXBC translation (SDK translator linked via the
+    # ReXGlue graphics library).
+    target_compile_definitions(default_mp PRIVATE BO2_HAVE_XENOS_DXBC_TRANSLATOR)
 elseif(ANDROID)
     add_library(default_mp SHARED ${DEFAULTMP_SOURCES})
 else()

@@ -6843,6 +6843,77 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     XeniaShaderBlob blob;
     const auto record_it = cache_records.find(key);
     if (record_it == cache_records.end()) {
+      // No cache record: translate on demand when the caller installed the
+      // translation callback (live path with the SDK translator linked).
+      if (rect == 0 && options.translate_xenia_shader != nullptr) {
+        XeniaTranslatedShaderResult translated;
+        std::string translate_error;
+        if (options.translate_xenia_shader(
+                options.translate_xenia_shader_context, uint32_t(stage), hash,
+                translated, translate_error)) {
+          ShaderCacheRecord record;
+          record.backend = "d3d12";
+          record.stage = stage == 0 ? "VS" : "PS";
+          record.runtime_hash = hash;
+          record.format = "xenia_dxbc";
+          record.modification = translated.modification;
+          record.uses_memexport = translated.uses_memexport;
+          record.float_bitmap = translated.float_bitmap;
+          record.texture_bindings = translated.texture_bindings;
+          record.sampler_bindings = translated.sampler_bindings;
+          XeniaShaderBlob translated_blob;
+          translated_blob.dxbc = std::move(translated.dxbc);
+          // Reuse the record-string parsing for bitmap/binding metadata.
+          record.path = "(live-translated)";
+          std::string parse_error;
+          XeniaShaderBlob parsed;
+          parsed.dxbc = std::move(translated_blob.dxbc);
+          parsed.runtime_hash = hash;
+          parsed.modification = record.modification;
+          parsed.uses_memexport = record.uses_memexport;
+          {
+            std::size_t bitmap_index = 0;
+            std::size_t begin = 0;
+            const std::string &text = record.float_bitmap;
+            while (bitmap_index < 4 && begin < text.size()) {
+              std::size_t end = text.find(',', begin);
+              if (end == std::string::npos) {
+                end = text.size();
+              }
+              parsed.float_bitmap[bitmap_index++] = std::strtoull(
+                  text.substr(begin, end - begin).c_str(), nullptr, 16);
+              begin = end + 1;
+            }
+          }
+          {
+            const std::vector<uint32_t> numbers =
+                ParseXeniaBindingNumbers(record.texture_bindings, ':');
+            for (std::size_t i = 0; (i + 3) <= numbers.size(); i += 3) {
+              XeniaTextureBindingRecord binding;
+              binding.fetch_constant = numbers[i];
+              binding.dimension = numbers[i + 1];
+              binding.is_signed = numbers[i + 2] != 0;
+              parsed.texture_bindings.push_back(binding);
+            }
+            const std::vector<uint32_t> sampler_numbers =
+                ParseXeniaBindingNumbers(record.sampler_bindings, ':');
+            for (std::size_t i = 0; (i + 5) <= sampler_numbers.size();
+                 i += 5) {
+              XeniaSamplerBindingRecord binding;
+              binding.fetch_constant = sampler_numbers[i];
+              binding.mag_filter = sampler_numbers[i + 1];
+              binding.min_filter = sampler_numbers[i + 2];
+              binding.mip_filter = sampler_numbers[i + 3];
+              binding.aniso_filter = sampler_numbers[i + 4];
+              parsed.sampler_bindings.push_back(binding);
+            }
+          }
+          cache_records[key] = record;
+          auto [translated_it, translated_inserted] =
+              blobs.insert_or_assign(key, std::move(parsed));
+          return &translated_it->second;
+        }
+      }
       blobs[key] = {};
       return nullptr;
     }
