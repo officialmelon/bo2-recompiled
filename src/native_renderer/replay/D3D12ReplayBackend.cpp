@@ -838,6 +838,7 @@ struct D3D12ReplayPipeline {
   ComPtr<ID3D12RootSignature> root_signature;
   ComPtr<ID3D12PipelineState> pipeline_state;
   const RenderStateRecord *render_state = nullptr;
+  std::vector<uint32_t> required_constant_slots;
   bool used_diagnostic_shader = false;
   bool forced_depth_only_color_mask = false;
 };
@@ -3649,15 +3650,44 @@ PreparedCapturedConstants BuildCapturedConstants(
   return prepared;
 }
 
-std::vector<uint32_t> SemanticPixelShaderConstants(uint64_t pixel_shader_hash) {
-  switch (pixel_shader_hash) {
-  case 0x7D1EF030F5710BDAull:
-    return {72, 235, 252, 253, 254, 255};
-  case 0x8645E8BA65E424B2ull:
-    return {72, 73, 232, 233, 234, 235, 252, 253, 254, 255};
-  default:
-    return {};
+void AppendConstantSlotsFromPattern(std::string_view source,
+                                    std::string_view pattern,
+                                    std::set<uint32_t> &slots) {
+  std::size_t cursor = 0;
+  while (cursor < source.size()) {
+    const std::size_t found = source.find(pattern, cursor);
+    if (found == std::string_view::npos) {
+      break;
+    }
+    std::size_t index = found + pattern.size();
+    uint32_t slot = 0;
+    bool has_digit = false;
+    while (index < source.size() && source[index] >= '0' &&
+           source[index] <= '9') {
+      has_digit = true;
+      slot = slot * 10u + static_cast<uint32_t>(source[index] - '0');
+      ++index;
+    }
+    if (has_digit && index < source.size() && source[index] == ']') {
+      slots.insert(slot);
+    }
+    cursor = found + pattern.size();
   }
+}
+
+std::vector<uint32_t> RequiredConstantSlotsFromShaderSources(
+    std::string_view vertex_shader_source,
+    std::string_view pixel_shader_source) {
+  std::set<uint32_t> slots;
+  AppendConstantSlotsFromPattern(vertex_shader_source, "captured_constants[",
+                                 slots);
+  AppendConstantSlotsFromPattern(pixel_shader_source, "captured_constants[",
+                                 slots);
+  AppendConstantSlotsFromPattern(vertex_shader_source, "bo2_constants[",
+                                 slots);
+  AppendConstantSlotsFromPattern(pixel_shader_source, "bo2_constants[",
+                                 slots);
+  return {slots.begin(), slots.end()};
 }
 
 std::string FormatMissingSemanticConstants(
@@ -4995,6 +5025,11 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
     pipeline.pixel_shader_hash = state.pixel_shader.hash;
     pipeline.render_state =
         state.draw.render_state.present ? &state.draw.render_state : nullptr;
+    pipeline.required_constant_slots = RequiredConstantSlotsFromShaderSources(
+        vertex_shader_source ? std::string_view(vertex_shader_source)
+                             : std::string_view(),
+        pixel_shader_source ? std::string_view(pixel_shader_source)
+                            : std::string_view());
     pipeline.used_diagnostic_shader = used_diagnostic_shader;
     pipeline.forced_depth_only_color_mask =
         prepared_draw.force_depth_only_color_mask;
@@ -5418,8 +5453,13 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
   for (const UploadedRealDraw &uploaded : uploaded_draws) {
     submitted_input_layouts.insert(uploaded.prepared.input_layout_signature);
     const ReplayDrawState &state = capture.draws[uploaded.prepared.draw_index];
+    const PipelineKey pipeline_key =
+        MakePipelineKey(state, uploaded.prepared, format);
+    const auto pipeline_it = pipelines->find(pipeline_key);
     const std::vector<uint32_t> required_constants =
-        SemanticPixelShaderConstants(state.pixel_shader.hash);
+        pipeline_it == pipelines->end()
+            ? std::vector<uint32_t>()
+            : pipeline_it->second.required_constant_slots;
     if (!required_constants.empty()) {
       const std::string missing_constants =
           FormatMissingSemanticConstants(uploaded.constants, required_constants);

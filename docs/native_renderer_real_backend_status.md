@@ -31,6 +31,15 @@ why the renderer is not finished: `135` captured texture SRVs were bound, but
 `825` fallback texture SRVs were still needed. Texture/resource translation and
 broader shader lowering remain visible correctness blockers.
 
+Follow-up cleanup: D3D12 replay no longer uses a hardcoded pixel-shader-hash
+switch to decide which semantic constant slots to audit. Each created pipeline
+now records `required_constant_slots` by scanning the resolved generated shader
+source for `captured_constants[N]` and `bo2_constants[N]` references. This keeps
+constant-gap diagnostics tied to the shader code actually being compiled and
+cached, not to a temporary list of runtime hashes. Rebuilt
+`native_render_replay.exe` with `-j12`; bounded MP080 replay remained stable at
+`120` supported draws across `9` shader pairs with `diagnostic_pipelines=0`.
+
 ## 2026-07-03 shader precompile report checkpoint
 
 `native_shader_inspect.exe` now supports

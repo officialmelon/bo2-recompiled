@@ -20,6 +20,13 @@ shader hash, confirming the identity rule
 allowed only as documented fallback or investigation aids; they are not the
 target architecture.
 
+The D3D12 replay backend also removed a shader-hash-only constant-gap switch.
+Required constant slots are now derived from the resolved shader source by
+scanning `captured_constants[N]` and `bo2_constants[N]` references after shader
+resolution. This is still a lightweight metadata bridge, but it follows the
+actual generated/compiled shader instead of treating specific runtime hashes as
+special cases.
+
 Evidence date: 2026-07-03
 
 ## Existing shader work
