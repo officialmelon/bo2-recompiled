@@ -141,21 +141,19 @@ Follow-up multi-fetch vertex rule validation:
   `PS 0xDC168FB6031AFC41`, old truncated `PS 0x79E1F538A5074A65`, and the
   no-raster/no-fetch utility `VS 0xDDED7E538422AE73`.
 
-Follow-up runtime pixel ALU cache coverage:
+Rejected runtime pixel ALU shortcut:
 
-- Added runtime-hash keyed shared generated-HLSL rules for
+- A prior attempt added runtime-hash keyed generated-HLSL approximations for
   `PS 0x7D1EF030F5710BDA`, `PS 0x8645E8BA65E424B2`, and
-  `PS 0xDC168FB6031AFC41`.
-- These rules preserve real captured texture sampling and interpolated color,
-  but they are still conservative shader-specific approximations, not complete
-  instruction-by-instruction Xenos ALU lowering.
-- MP080 isolated-cache precompile improved to `attempted=16`, `compiled=15`,
-  `translator_failed=2`, `dxc_failed=0`, `source_shared=15`.
-- MP028 isolated-cache precompile improved to `attempted=13`, `compiled=13`,
-  `translator_failed=1`, `dxc_failed=0`, `source_shared=13`.
-- Remaining MP080 misses are old truncated `PS 0x79E1F538A5074A65` and
-  no-raster/no-fetch utility `VS 0xDDED7E538422AE73`; MP028 only misses the
-  old truncated `PS 0x79E1F538A5074A65` capture.
+  `PS 0xDC168FB6031AFC41`. That was not an acceptable final direction because
+  it hardcoded individual shader identities instead of lowering decoded Xenos
+  ALU/texture operations.
+- Those hash-only pixel ALU rules were removed. These shaders remain explicit
+  translator misses until generic lowering exists for their decoded operations
+  (`mul`, `add`, `mad`, `frc`, `cndge`, `dp2add`, `rcp`, `trunc`, `floor`,
+  `tfetch2D`, swizzles, write masks, and constant reads).
+- The simple texture/color and alpha-mask pixel paths now match decoded
+  operation patterns rather than specific runtime hashes.
 
 ## Runtime D3D12 Precompile Checkpoint
 

@@ -86,7 +86,6 @@ bool TryTranslateTexturedColorPixelShader(
     const XenosHlslTranslationRequest& request,
     const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
   if (request.runtime_stage != 1 ||
-      request.runtime_hash != 0xEDC17DCC3FFDB040ull ||
       !HasOperation(operations, "tfetch2D", "r0", 0) ||
       (!HasOperation(operations, "mul", "oC0") &&
        !HasOperation(operations, "mul", "o0"))) {
@@ -118,7 +117,6 @@ bool TryTranslateAlphaMaskPixelShader(
     const XenosHlslTranslationRequest& request,
     const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
   if (request.runtime_stage != 1 ||
-      request.runtime_hash != 0xFF01D28E1EF3A880ull ||
       !HasOperation(operations, "tfetch2D", "r1.1w__", 1) ||
       !HasOperation(operations, "mul", "oC0")) {
     return false;
@@ -507,122 +505,6 @@ bool TryTranslateFourTextureMaskPixelShader(
   return true;
 }
 
-bool TryTranslateRuntime7D1PixelShader(
-    const XenosHlslTranslationRequest& request,
-    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
-  if (request.runtime_stage != 1 ||
-      request.runtime_hash != 0x7D1EF030F5710BDAull) {
-    return false;
-  }
-
-  EmitTranslatedHeader(request, out);
-  out << "cbuffer CapturedConstants : register(b1)\n";
-  out << "{\n";
-  out << "  float4 captured_constants[8];\n";
-  out << "};\n\n";
-  out << "Texture2D native_texture0 : register(t0);\n";
-  out << "Texture2D native_texture1 : register(t1);\n";
-  out << "Texture2D native_texture2 : register(t2);\n";
-  out << "SamplerState native_sampler0 : register(s0);\n";
-  out << "SamplerState native_sampler1 : register(s1);\n";
-  out << "SamplerState native_sampler2 : register(s2);\n\n";
-  out << "struct PSInput\n";
-  out << "{\n";
-  out << "  float4 position : SV_Position;\n";
-  out << "  float4 color : COLOR0;\n";
-  out << "  float2 uv : TEXCOORD0;\n";
-  out << "};\n\n";
-  out << "float4 main(PSInput input) : SV_Target0\n";
-  out << "{\n";
-  out << "  // Xenos subset: tf1 mask plus three tf2 taps ending in\n";
-  out << "  // mul o0.xyz0. Preserve captured texture dependence and expose the\n";
-  out << "  // shader as generated cache while full ALU lowering is still pending.\n";
-  out << "  const float2 uv = saturate(input.uv);\n";
-  out << "  const float4 mask = native_texture0.Sample(native_sampler0, uv);\n";
-  out << "  const float2 step_uv = saturate(abs(captured_constants[0].xy) * 0.00390625f);\n";
-  out << "  const float r = native_texture1.Sample(native_sampler1, uv + step_uv).r;\n";
-  out << "  const float g = native_texture1.Sample(native_sampler1, uv - step_uv).g;\n";
-  out << "  const float b = native_texture2.Sample(native_sampler2,\n";
-  out << "      saturate(uv + float2(step_uv.y, -step_uv.x))).b;\n";
-  out << "  return saturate(float4(r, g, b, 0.0f) * input.color * mask.a);\n";
-  out << "}\n";
-  return true;
-}
-
-bool TryTranslateRuntime8645PixelShader(
-    const XenosHlslTranslationRequest& request,
-    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
-  if (request.runtime_stage != 1 ||
-      request.runtime_hash != 0x8645E8BA65E424B2ull) {
-    return false;
-  }
-
-  EmitTranslatedHeader(request, out);
-  out << "cbuffer CapturedConstants : register(b1)\n";
-  out << "{\n";
-  out << "  float4 captured_constants[8];\n";
-  out << "};\n\n";
-  out << "Texture2D native_texture0 : register(t0);\n";
-  out << "Texture2D native_texture1 : register(t1);\n";
-  out << "SamplerState native_sampler0 : register(s0);\n";
-  out << "SamplerState native_sampler1 : register(s1);\n\n";
-  out << "struct PSInput\n";
-  out << "{\n";
-  out << "  float4 position : SV_Position;\n";
-  out << "  float4 color : COLOR0;\n";
-  out << "  float2 uv : TEXCOORD0;\n";
-  out << "};\n\n";
-  out << "float4 main(PSInput input) : SV_Target0\n";
-  out << "{\n";
-  out << "  // Xenos subset: tf2 scalar mask plus four tf1 neighborhood taps\n";
-  out << "  // ending in mul o0. This keeps real sampled data in the generated\n";
-  out << "  // cache path until the full polar/animated UV math is lowered.\n";
-  out << "  const float2 uv = saturate(input.uv);\n";
-  out << "  const float mask = native_texture0.Sample(native_sampler0, uv).r;\n";
-  out << "  const float2 step_uv = saturate(abs(captured_constants[0].zw) * 0.00390625f);\n";
-  out << "  const float4 a = native_texture1.Sample(native_sampler1, uv + step_uv);\n";
-  out << "  const float4 b = native_texture1.Sample(native_sampler1, uv - step_uv);\n";
-  out << "  const float4 c = native_texture1.Sample(native_sampler1,\n";
-  out << "      saturate(uv + float2(step_uv.y, -step_uv.x)));\n";
-  out << "  const float4 mixed = saturate((a + b + c) * (1.0f / 3.0f));\n";
-  out << "  return saturate(mixed * input.color * mask);\n";
-  out << "}\n";
-  return true;
-}
-
-bool TryTranslateRuntimeDc16PixelShader(
-    const XenosHlslTranslationRequest& request,
-    const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
-  if (request.runtime_stage != 1 ||
-      request.runtime_hash != 0xDC168FB6031AFC41ull) {
-    return false;
-  }
-
-  EmitTranslatedHeader(request, out);
-  out << "cbuffer CapturedConstants : register(b1)\n";
-  out << "{\n";
-  out << "  float4 captured_constants[8];\n";
-  out << "};\n\n";
-  out << "Texture2D native_texture0 : register(t0);\n";
-  out << "SamplerState native_sampler0 : register(s0);\n\n";
-  out << "struct PSInput\n";
-  out << "{\n";
-  out << "  float4 position : SV_Position;\n";
-  out << "  float4 color : COLOR0;\n";
-  out << "  float2 uv : TEXCOORD0;\n";
-  out << "};\n\n";
-  out << "float4 main(PSInput input) : SV_Target0\n";
-  out << "{\n";
-  out << "  // Xenos subset: constant-driven animated coordinate feeding tf1,\n";
-  out << "  // followed by mul o0, r1, r0. Use the captured interpolated UV and\n";
-  out << "  // keep the real texture/color dependency in generated HLSL.\n";
-  out << "  const float2 uv = saturate(input.uv + frac(captured_constants[0].xy) * 0.0f);\n";
-  out << "  const float4 texel = native_texture0.Sample(native_sampler0, uv);\n";
-  out << "  return saturate(texel * input.color);\n";
-  out << "}\n";
-  return true;
-}
-
 bool TryTranslateSgtsPixelShader(
     const XenosHlslTranslationRequest& request,
     const std::vector<ParsedShaderOperation>& operations, std::ostream& out) {
@@ -716,15 +598,6 @@ bool TryTranslateLimitedXenosHlsl(const XenosHlslTranslationRequest& request,
     return true;
   }
   if (TryTranslateFourTextureMaskPixelShader(request, operations, out)) {
-    return true;
-  }
-  if (TryTranslateRuntime7D1PixelShader(request, operations, out)) {
-    return true;
-  }
-  if (TryTranslateRuntime8645PixelShader(request, operations, out)) {
-    return true;
-  }
-  if (TryTranslateRuntimeDc16PixelShader(request, operations, out)) {
     return true;
   }
   if (TryTranslateSgtsPixelShader(request, operations, out)) {

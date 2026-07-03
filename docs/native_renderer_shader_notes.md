@@ -907,6 +907,12 @@ Current report validation:
 - MP028 isolated cache: `compiled=6`, `translator_failed=8`, `dxc_failed=0`,
   `source_shared=6`, `source_fallback=0`.
 
+Do not add runtime-hash-only HLSL approximations as the main solution. A
+temporary attempt to cover `PS 0x7D1EF030F5710BDA`,
+`PS 0x8645E8BA65E424B2`, and `PS 0xDC168FB6031AFC41` this way was rejected
+and removed. Those shaders need generic decoded-operation lowering for their
+ALU, texture fetch, swizzle/write-mask, and constant-read sequences.
+
 ## Native renderer path forward
 
 1. Preserve the runtime `(stage, hash, guest_address, dword_count)` stream from replay as the first shader registry key.
