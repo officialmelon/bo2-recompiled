@@ -89,7 +89,7 @@
     "shader_pairs": 12,
     "captured_texture_srvs": 1522,
     "fallback_texture_srvs": 0,
-    "output_sha256": "C8E1E97BFED183B57371764BFC70B1D7E7EB1EE2D3E746AD21C940F00E1AEC88"
+    "output_sha256": "71A1E8B05A07027BBC0D777D37A0184C2D2979F476385933400B4987CB3DCC73"
   },
   "mp028-xenia-replay": {
     "submitted_draws": 1022,

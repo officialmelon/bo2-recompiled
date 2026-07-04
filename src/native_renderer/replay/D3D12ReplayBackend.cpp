@@ -8311,30 +8311,39 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
             break;
           }
         }
-        // Filter value 3 means "use the fetch constant's filter".
+        // Filter value 3 (and aniso 7) mean "use the fetch constant's value".
         uint32_t mag = binding.mag_filter;
         uint32_t min = binding.min_filter;
         uint32_t mip = binding.mip_filter;
+        uint32_t aniso = binding.aniso_filter;
         if (fetch != nullptr) {
           if (mag == 3) mag = fetch->mag_filter;
           if (min == 3) min = fetch->min_filter;
           if (mip == 3) mip = fetch->mip_filter;
+          if (aniso == 7) aniso = fetch->aniso_filter;
         }
         D3D12_SAMPLER_DESC sampler{};
         const bool linear_mag = mag == 1;
         const bool linear_min = min == 1;
         const bool linear_mip = mip == 1;
-        sampler.Filter = D3D12_ENCODE_BASIC_FILTER(
-            linear_min ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
-            linear_mag ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
-            linear_mip ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
-            D3D12_FILTER_REDUCTION_TYPE_STANDARD);
+        // AnisoFilter enum: 0 disabled, 1..5 = max 1:1..16:1 (2^(n-1)).
+        const bool anisotropic = aniso >= 1 && aniso <= 5;
+        if (anisotropic) {
+          sampler.Filter = D3D12_FILTER_ANISOTROPIC;
+        } else {
+          sampler.Filter = D3D12_ENCODE_BASIC_FILTER(
+              linear_min ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
+              linear_mag ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
+              linear_mip ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
+              D3D12_FILTER_REDUCTION_TYPE_STANDARD);
+        }
         sampler.AddressU =
             XeniaClampToAddressMode(fetch != nullptr ? fetch->clamp_x : 2);
         sampler.AddressV =
             XeniaClampToAddressMode(fetch != nullptr ? fetch->clamp_y : 2);
         sampler.AddressW =
             XeniaClampToAddressMode(fetch != nullptr ? fetch->clamp_z : 2);
+        sampler.MaxAnisotropy = anisotropic ? (1u << (aniso - 1)) : 1u;
         sampler.MaxLOD = D3D12_FLOAT32_MAX;
         D3D12_CPU_DESCRIPTOR_HANDLE handle = sampler_cpu_base;
         handle.ptr += std::size_t(next_sampler_descriptor) * sampler_stride;
