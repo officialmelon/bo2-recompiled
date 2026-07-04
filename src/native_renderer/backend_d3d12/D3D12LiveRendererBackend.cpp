@@ -14,6 +14,7 @@
 #include <rex/logging.h>
 
 #include "../DebugRenderLog.h"
+#include "../NativeRendererStats.h"
 
 namespace bo2::native {
 namespace {
@@ -458,6 +459,37 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
         submitted_frames_, failed_frames_);
   }
   MaybeLogLiveDiagnostics(frame_index);
+
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (last_frame_end_time_.time_since_epoch().count() != 0) {
+      const double frame_ms =
+          std::chrono::duration<double, std::milli>(now - last_frame_end_time_)
+              .count();
+      smoothed_frame_ms_ = smoothed_frame_ms_ <= 0.0
+                               ? frame_ms
+                               : smoothed_frame_ms_ * 0.9 + frame_ms * 0.1;
+    }
+    last_frame_end_time_ = now;
+    NativeRendererLiveStats stats;
+    stats.active = true;
+    stats.backend = "d3d12-live";
+    stats.pipeline = live_pipeline_;
+    stats.frame_time_ms = smoothed_frame_ms_;
+    stats.fps = smoothed_frame_ms_ > 0.0 ? 1000.0 / smoothed_frame_ms_ : 0.0;
+    stats.frames_submitted = submitted_frames_;
+    stats.frames_failed = failed_frames_;
+    stats.draws_last_frame = last_submit_stats_.submitted_draws;
+    stats.skipped_draws_last_frame = last_submit_stats_.skipped_draws;
+    stats.shader_pairs = last_submit_stats_.shader_pair_count;
+    stats.pso_entries = last_submit_stats_.pso_entries;
+    stats.pso_cache_hits = last_submit_stats_.pso_cache_hits;
+    stats.pso_cache_misses = last_submit_stats_.pso_cache_misses;
+    stats.live_translated_shaders = live_translated_count_;
+    stats.presented_guest_color_base =
+        last_submit_stats_.selected_presented_guest_color_base;
+    PublishNativeRendererLiveStats(stats);
+  }
   in_frame_ = false;
 }
 
@@ -585,6 +617,7 @@ bool D3D12LiveRendererBackend::TranslateLiveShader(
   }
   REXLOG_INFO("BO2 native D3D12 live-translated shader {} {} ({} bytes)",
               stage_name, hex64(runtime_hash), translated.dxbc.size());
+  ++live_translated_count_;
   return true;
 #endif
 }

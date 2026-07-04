@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <atomic>
 #include <condition_variable>
@@ -154,6 +155,11 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   uint32_t frame_height_ = 720;
   uint64_t submitted_frames_ = 0;
   uint64_t failed_frames_ = 0;
+  // Overlay telemetry: exponentially smoothed frame time and the number of
+  // shaders translated on demand this session.
+  std::chrono::steady_clock::time_point last_frame_end_time_{};
+  double smoothed_frame_ms_ = 0.0;
+  uint64_t live_translated_count_ = 0;
   std::filesystem::path shader_cache_root_;
   std::filesystem::path shader_override_root_;
 

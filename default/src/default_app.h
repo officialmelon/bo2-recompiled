@@ -22,6 +22,7 @@
 #include "../../common/project_paths.h"
 #include "../../common/android_launcher.h"
 #include "../../src/native_renderer/NativeRenderer.h"
+#include "../../src/native_renderer/ui/NativeRendererOverlayDialog.h"
 
 namespace bo2 {
 void InstallDefaultNativeInput(rex::Runtime* runtime);
@@ -72,7 +73,8 @@ class DefaultApp : public rex::ReXApp {
   }
 
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
-    (void)drawer;
+    native_renderer_overlay_ =
+        std::make_unique<bo2::native::NativeRendererOverlayDialog>(drawer);
     native_input_.Attach(window());
   }
 
@@ -82,6 +84,7 @@ class DefaultApp : public rex::ReXApp {
   }
 
   void OnShutdown() override {
+    native_renderer_overlay_.reset();
     native_input_.Detach();
     bo2::native::NativeRenderer::Instance().Shutdown();
     TryLaunchRequestedTitle();
@@ -176,5 +179,7 @@ class DefaultApp : public rex::ReXApp {
   // void OnShutdown() override {}
 
   bo2::NativeInput native_input_;
+  std::unique_ptr<bo2::native::NativeRendererOverlayDialog>
+      native_renderer_overlay_;
   bool launch_requested_ = false;
 };
