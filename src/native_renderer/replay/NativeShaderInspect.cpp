@@ -2,6 +2,7 @@
 #include <array>
 #include <bit>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <charconv>
 #include <cstdint>
@@ -28,6 +29,7 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <d3dcompiler.h>
+#include <crtdbg.h>
 #endif
 
 #include <rex/graphics/pipeline/shader/shader.h>
@@ -91,6 +93,8 @@ struct CliOptions {
   std::filesystem::path precompile_runtime_d3d12_cache_path;
   std::filesystem::path precompile_runtime_d3d12_report_path;
   std::filesystem::path precompile_runtime_dxbc_cache_path;
+  std::filesystem::path precompile_static_dxbc_cache_path;
+  std::filesystem::path containers_path = "shader_work/shaders/ucode_runtime";
   std::filesystem::path xenosrecomp_path;
   std::filesystem::path xenosrecomp_header_path =
       "thirdparty/XenosRecomp/XenosRecomp/shader_common.h";
@@ -106,6 +110,7 @@ struct CliOptions {
   bool semantic_disassemble = false;
   std::string hash;
   std::size_t limit = 8;
+  bool limit_set = false;
   std::size_t top_shaders = 20;
   std::size_t microcode_byte_offset = 0;
   std::size_t microcode_byte_size = std::numeric_limits<std::size_t>::max();
@@ -4262,6 +4267,187 @@ bool PrecompileRuntimeShadersXeniaDxbc(const RuntimeShaderCapture &capture,
   return counts.translated > 0;
 }
 
+// Precompiles the extracted static shader corpus to Xenia DXBC. The extractor
+// writes one runtime-exact big-endian microcode program per .ucode file, with
+// the file name keyed by the same XXH3_64 identity used by live PM4 payloads.
+bool PrecompileStaticShadersXeniaDxbc(
+    const std::filesystem::path &containers_dir,
+    const std::filesystem::path &cache_root, std::size_t limit) {
+  std::cout << "Static Xenia DXBC shader precompile\n";
+  std::cout << "  ucode_dir=" << containers_dir.string() << "\n";
+  std::cout << "  cache_root=" << cache_root.string() << "\n";
+
+  std::error_code ec;
+  std::filesystem::create_directories(cache_root / "d3d12", ec);
+  if (ec) {
+    std::cerr << "could not create cache d3d12 directory: " << ec.message()
+              << "\n";
+    return false;
+  }
+
+  // Existing records let repeated runs resume.
+  std::set<uint64_t> existing_hashes;
+  {
+    std::ifstream index(cache_root / "shader_cache_index.jsonl",
+                        std::ios::binary);
+    std::string line;
+    while (index && std::getline(index, line)) {
+      const std::size_t key = line.find("\"runtime_hash\":\"0x");
+      if (key != std::string::npos) {
+        existing_hashes.insert(
+            std::strtoull(line.c_str() + key + 16, nullptr, 16));
+      }
+    }
+  }
+
+  auto read_be32 = [](const std::vector<uint8_t> &bytes, std::size_t offset) {
+    return (uint32_t(bytes[offset]) << 24) |
+           (uint32_t(bytes[offset + 1]) << 16) |
+           (uint32_t(bytes[offset + 2]) << 8) | uint32_t(bytes[offset + 3]);
+  };
+
+  uint64_t scanned = 0;
+  uint64_t translated = 0;
+  uint64_t already_cached = 0;
+  uint64_t parse_failed = 0;
+  uint64_t translator_failed = 0;
+  std::string error;
+  // The corpus is produced by scripts/shaders/extract-runtime-ucode-from-zones
+  // .mjs: one big-endian program per file, named <VS|PS>_0x<XXH3>.ucode where
+  // the hash equals the runtime PM4 payload hash.
+  for (const std::filesystem::directory_entry &entry :
+       std::filesystem::directory_iterator(containers_dir, ec)) {
+    if (ec || !entry.is_regular_file() ||
+        entry.path().extension() != ".ucode") {
+      continue;
+    }
+    if (limit != 0 && translated + already_cached >= limit) {
+      break;
+    }
+    ++scanned;
+    const std::string name = entry.path().stem().string();
+    uint32_t stage;
+    if (name.rfind("VS_0x", 0) == 0) {
+      stage = 0;
+    } else if (name.rfind("PS_0x", 0) == 0) {
+      stage = 1;
+    } else {
+      ++parse_failed;
+      continue;
+    }
+    std::ifstream file(entry.path(), std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+    if (bytes.size() < 12 || (bytes.size() % 4) != 0) {
+      ++parse_failed;
+      continue;
+    }
+
+    const uint64_t runtime_hash = XXH3_64bits(bytes.data(), bytes.size());
+    const uint64_t name_hash =
+        std::strtoull(name.c_str() + 5, nullptr, 16);
+    if (runtime_hash != name_hash) {
+      ++parse_failed;
+      continue;
+    }
+    if (existing_hashes.count(runtime_hash) != 0) {
+      ++already_cached;
+      continue;
+    }
+
+    // Big-endian program dwords -> host order for the analyzer/translator.
+    std::vector<uint32_t> payload(bytes.size() / 4);
+    for (std::size_t i = 0; i < payload.size(); ++i) {
+      payload[i] = read_be32(bytes, i * 4);
+    }
+
+    bo2::native::XenosDxbcTranslationInput input;
+    input.runtime_stage = stage;
+    input.runtime_hash = runtime_hash;
+    input.payload_dwords = payload.data();
+    input.payload_dword_count = payload.size();
+    bo2::native::XenosDxbcTranslationResult result;
+    if (!bo2::native::TranslateXenosPayloadToDxbc(input, result, error)) {
+      ++translator_failed;
+      if (translator_failed <= 16) {
+        std::cout << "  " << StageName(stage) << " " << Hex64(runtime_hash)
+                  << " translator_failed: " << error << "\n";
+      }
+      continue;
+    }
+
+    const std::string stem =
+        std::string(StageName(stage)) + "_" + Hex64(runtime_hash) + ".xenia";
+    const std::filesystem::path blob_path =
+        cache_root / "d3d12" / (stem + ".dxbc");
+    if (!WriteBinaryFile(blob_path, result.dxbc.data(), result.dxbc.size(),
+                         error)) {
+      ++translator_failed;
+      continue;
+    }
+    std::ostringstream texture_bindings;
+    for (std::size_t b = 0; b < result.texture_bindings.size(); ++b) {
+      const auto &binding = result.texture_bindings[b];
+      if (b != 0) texture_bindings << ",";
+      texture_bindings << binding.fetch_constant << ":" << binding.dimension
+                       << ":" << (binding.is_signed ? 1 : 0);
+    }
+    std::ostringstream sampler_bindings;
+    for (std::size_t b = 0; b < result.sampler_bindings.size(); ++b) {
+      const auto &binding = result.sampler_bindings[b];
+      if (b != 0) sampler_bindings << ",";
+      sampler_bindings << binding.fetch_constant << ":" << binding.mag_filter
+                       << ":" << binding.min_filter << ":"
+                       << binding.mip_filter << ":" << binding.aniso_filter;
+    }
+    std::ostringstream index;
+    index << "{"
+          << "\"backend\":\"d3d12\",\"format\":\"xenia_dxbc\","
+          << "\"compiler\":\"DxbcShaderTranslator\",\"diagnostic\":false,"
+          << "\"translator\":\"" << bo2::native::XenosDxbcTranslatorVersion()
+          << "\",\"binding_layout\":\"xenia_v1\","
+          << "\"source_container\":\""
+          << JsonEscape(entry.path().filename().generic_string()) << "\","
+          << "\"stage\":\"" << StageName(stage) << "\","
+          << "\"runtime_hash\":\"" << Hex64(runtime_hash) << "\","
+          << "\"modification\":\"" << Hex64(result.modification) << "\","
+          << "\"uses_vertex_fetch\":"
+          << (result.uses_vertex_fetch ? "true" : "false") << ","
+          << "\"uses_texture_fetch\":"
+          << (result.uses_texture_fetch ? "true" : "false") << ","
+          << "\"uses_memexport\":"
+          << (result.uses_memexport ? "true" : "false") << ","
+          << "\"float_bitmap\":\"" << Hex64(result.float_bitmap[0]) << ","
+          << Hex64(result.float_bitmap[1]) << ","
+          << Hex64(result.float_bitmap[2]) << ","
+          << Hex64(result.float_bitmap[3]) << "\","
+          << "\"texture_bindings\":\"" << texture_bindings.str() << "\","
+          << "\"sampler_bindings\":\"" << sampler_bindings.str() << "\","
+          << "\"host_vertex_shader_type\":\"vertex\","
+          << "\"cache_key\":\"" << JsonEscape(stem) << "\","
+          << "\"path\":\"" << JsonEscape(blob_path.generic_string())
+          << "\"}\n";
+    if (!AppendTextFile(cache_root / "shader_cache_index.jsonl", index.str(),
+                        error)) {
+      std::cerr << "  warning: could not append cache index: " << error
+                << "\n";
+    }
+    existing_hashes.insert(runtime_hash);
+    ++translated;
+    if ((translated % 500) == 0) {
+      std::cout << "  translated " << translated << " (scanned " << scanned
+                << ")...\n";
+    }
+  }
+
+  std::cout << "\nStatic Xenia DXBC precompile summary:\n";
+  std::cout << "  scanned=" << scanned << " translated=" << translated
+            << " already_cached=" << already_cached
+            << " parse_failed=" << parse_failed
+            << " translator_failed=" << translator_failed << "\n";
+  return translated > 0 || already_cached > 0;
+}
+
 std::optional<PayloadPrefixMatch> FindPayloadPrefixMatch(
     const std::vector<uint32_t> &secondary_dwords,
     const std::vector<uint32_t> &payload_dwords) {
@@ -5192,6 +5378,15 @@ void FindHash(std::string_view text, std::string needle, std::size_t limit) {
 } // namespace
 
 int main(int argc, char **argv) {
+#if defined(_WIN32)
+  // Static-corpus shader probing intentionally runs arbitrary extracted
+  // microcode. Some invalid/static-only slices still trip SDK assertions; keep
+  // those as process exit/stderr data instead of showing modal abort/WER UI.
+  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX |
+               SEM_NOOPENFILEERRORBOX);
+  _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+
   CliOptions cli;
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -5329,6 +5524,18 @@ int main(int argc, char **argv) {
         return 2;
       }
       cli.precompile_runtime_dxbc_cache_path = value;
+    } else if (arg == "--precompile-static-shaders-dxbc") {
+      const char *value = require_value("--precompile-static-shaders-dxbc");
+      if (!value) {
+        return 2;
+      }
+      cli.precompile_static_dxbc_cache_path = value;
+    } else if (arg == "--ucode-dir") {
+      const char *value = require_value("--ucode-dir");
+      if (!value) {
+        return 2;
+      }
+      cli.containers_path = value;
     } else if (arg == "--dxbc-disasm") {
       const char *value = require_value("--dxbc-disasm");
       if (!value) {
@@ -5404,6 +5611,7 @@ int main(int argc, char **argv) {
         std::cerr << "--limit expects an integer\n";
         return 2;
       }
+      cli.limit_set = true;
     } else {
       std::cerr << "unknown argument: " << arg << "\n";
       return 2;
@@ -5422,6 +5630,7 @@ int main(int argc, char **argv) {
       !cli.translated_hlsl_dxc_compile_cache_path.empty() ||
       !cli.precompile_runtime_d3d12_cache_path.empty() ||
       !cli.precompile_runtime_dxbc_cache_path.empty() ||
+      !cli.precompile_static_dxbc_cache_path.empty() ||
       !cli.xenosrecomp_hlsl_output_path.empty();
   if (!cli.show_summary && !cli.find_hash && !cli.list_runtime_shaders &&
       !cli.match_runtime_shaders && !cli.semantic_disassemble &&
@@ -5524,6 +5733,18 @@ int main(int argc, char **argv) {
       std::cerr << "--xenosrecomp-hlsl requires --xenosrecomp <XenosRecomp.exe>\n";
       return 2;
     }
+  }
+
+  // Static-corpus precompile walks the container directory directly; it needs
+  // neither an index nor a capture, so it dispatches before those load.
+  if (!cli.precompile_static_dxbc_cache_path.empty()) {
+    if (!PrecompileStaticShadersXeniaDxbc(
+            cli.containers_path, cli.precompile_static_dxbc_cache_path,
+            cli.limit_set ? cli.limit : 0)) {
+      std::cerr << "no static shaders were translated to Xenia DXBC\n";
+      return 1;
+    }
+    return 0;
   }
 
   bool printed_anything = false;

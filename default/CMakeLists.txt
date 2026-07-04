@@ -90,6 +90,23 @@ if(EXISTS "${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator.cpp")
         ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator_om.cpp
         ${ReXGlue_SOURCE_DIR}/thirdparty/dxbc/DXBCChecksum.cpp
     )
+    # The SDK translator uses debug asserts on unusual-but-recoverable ucode
+    # (rare fetch opcodes, zero vfetch strides); the shipping game links the
+    # RelWithDebInfo SDK where those asserts are disabled and translation
+    # degrades gracefully. Match that behavior for offline corpus runs instead
+    # of aborting the whole precompile on the first odd shader.
+    set_source_files_properties(
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/shader.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/translator.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/translator_disasm.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator_alu.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator_fetch.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator_memexport.cpp
+        ${REXGLUE_SHADER_SOURCE_DIR}/pipeline/shader/dxbc_translator_om.cpp
+        PROPERTIES COMPILE_DEFINITIONS NDEBUG
+    )
 endif()
 
 set(DEFAULT_SOURCES
