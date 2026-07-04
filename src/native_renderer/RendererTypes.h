@@ -291,6 +291,15 @@ struct RenderStateInfo {
   uint32_t rb_stencilrefmask_bf = 0;
   uint32_t rb_depth_info = 0;
   uint32_t rb_alpha_ref = 0;
+  // EDRAM copy/resolve registers so backends can execute resolve draws
+  // (rb_modecontrol edram_mode = copy) and resolve-time clears.
+  uint32_t rb_copy_control = 0;
+  uint32_t rb_copy_dest_base = 0;
+  uint32_t rb_copy_dest_pitch = 0;
+  uint32_t rb_copy_dest_info = 0;
+  uint32_t rb_depth_clear = 0;
+  uint32_t rb_color_clear = 0;
+  uint32_t rb_color_clear_lo = 0;
   uint32_t pa_sc_screen_scissor_tl = 0;
   uint32_t pa_sc_screen_scissor_br = 0;
   uint32_t pa_sc_window_offset = 0;

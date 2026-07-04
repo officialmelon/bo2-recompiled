@@ -115,6 +115,13 @@ replay::RenderStateRecord ConvertRenderState(const RenderStateInfo &state) {
   out.rb_stencilrefmask_bf = state.rb_stencilrefmask_bf;
   out.rb_depth_info = state.rb_depth_info;
   out.rb_alpha_ref = state.rb_alpha_ref;
+  out.rb_copy_control = state.rb_copy_control;
+  out.rb_copy_dest_base = state.rb_copy_dest_base;
+  out.rb_copy_dest_pitch = state.rb_copy_dest_pitch;
+  out.rb_copy_dest_info = state.rb_copy_dest_info;
+  out.rb_depth_clear = state.rb_depth_clear;
+  out.rb_color_clear = state.rb_color_clear;
+  out.rb_color_clear_lo = state.rb_color_clear_lo;
   out.pa_sc_screen_scissor_tl = state.pa_sc_screen_scissor_tl;
   out.pa_sc_screen_scissor_br = state.pa_sc_screen_scissor_br;
   out.pa_sc_window_offset = state.pa_sc_window_offset;

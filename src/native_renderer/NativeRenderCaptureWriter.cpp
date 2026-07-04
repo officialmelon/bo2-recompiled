@@ -809,6 +809,13 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
   state_hex("rb_stencilrefmask_bf", state.rb_stencilrefmask_bf, 8);
   state_hex("rb_depth_info", state.rb_depth_info, 8);
   state_hex("rb_alpha_ref", state.rb_alpha_ref, 8);
+  state_hex("rb_copy_control", state.rb_copy_control, 8);
+  state_hex("rb_copy_dest_base", state.rb_copy_dest_base, 8);
+  state_hex("rb_copy_dest_pitch", state.rb_copy_dest_pitch, 8);
+  state_hex("rb_copy_dest_info", state.rb_copy_dest_info, 8);
+  state_hex("rb_depth_clear", state.rb_depth_clear, 8);
+  state_hex("rb_color_clear", state.rb_color_clear, 8);
+  state_hex("rb_color_clear_lo", state.rb_color_clear_lo, 8);
   state_hex("pa_sc_screen_scissor_tl", state.pa_sc_screen_scissor_tl, 8);
   state_hex("pa_sc_screen_scissor_br", state.pa_sc_screen_scissor_br, 8);
   state_hex("pa_sc_window_offset", state.pa_sc_window_offset, 8);

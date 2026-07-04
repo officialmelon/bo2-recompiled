@@ -6689,6 +6689,20 @@ struct XeniaLiveState {
   ComPtr<ID3D12DescriptorHeap> srv_staging_heap;
   uint32_t srv_staging_next = 0;
 
+  // EDRAM resolve destinations: guest copy-dest address -> host texture that
+  // received the resolved render-target region. Texture fetches whose base
+  // address matches bind this texture instead of decoding guest memory (the
+  // resolved pixels only exist on the host GPU).
+  struct ResolvedTexture {
+    ComPtr<ID3D12Resource> resource;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    uint32_t staging_slot = 0;
+    uint64_t last_used_frame = 0;
+  };
+  std::map<uint32_t, ResolvedTexture> resolved_textures;
+
   // Persistent shader-visible descriptor rings (SRV/sampler) so per-frame
   // heap creation disappears; per-draw contiguous tables are copied from the
   // staging heap. Ring wrap is safe because retained frames keep at least
@@ -6925,6 +6939,9 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     // Rectangle-list draws expand each guest rectangle (3 vertices) to a
     // 4-vertex triangle strip in the vertex shader.
     bool rectangle_strip = false;
+    // EDRAM copy draw (rb_modecontrol edram_mode = 6): executed as a
+    // resolve + optional clear instead of a shader draw.
+    bool is_resolve = false;
   };
   std::vector<XeniaPreparedDraw> prepared;
   std::map<std::string, uint64_t> unsupported_reasons;
@@ -6943,6 +6960,24 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     const PM4DrawRecord &draw = draw_state.draw;
     if (draw.index_count == 0) {
       continue;
+    }
+    // EDRAM mode routing: ignore-mode draws contribute nothing; copy-mode
+    // draws are resolves executed by the backend without shaders. Captures
+    // made before the copy registers were recorded carry zeros there, which
+    // makes the resolve a no-op.
+    if (draw.render_state.present) {
+      const uint32_t edram_mode = draw.render_state.rb_modecontrol & 0x7u;
+      if (edram_mode == 0) {
+        ++unsupported_reasons["edram_mode_ignore"];
+        continue;
+      }
+      if (edram_mode == 6) {
+        XeniaPreparedDraw resolve_item;
+        resolve_item.draw_index = draw_state.draw_index;
+        resolve_item.is_resolve = true;
+        prepared.push_back(resolve_item);
+        continue;
+      }
     }
     XeniaPreparedDraw item;
     item.draw_index = draw_state.draw_index;
@@ -7709,12 +7744,185 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   ID3D12DescriptorHeap *heaps[] = {srv_heap.Get(), sampler_heap.Get()};
   list->SetDescriptorHeaps(2, heaps);
 
+  uint64_t resolves_executed = 0;
   for (std::size_t prepared_index = 0; prepared_index < prepared.size();
        ++prepared_index) {
     const XeniaPreparedDraw &item = prepared[prepared_index];
     const ReplayDrawState &draw_state = capture.draws[item.draw_index];
     const PM4DrawRecord &draw = draw_state.draw;
     const RenderStateRecord &render_state = draw.render_state;
+
+    if (item.is_resolve) {
+      // EDRAM copy draw: copy the resolve rectangle of the source guest
+      // target into a texture registered under the copy destination guest
+      // address, then apply resolve-time clears. Later texture fetches from
+      // that address bind the resolved texture (the pixels exist only on the
+      // host GPU).
+      const uint32_t copy_control = render_state.rb_copy_control;
+      const uint32_t copy_src_select = copy_control & 0x7u;
+      const uint32_t copy_command = (copy_control >> 20) & 0x3u;
+      const bool clear_color_enabled = ((copy_control >> 8) & 0x1u) != 0;
+      const bool clear_depth_enabled = ((copy_control >> 9) & 0x1u) != 0;
+      const uint32_t dest_base = render_state.rb_copy_dest_base;
+      const bool source_is_depth = copy_src_select >= 4;
+
+      // Resolve rectangle from the window scissor, clamped to the surface.
+      const uint32_t scissor_tl = render_state.pa_sc_window_scissor_tl;
+      const uint32_t scissor_br = render_state.pa_sc_window_scissor_br;
+      const uint32_t x0 = std::min<uint32_t>(scissor_tl & 0x7FFFu, width);
+      const uint32_t y0 =
+          std::min<uint32_t>((scissor_tl >> 16) & 0x7FFFu, height);
+      const uint32_t x1 = std::clamp<uint32_t>(scissor_br & 0x7FFFu, x0, width);
+      const uint32_t y1 =
+          std::clamp<uint32_t>((scissor_br >> 16) & 0x7FFFu, y0, height);
+      const uint32_t resolve_width = std::max<uint32_t>(x1 - x0, 1u);
+      const uint32_t resolve_height = std::max<uint32_t>(y1 - y0, 1u);
+
+      const uint32_t source_color_base =
+          copy_src_select < render_state.color_base.size()
+              ? render_state.color_base[copy_src_select]
+              : 0u;
+      ID3D12Resource *source = nullptr;
+      if ((copy_command == 0 || copy_command == 1) && dest_base != 0) {
+        if (source_is_depth) {
+          auto src_it = guest_depth_targets.find(render_state.depth_base);
+          if (src_it != guest_depth_targets.end()) {
+            source = src_it->second.resource.Get();
+          }
+        } else {
+          auto src_it = guest_color_targets.find(source_color_base);
+          if (src_it != guest_color_targets.end()) {
+            source = src_it->second.resource.Get();
+          }
+        }
+        if (source == nullptr) {
+          ++unsupported_reasons["resolve_missing_source"];
+        }
+      }
+      if (source != nullptr) {
+        const DXGI_FORMAT resolved_format =
+            source_is_depth ? DXGI_FORMAT_R32_FLOAT : color_format;
+        XeniaLiveState::ResolvedTexture &resolved =
+            xenia.resolved_textures[dest_base];
+        bool resolved_ready = true;
+        if (!resolved.resource || resolved.width != resolve_width ||
+            resolved.height != resolve_height ||
+            resolved.format != resolved_format) {
+          if (resolved.resource) {
+            xenia.retained_resources->push_back(resolved.resource);
+            resolved.resource.Reset();
+          }
+          D3D12_RESOURCE_DESC resolved_desc{};
+          resolved_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+          resolved_desc.Width = resolve_width;
+          resolved_desc.Height = resolve_height;
+          resolved_desc.DepthOrArraySize = 1;
+          resolved_desc.MipLevels = 1;
+          resolved_desc.Format = resolved_format;
+          resolved_desc.SampleDesc.Count = 1;
+          if (FAILED(device->CreateCommittedResource(
+                  &default_heap, D3D12_HEAP_FLAG_NONE, &resolved_desc,
+                  D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                  IID_PPV_ARGS(&resolved.resource)))) {
+            resolved.resource.Reset();
+            ++unsupported_reasons["resolve_allocation_failed"];
+            resolved_ready = false;
+          } else {
+            resolved.width = resolve_width;
+            resolved.height = resolve_height;
+            resolved.format = resolved_format;
+            resolved.staging_slot = xenia.srv_staging_next++ % 65536;
+            D3D12_CPU_DESCRIPTOR_HANDLE staging_handle = staging_cpu_base;
+            staging_handle.ptr +=
+                std::size_t(resolved.staging_slot) * srv_stride;
+            device->CreateShaderResourceView(resolved.resource.Get(), nullptr,
+                                             staging_handle);
+          }
+        } else {
+          D3D12_RESOURCE_BARRIER to_copy{};
+          to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+          to_copy.Transition.pResource = resolved.resource.Get();
+          to_copy.Transition.StateBefore =
+              D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+          to_copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+          to_copy.Transition.Subresource =
+              D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+          list->ResourceBarrier(1, &to_copy);
+        }
+        if (resolved_ready) {
+          resolved.last_used_frame = xenia.frame_counter;
+          const D3D12_RESOURCE_STATES source_home_state =
+              source_is_depth ? D3D12_RESOURCE_STATE_DEPTH_WRITE
+                              : D3D12_RESOURCE_STATE_RENDER_TARGET;
+          D3D12_RESOURCE_BARRIER src_to_copy{};
+          src_to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+          src_to_copy.Transition.pResource = source;
+          src_to_copy.Transition.StateBefore = source_home_state;
+          src_to_copy.Transition.StateAfter =
+              D3D12_RESOURCE_STATE_COPY_SOURCE;
+          src_to_copy.Transition.Subresource =
+              D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+          list->ResourceBarrier(1, &src_to_copy);
+          D3D12_TEXTURE_COPY_LOCATION copy_dst{};
+          copy_dst.pResource = resolved.resource.Get();
+          copy_dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+          D3D12_TEXTURE_COPY_LOCATION copy_src{};
+          copy_src.pResource = source;
+          copy_src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+          const D3D12_BOX copy_box{x0, y0, 0, x1, y1, 1};
+          list->CopyTextureRegion(&copy_dst, 0, 0, 0, &copy_src, &copy_box);
+          D3D12_RESOURCE_BARRIER after[2] = {};
+          after[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+          after[0].Transition.pResource = source;
+          after[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+          after[0].Transition.StateAfter = source_home_state;
+          after[0].Transition.Subresource =
+              D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+          after[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+          after[1].Transition.pResource = resolved.resource.Get();
+          after[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+          after[1].Transition.StateAfter =
+              D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+          after[1].Transition.Subresource =
+              D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+          list->ResourceBarrier(2, after);
+          ++resolves_executed;
+        }
+      }
+
+      const D3D12_RECT clear_rect{LONG(x0), LONG(y0), LONG(x1), LONG(y1)};
+      if (clear_color_enabled && !source_is_depth) {
+        auto target_it = guest_color_targets.find(source_color_base);
+        if (target_it != guest_color_targets.end()) {
+          // Xenos k_8_8_8_8 packs red in the low byte of the clear value.
+          const uint32_t value = render_state.rb_color_clear;
+          const float clear_rgba[4] = {
+              float((value >> 0) & 0xFFu) / 255.0f,
+              float((value >> 8) & 0xFFu) / 255.0f,
+              float((value >> 16) & 0xFFu) / 255.0f,
+              float((value >> 24) & 0xFFu) / 255.0f,
+          };
+          list->ClearRenderTargetView(target_it->second.rtv, clear_rgba, 1,
+                                      &clear_rect);
+        }
+      }
+      if (clear_depth_enabled) {
+        auto target_it = guest_depth_targets.find(render_state.depth_base);
+        if (target_it != guest_depth_targets.end()) {
+          // D24 clear value: depth in bits 8-31 (the host depth buffer is
+          // D32_FLOAT without stencil, so only depth is cleared).
+          const uint32_t value = render_state.rb_depth_clear;
+          const float clear_depth = float((value >> 8) & 0xFFFFFFu) /
+                                    16777215.0f;
+          list->ClearDepthStencilView(target_it->second.dsv,
+                                      D3D12_CLEAR_FLAG_DEPTH, clear_depth, 0,
+                                      1, &clear_rect);
+        }
+      }
+      continue;
+    }
 
     const uint32_t vs_tex = uint32_t(item.vs->texture_bindings.size());
     const uint32_t vs_samp = uint32_t(item.vs->sampler_bindings.size());
@@ -7926,6 +8134,27 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
           if (candidate.fetch_constant == binding.fetch_constant) {
             fetch = &candidate;
             break;
+          }
+        }
+        D3D12_CPU_DESCRIPTOR_HANDLE resolved_ring_handle = srv_cpu_base;
+        resolved_ring_handle.ptr += std::size_t(ring_slot) * srv_stride;
+        // Fetches from an EDRAM resolve destination bind the resolved host
+        // texture: the resolved pixels never exist in guest memory.
+        if (fetch != nullptr) {
+          auto resolved_it =
+              xenia.resolved_textures.find(fetch->base_address_bytes);
+          if (resolved_it != xenia.resolved_textures.end() &&
+              resolved_it->second.resource) {
+            resolved_it->second.last_used_frame = xenia.frame_counter;
+            D3D12_CPU_DESCRIPTOR_HANDLE staging_handle = staging_cpu_base;
+            staging_handle.ptr +=
+                std::size_t(resolved_it->second.staging_slot) * srv_stride;
+            device->CopyDescriptorsSimple(
+                1, resolved_ring_handle, staging_handle,
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            ++captured_srvs;
+            ++ring_slot;
+            continue;
           }
         }
         // Cache key: guest base address + format + dimensions + layout.
@@ -8229,6 +8458,12 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
                   << (base == best_base ? " (presented)" : "");
       }
       std::cout << "\n";
+      if (resolves_executed > 0 || !xenia.resolved_textures.empty()) {
+        std::cout << "D3D12 Xenia-translated replay resolves: executed="
+                  << resolves_executed
+                  << " destinations=" << xenia.resolved_textures.size()
+                  << "\n";
+      }
     }
   }
   if (presented_target == nullptr) {

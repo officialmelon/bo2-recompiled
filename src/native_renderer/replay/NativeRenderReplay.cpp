@@ -821,6 +821,13 @@ RenderStateRecord ParseRenderState(const JsonObject &object) {
   state.rb_stencilrefmask_bf = GetU32(state_object, "rb_stencilrefmask_bf");
   state.rb_depth_info = GetU32(state_object, "rb_depth_info");
   state.rb_alpha_ref = GetU32(state_object, "rb_alpha_ref");
+  state.rb_copy_control = GetU32(state_object, "rb_copy_control");
+  state.rb_copy_dest_base = GetU32(state_object, "rb_copy_dest_base");
+  state.rb_copy_dest_pitch = GetU32(state_object, "rb_copy_dest_pitch");
+  state.rb_copy_dest_info = GetU32(state_object, "rb_copy_dest_info");
+  state.rb_depth_clear = GetU32(state_object, "rb_depth_clear");
+  state.rb_color_clear = GetU32(state_object, "rb_color_clear");
+  state.rb_color_clear_lo = GetU32(state_object, "rb_color_clear_lo");
   state.pa_sc_screen_scissor_tl =
       GetU32(state_object, "pa_sc_screen_scissor_tl");
   state.pa_sc_screen_scissor_br =

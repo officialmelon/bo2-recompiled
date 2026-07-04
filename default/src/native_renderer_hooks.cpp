@@ -496,6 +496,15 @@ void CopyDrawRenderStateIfPresent(const DrawEvent *event,
     target.rb_stencilrefmask_bf = source.rb_stencilrefmask_bf;
     target.rb_depth_info = source.rb_depth_info;
     target.rb_alpha_ref = source.rb_alpha_ref;
+    if constexpr (requires { source.rb_copy_control; }) {
+      target.rb_copy_control = source.rb_copy_control;
+      target.rb_copy_dest_base = source.rb_copy_dest_base;
+      target.rb_copy_dest_pitch = source.rb_copy_dest_pitch;
+      target.rb_copy_dest_info = source.rb_copy_dest_info;
+      target.rb_depth_clear = source.rb_depth_clear;
+      target.rb_color_clear = source.rb_color_clear;
+      target.rb_color_clear_lo = source.rb_color_clear_lo;
+    }
     target.pa_sc_screen_scissor_tl = source.pa_sc_screen_scissor_tl;
     target.pa_sc_screen_scissor_br = source.pa_sc_screen_scissor_br;
     target.pa_sc_window_offset = source.pa_sc_window_offset;
