@@ -78,6 +78,30 @@ uint64_t HashCombine64(uint64_t hash, uint64_t value) {
   return hash;
 }
 
+uint64_t HashBytesFnv1a64(const std::vector<uint8_t> &bytes) {
+  uint64_t hash = 14695981039346656037ull;
+  for (const uint8_t byte : bytes) {
+    hash ^= byte;
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+uint64_t HashTextureFetchLayout64(const TextureFetchRecord &fetch) {
+  uint64_t hash = 0xA54FF53A5F1D36F1ull;
+  hash = HashCombine64(hash, fetch.mip_address_bytes);
+  hash = HashCombine64(hash, fetch.pitch);
+  hash = HashCombine64(hash, fetch.tiled ? 1u : 0u);
+  hash = HashCombine64(hash, fetch.endian);
+  hash = HashCombine64(hash, fetch.swizzle);
+  hash = HashCombine64(hash, fetch.dimension);
+  hash = HashCombine64(hash, fetch.depth_or_stack);
+  hash = HashCombine64(hash, fetch.packed_mips ? 1u : 0u);
+  hash = HashCombine64(hash, fetch.mip_min_level);
+  hash = HashCombine64(hash, fetch.mip_max_level);
+  return hash;
+}
+
 std::string HrError(const char *what, HRESULT hr) {
   return std::string(what) + " failed with HRESULT 0x" +
          FormatHex32(hr).substr(2);
@@ -2188,11 +2212,7 @@ std::string TextureUploadCacheKey(const TextureFetchRecord *fetch,
     return "fallback:white-rgba8";
   }
 
-  uint64_t payload_hash = 14695981039346656037ull;
-  for (const uint8_t byte : fetch->payload_bytes) {
-    payload_hash ^= byte;
-    payload_hash *= 1099511628211ull;
-  }
+  const uint64_t payload_hash = HashBytesFnv1a64(fetch->payload_bytes);
 
   std::ostringstream key;
   key << "captured:"
@@ -6480,58 +6500,6 @@ D3D12_TEXTURE_ADDRESS_MODE XeniaClampToAddressMode(uint32_t clamp) {
   }
 }
 
-D3D12_BLEND XenosBlendFactorToD3D12(uint32_t factor) {
-  switch (factor) {
-    case 0:
-      return D3D12_BLEND_ZERO;
-    case 1:
-      return D3D12_BLEND_ONE;
-    case 4:
-      return D3D12_BLEND_SRC_COLOR;
-    case 5:
-      return D3D12_BLEND_INV_SRC_COLOR;
-    case 6:
-      return D3D12_BLEND_SRC_ALPHA;
-    case 7:
-      return D3D12_BLEND_INV_SRC_ALPHA;
-    case 8:
-      return D3D12_BLEND_DEST_COLOR;
-    case 9:
-      return D3D12_BLEND_INV_DEST_COLOR;
-    case 10:
-      return D3D12_BLEND_DEST_ALPHA;
-    case 11:
-      return D3D12_BLEND_INV_DEST_ALPHA;
-    case 12:
-    case 14:
-      return D3D12_BLEND_BLEND_FACTOR;
-    case 13:
-    case 15:
-      return D3D12_BLEND_INV_BLEND_FACTOR;
-    case 16:
-      return D3D12_BLEND_SRC_ALPHA_SAT;
-    default:
-      return D3D12_BLEND_ONE;
-  }
-}
-
-D3D12_BLEND_OP XenosBlendOpToD3D12(uint32_t op) {
-  switch (op) {
-    case 0:
-      return D3D12_BLEND_OP_ADD;
-    case 1:
-      return D3D12_BLEND_OP_SUBTRACT;
-    case 2:
-      return D3D12_BLEND_OP_MIN;
-    case 3:
-      return D3D12_BLEND_OP_MAX;
-    case 4:
-      return D3D12_BLEND_OP_REV_SUBTRACT;
-    default:
-      return D3D12_BLEND_OP_ADD;
-  }
-}
-
 // System-constant NDC transform from captured guest registers, following the
 // SDK's draw_util::GetHostViewportInfo clip-enabled path without resolution
 // scaling. The host viewport is returned in pixels.
@@ -6654,14 +6622,20 @@ struct XeniaPipelineKey {
   uint32_t blend_control;
   uint32_t color_mask;
   uint32_t depth_bits;
+  uint32_t stencil_control;
+  uint32_t stencil_refmask;
+  uint32_t stencil_refmask_bf;
   uint32_t cull_bits;
   uint32_t rect_variant;
   bool operator<(const XeniaPipelineKey &other) const {
     return std::tie(vs_hash, ps_hash, topology_type, blend_control,
-                    color_mask, depth_bits, cull_bits, rect_variant) <
+                    color_mask, depth_bits, stencil_control, stencil_refmask,
+                    stencil_refmask_bf, cull_bits, rect_variant) <
            std::tie(other.vs_hash, other.ps_hash, other.topology_type,
                     other.blend_control, other.color_mask, other.depth_bits,
-                    other.cull_bits, other.rect_variant);
+                    other.stencil_control, other.stencil_refmask,
+                    other.stencil_refmask_bf, other.cull_bits,
+                    other.rect_variant);
   }
 };
 
@@ -6675,6 +6649,15 @@ struct XeniaGuestDepthTarget {
   ComPtr<ID3D12Resource> resource;
   D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
 };
+
+uint32_t XeniaDescriptorCapacityFor(std::size_t required,
+                                    uint32_t minimum_capacity) {
+  uint32_t capacity = std::max<uint32_t>(minimum_capacity, 1u);
+  while (capacity < required && capacity < 4096u) {
+    capacity *= 2u;
+  }
+  return capacity;
+}
 
 }  // namespace
 
@@ -6700,7 +6683,8 @@ struct XeniaLiveState {
     uint32_t staging_slot = 0;
     uint64_t last_used_frame = 0;
   };
-  using TextureKey = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>;
+  using TextureKey =
+      std::tuple<uint32_t, uint32_t, uint32_t, uint64_t, uint32_t, uint64_t>;
   std::map<TextureKey, CachedTexture> texture_cache;
   ComPtr<ID3D12DescriptorHeap> srv_staging_heap;
   uint32_t srv_staging_next = 0;
@@ -6734,6 +6718,8 @@ struct XeniaLiveState {
   ComPtr<ID3D12DescriptorHeap> dsv_heap;
   uint32_t next_rtv_descriptor = 0;
   uint32_t next_dsv_descriptor = 0;
+  uint32_t rtv_descriptor_capacity = 0;
+  uint32_t dsv_descriptor_capacity = 0;
   std::map<uint32_t, XeniaGuestColorTarget> color_targets;
   std::map<uint32_t, XeniaGuestDepthTarget> depth_targets;
   uint32_t width = 0;
@@ -7121,6 +7107,8 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     xenia.dsv_heap.Reset();
     xenia.next_rtv_descriptor = 0;
     xenia.next_dsv_descriptor = 0;
+    xenia.rtv_descriptor_capacity = 0;
+    xenia.dsv_descriptor_capacity = 0;
     xenia.width = width;
     xenia.height = height;
   }
@@ -7152,12 +7140,55 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   depth_clear.Format = depth_format;
   depth_clear.DepthStencil.Depth = 1.0f;
 
+  std::set<uint32_t> required_color_bases;
+  std::set<uint32_t> required_depth_bases;
+  for (const auto &[base, target] : xenia.color_targets) {
+    (void)target;
+    required_color_bases.insert(base);
+  }
+  for (const auto &[base, target] : xenia.depth_targets) {
+    (void)target;
+    required_depth_bases.insert(base);
+  }
+  for (const XeniaPreparedDraw &item : prepared) {
+    const RenderStateRecord &render_state =
+        capture.draws[item.draw_index].draw.render_state;
+    required_color_bases.insert(
+        render_state.color_base.empty() ? 0u : render_state.color_base[0]);
+    required_depth_bases.insert(render_state.depth_base);
+  }
+
+  const uint32_t required_rtv_capacity =
+      XeniaDescriptorCapacityFor(required_color_bases.size(), 32u);
+  const uint32_t required_dsv_capacity =
+      XeniaDescriptorCapacityFor(required_depth_bases.size(), 16u);
+  if (xenia.rtv_heap &&
+      xenia.rtv_descriptor_capacity < required_rtv_capacity) {
+    xenia.color_targets.clear();
+    xenia.rtv_heap.Reset();
+    xenia.next_rtv_descriptor = 0;
+    xenia.rtv_descriptor_capacity = 0;
+  }
+  if (xenia.dsv_heap &&
+      xenia.dsv_descriptor_capacity < required_dsv_capacity) {
+    xenia.depth_targets.clear();
+    xenia.dsv_heap.Reset();
+    xenia.next_dsv_descriptor = 0;
+    xenia.dsv_descriptor_capacity = 0;
+  }
+  if (!xenia.rtv_heap) {
+    xenia.rtv_descriptor_capacity = required_rtv_capacity;
+  }
+  if (!xenia.dsv_heap) {
+    xenia.dsv_descriptor_capacity = required_dsv_capacity;
+  }
+
   D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc{};
   rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-  rtv_heap_desc.NumDescriptors = 32;
+  rtv_heap_desc.NumDescriptors = xenia.rtv_descriptor_capacity;
   D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc{};
   dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-  dsv_heap_desc.NumDescriptors = 16;
+  dsv_heap_desc.NumDescriptors = xenia.dsv_descriptor_capacity;
   if (!xenia.rtv_heap &&
       !CheckHr(device->CreateDescriptorHeap(&rtv_heap_desc,
                                             IID_PPV_ARGS(&xenia.rtv_heap)),
@@ -7196,19 +7227,15 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     if (it != guest_color_targets.end()) {
       return &it->second;
     }
-    if (xenia.next_rtv_descriptor >= rtv_heap_desc.NumDescriptors) {
-      return guest_color_targets.empty()
-                 ? nullptr
-                 : &guest_color_targets.begin()->second;
+    if (xenia.next_rtv_descriptor >= xenia.rtv_descriptor_capacity) {
+      return nullptr;
     }
     XeniaGuestColorTarget target;
     if (FAILED(device->CreateCommittedResource(
             &default_heap, D3D12_HEAP_FLAG_NONE, &color_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &color_clear,
             IID_PPV_ARGS(&target.resource)))) {
-      return guest_color_targets.empty()
-                 ? nullptr
-                 : &guest_color_targets.begin()->second;
+      return nullptr;
     }
     target.rtv = rtv_base;
     target.rtv.ptr += std::size_t(xenia.next_rtv_descriptor++) * rtv_stride;
@@ -7224,19 +7251,15 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     if (it != guest_depth_targets.end()) {
       return &it->second;
     }
-    if (xenia.next_dsv_descriptor >= dsv_heap_desc.NumDescriptors) {
-      return guest_depth_targets.empty()
-                 ? nullptr
-                 : &guest_depth_targets.begin()->second;
+    if (xenia.next_dsv_descriptor >= xenia.dsv_descriptor_capacity) {
+      return nullptr;
     }
     XeniaGuestDepthTarget target;
     if (FAILED(device->CreateCommittedResource(
             &default_heap, D3D12_HEAP_FLAG_NONE, &depth_desc,
             D3D12_RESOURCE_STATE_DEPTH_WRITE, &depth_clear,
             IID_PPV_ARGS(&target.resource)))) {
-      return guest_depth_targets.empty()
-                 ? nullptr
-                 : &guest_depth_targets.begin()->second;
+      return nullptr;
     }
     target.dsv = dsv_base;
     target.dsv.ptr += std::size_t(xenia.next_dsv_descriptor++) * dsv_stride;
@@ -7683,7 +7706,6 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   uint64_t fallback_srvs = 0;
   std::map<ShaderPairKey, std::size_t> submitted_pairs;
 
-  D3D12_RECT scissor{0, 0, LONG(width), LONG(height)};
   ID3D12DescriptorHeap *heaps[] = {srv_heap.Get(), sampler_heap.Get()};
   list->SetDescriptorHeaps(2, heaps);
 
@@ -7716,10 +7738,18 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     pipeline_key.color_mask = render_state.rb_color_mask & 0xFu;
     pipeline_key.depth_bits = (render_state.depth_test_enable ? 1u : 0u) |
                               (render_state.depth_write_enable ? 2u : 0u) |
-                              (render_state.depth_func << 2);
+                              (render_state.stencil_enable ? 4u : 0u) |
+                              (render_state.depth_func << 3);
+    pipeline_key.stencil_control =
+        render_state.stencil_enable ? render_state.rb_depthcontrol : 0u;
+    pipeline_key.stencil_refmask =
+        render_state.stencil_enable ? render_state.rb_stencilrefmask : 0u;
+    pipeline_key.stencil_refmask_bf =
+        render_state.stencil_enable ? render_state.rb_stencilrefmask_bf : 0u;
     pipeline_key.cull_bits =
         render_state.cull_mode | (render_state.front_face << 2) |
-        (render_state.fill_mode << 3);
+        (render_state.fill_mode << 3) |
+        ((render_state.pa_cl_clip_cntl & 0x00010000u) ? (1u << 4) : 0u);
     pipeline_key.rect_variant = item.rectangle_strip ? 1u : 0u;
     auto pipeline_it = pipelines.find(pipeline_key);
     if (pipeline_it == pipelines.end()) {
@@ -7727,46 +7757,10 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
       pso.pRootSignature = root_signature;
       pso.VS = {item.vs->dxbc.data(), item.vs->dxbc.size()};
       pso.PS = {item.ps->dxbc.data(), item.ps->dxbc.size()};
-      pso.BlendState.RenderTarget[0].RenderTargetWriteMask =
-          UINT8(pipeline_key.color_mask);
-      const uint32_t blend = pipeline_key.blend_control;
-      const bool blend_enabled = blend != 0x00010001u && blend != 0u;
-      if (blend_enabled) {
-        pso.BlendState.RenderTarget[0].BlendEnable = TRUE;
-        pso.BlendState.RenderTarget[0].SrcBlend =
-            XenosBlendFactorToD3D12(blend & 0x1F);
-        pso.BlendState.RenderTarget[0].BlendOp =
-            XenosBlendOpToD3D12((blend >> 5) & 0x7);
-        pso.BlendState.RenderTarget[0].DestBlend =
-            XenosBlendFactorToD3D12((blend >> 8) & 0x1F);
-        pso.BlendState.RenderTarget[0].SrcBlendAlpha =
-            XenosBlendFactorToD3D12((blend >> 16) & 0x1F);
-        pso.BlendState.RenderTarget[0].BlendOpAlpha =
-            XenosBlendOpToD3D12((blend >> 21) & 0x7);
-        pso.BlendState.RenderTarget[0].DestBlendAlpha =
-            XenosBlendFactorToD3D12((blend >> 24) & 0x1F);
-      }
+      pso.BlendState = BlendDescFromRenderState(&render_state);
       pso.SampleMask = UINT_MAX;
-      pso.RasterizerState.FillMode = render_state.fill_mode == 1
-                                         ? D3D12_FILL_MODE_WIREFRAME
-                                         : D3D12_FILL_MODE_SOLID;
-      pso.RasterizerState.CullMode =
-          render_state.cull_mode == 1
-              ? D3D12_CULL_MODE_FRONT
-              : (render_state.cull_mode == 2 ? D3D12_CULL_MODE_BACK
-                                             : D3D12_CULL_MODE_NONE);
-      // The NDC Y flip (Xenos +Y down vs Direct3D +Y up) inverts the screen
-      // winding, so the guest front-face convention is inverted here.
-      pso.RasterizerState.FrontCounterClockwise =
-          render_state.front_face ? FALSE : TRUE;
-      pso.RasterizerState.DepthClipEnable = TRUE;
-      pso.DepthStencilState.DepthEnable =
-          render_state.depth_test_enable ? TRUE : FALSE;
-      pso.DepthStencilState.DepthWriteMask =
-          render_state.depth_write_enable ? D3D12_DEPTH_WRITE_MASK_ALL
-                                          : D3D12_DEPTH_WRITE_MASK_ZERO;
-      pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC(
-          std::clamp<uint32_t>(render_state.depth_func, 0u, 7u) + 1);
+      pso.RasterizerState = RasterizerDescFromRenderState(&render_state);
+      pso.DepthStencilState = DepthStencilDescFromRenderState(&render_state);
       pso.InputLayout = {nullptr, 0};
       pso.PrimitiveTopologyType = item.topology_type;
       if (item.rectangle_strip) {
@@ -7940,7 +7934,9 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
             fetch ? fetch->base_address_bytes : 0u,
             fetch ? fetch->format : 0xFFFFFFFFu,
             fetch ? ((fetch->width << 16) | (fetch->height & 0xFFFFu)) : 1u,
-            fetch ? ((fetch->pitch << 1) | (fetch->tiled ? 1u : 0u)) : 0u};
+            fetch ? HashTextureFetchLayout64(*fetch) : 0ull,
+            fetch ? uint32_t(fetch->payload_bytes.size()) : 0u,
+            fetch ? HashBytesFnv1a64(fetch->payload_bytes) : 0ull};
         D3D12_CPU_DESCRIPTOR_HANDLE ring_handle = srv_cpu_base;
         ring_handle.ptr += std::size_t(ring_slot) * srv_stride;
         auto cache_it = xenia.texture_cache.find(key);
@@ -8170,8 +8166,11 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         std::max(viewport_info.host_viewport[2], 1.0f),
         std::max(viewport_info.host_viewport[3], 1.0f), viewport_info.z_min,
         viewport_info.z_max};
+    const D3D12_RECT scissor =
+        ScissorRectFromRenderState(&render_state, width, height);
     list->RSSetViewports(1, &viewport);
     list->RSSetScissorRects(1, &scissor);
+    list->OMSetStencilRef(StencilRefFromRenderState(&render_state));
     list->IASetPrimitiveTopology(item.topology);
 
     if (draw.indexed) {
