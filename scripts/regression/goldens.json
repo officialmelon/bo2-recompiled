@@ -92,10 +92,10 @@
     "output_sha256": "C8E1E97BFED183B57371764BFC70B1D7E7EB1EE2D3E746AD21C940F00E1AEC88"
   },
   "mp028-xenia-replay": {
-    "submitted_draws": 1019,
-    "shader_pairs": 10,
+    "submitted_draws": 1022,
+    "shader_pairs": 11,
     "captured_texture_srvs": 302,
     "fallback_texture_srvs": 0,
-    "output_sha256": "5C6D735402D8F43F1E612364DB4087256BAA3EC1DE1895A53A895407E3E831E7"
+    "output_sha256": "A766BF0B8F37AEBE7B68B4907C93CC717CF412E80E318D0196A61FADDAFEDCB3"
   }
 }
