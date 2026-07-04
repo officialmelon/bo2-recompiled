@@ -2,6 +2,42 @@
 
 Last updated: 2026-07-04
 
+## 2026-07-04 static shader corpus + EDRAM resolves milestone
+
+- **Static shader format cracked.** The 0x102A11xx shader containers in
+  decoded zone files are not 4-byte aligned, their declared
+  `virtualSize + physicalSize` under-counts the program data, and the real
+  ucode starts at a variable byte-unaligned offset after a constant-defaults
+  blob. Program size follows a proven rule: a structurally validated Xenos
+  control-flow walk computes the extent, and the game uploads
+  **extent + 3 dwords** (uniform across 20/20 captured runtime payloads,
+  byte-exact at known payload locations in `code_post_gfx_mp` / `ui_mp`).
+- `scripts/shaders/extract-runtime-ucode-from-zones.mjs` carves every program
+  from the 142 zones into `shader_work/shaders/ucode_runtime/
+  <VS|PS>_0x<XXH3>.ucode`, where the filename hash equals the runtime PM4
+  payload hash. Resumable, idle-priority, yield-throttled.
+- `native_shader_inspect --precompile-static-shaders-dxbc <cache>
+  [--ucode-dir <dir>]` translates that corpus offline. Proof of equivalence:
+  `PS_0x3A6876055FEC1674` translated from the static corpus is byte-identical
+  (SHA-256) to the blob produced by live runtime translation. This is the
+  ahead-of-time bake path for future ports.
+- **EDRAM resolves implemented.** Draws route by RB_MODECONTROL EDRAM mode:
+  ignore draws drop, copy draws execute as resolves (copy the window-scissor
+  region of the guest color/depth target into a host texture keyed by the
+  RB_COPY_DEST guest address, then apply resolve-time clears). Texture
+  fetches from a resolve destination bind the resolved host texture. The
+  RB_COPY_*/clear registers ride the SDK draw event (SDK extended). Old
+  captures parse them as zeros (no-op). mp080/mp028 xenia-replay output
+  hashes unchanged with 98/29 former garbage copy-mode draws routed off the
+  draw path.
+- **In-game ImGui overlay.** The live backend publishes per-frame stats
+  (smoothed FPS/frame time, draws, skips, shader pairs, PSO hits/misses,
+  live translations, presented base); both apps register a
+  `NativeRendererOverlayDialog` with the ReXGlue ImGui drawer.
+- New tooling: `scripts/windows/benchmark_live_fps.ps1` (native vs emulated
+  live FPS from log telemetry), `scripts/shaders/validate-ucode-extent.mjs`
+  (the CF walker), payload/zone search probes.
+
 ## 2026-07-04 live native rendering milestone
 
 - The running game renders through the native translated pipeline in real
