@@ -79,7 +79,8 @@ inline void SetAndroidControllerState(const AndroidControllerState& state) {
 }
 #endif
 
-class NativeInput final : public rex::ui::WindowInputListener {
+class NativeInput final : public rex::ui::WindowListener,
+                          public rex::ui::WindowInputListener {
  public:
   NativeInput() = default;
   ~NativeInput() override { Detach(); }
@@ -91,8 +92,9 @@ class NativeInput final : public rex::ui::WindowInputListener {
     Detach();
     window_ = window;
     active_.store(this, std::memory_order_release);
+    window_->AddListener(this);
     window_->AddInputListener(this, 100);
-    SetCaptured(true);
+    SetCaptured(false);
   }
 
   void Detach() {
@@ -101,6 +103,7 @@ class NativeInput final : public rex::ui::WindowInputListener {
     }
     SetCaptured(false);
     window_->RemoveInputListener(this);
+    window_->RemoveListener(this);
     window_ = nullptr;
     NativeInput* expected = this;
     active_.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
@@ -180,6 +183,10 @@ class NativeInput final : public rex::ui::WindowInputListener {
     }
     input->SetKey(key, down);
     input->QueueKey(MapVirtualKey(key), down);
+  }
+
+  void OnLostFocus(rex::ui::UISetupEvent&) override {
+    SetCaptured(false);
   }
 
   void OnKeyDown(rex::ui::KeyEvent& event) override {
