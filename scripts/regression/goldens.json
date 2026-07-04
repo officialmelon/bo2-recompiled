@@ -85,16 +85,16 @@
     "validation_failed": 0
   },
   "mp080-xenia-replay": {
-    "submitted_draws": 3276,
-    "shader_pairs": 9,
-    "captured_texture_srvs": 1418,
+    "submitted_draws": 3374,
+    "shader_pairs": 12,
+    "captured_texture_srvs": 1522,
     "fallback_texture_srvs": 0,
     "output_sha256": "C8E1E97BFED183B57371764BFC70B1D7E7EB1EE2D3E746AD21C940F00E1AEC88"
   },
   "mp028-xenia-replay": {
-    "submitted_draws": 993,
-    "shader_pairs": 8,
-    "captured_texture_srvs": 268,
+    "submitted_draws": 1022,
+    "shader_pairs": 11,
+    "captured_texture_srvs": 302,
     "fallback_texture_srvs": 0,
     "output_sha256": "A766BF0B8F37AEBE7B68B4907C93CC717CF412E80E318D0196A61FADDAFEDCB3"
   }

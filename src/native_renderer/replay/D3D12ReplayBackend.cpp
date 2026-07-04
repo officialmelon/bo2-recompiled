@@ -6950,6 +6950,22 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
       options.d3d12_draw_limit == 0 ? capture.draws.size()
                                     : options.d3d12_draw_limit;
 
+  // EDRAM copy/resolve execution is gated behind BO2_XENIA_ENABLE_RESOLVES=1.
+  // When off (the default), draws route exactly as the shader path always did:
+  // no ignore-mode dropping and no copy-mode conversion. Executing resolves
+  // requires a render-to-texture scene to validate; the menu path presents
+  // correctly without them, and an unvalidated resolve+clear corrupts the
+  // presented surface. Enable only when verifying in-game RTT effects.
+  bool resolves_enabled = false;
+  {
+    char env_value[8]{};
+    if (GetEnvironmentVariableA("BO2_XENIA_ENABLE_RESOLVES", env_value,
+                                sizeof(env_value)) > 0 &&
+        env_value[0] == '1') {
+      resolves_enabled = true;
+    }
+  }
+
   for (const ReplayDrawState &draw_state : capture.draws) {
     if (prepared.size() >= draw_limit) {
       break;
@@ -6965,7 +6981,7 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     // draws are resolves executed by the backend without shaders. Captures
     // made before the copy registers were recorded carry zeros there, which
     // makes the resolve a no-op.
-    if (draw.render_state.present) {
+    if (resolves_enabled && draw.render_state.present) {
       const uint32_t edram_mode = draw.render_state.rb_modecontrol & 0x7u;
       if (edram_mode == 0) {
         ++unsupported_reasons["edram_mode_ignore"];
@@ -8157,15 +8173,23 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
             continue;
           }
         }
-        // Cache key: guest base address + format + dimensions + layout.
-        // A cached texture skips decode, resource creation, and upload.
+        // Cache key: guest base address + format + dimensions + layout only.
+        // A texture is identified by its guest memory location and layout, the
+        // way the real GPU addresses it -- NOT by payload content. This is
+        // required because the capture hooks recapture the full guest payload
+        // only on a texture's first sighting (a perf gate against multi-MB
+        // per-draw copies); later draws of the same texture carry a truncated
+        // inline payload. Keying on payload size/content would make those
+        // truncated recaptures miss the first-sight texture and upload garbage
+        // (the menu glyph atlas and background rendered as solid blocks).
+        // The first sighting supplies the full payload, so the cached texture
+        // is correct; dynamic textures that reuse an address need dirty
+        // tracking (a separate concern) rather than content keying here.
         XeniaLiveState::TextureKey key{
             fetch ? fetch->base_address_bytes : 0u,
             fetch ? fetch->format : 0xFFFFFFFFu,
             fetch ? ((fetch->width << 16) | (fetch->height & 0xFFFFu)) : 1u,
-            fetch ? HashTextureFetchLayout64(*fetch) : 0ull,
-            fetch ? uint32_t(fetch->payload_bytes.size()) : 0u,
-            fetch ? HashBytesFnv1a64(fetch->payload_bytes) : 0ull};
+            fetch ? HashTextureFetchLayout64(*fetch) : 0ull, 0u, 0ull};
         D3D12_CPU_DESCRIPTOR_HANDLE ring_handle = srv_cpu_base;
         ring_handle.ptr += std::size_t(ring_slot) * srv_stride;
         auto cache_it = xenia.texture_cache.find(key);
