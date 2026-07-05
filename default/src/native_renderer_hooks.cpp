@@ -120,8 +120,20 @@ bool TextureFormatFootprint(const bo2::native::TextureFetchInfo &fetch,
     bytes_per_block_log2 = 0;
     break;
   case 6:
+  case 7:
+  case 23:
+  case 28:
+  case 54:
     bytes_per_texel = 4;
     bytes_per_block_log2 = 2;
+    break;
+  case 26:
+    bytes_per_texel = 8;
+    bytes_per_block_log2 = 3;
+    break;
+  case 38:
+    bytes_per_texel = 16;
+    bytes_per_block_log2 = 4;
     break;
   case 18:
     block_compressed = true;
@@ -180,46 +192,57 @@ void RecaptureTexturePayloadFromGuest(bo2::native::TextureFetchInfo &target) {
   // time a (address, format, size) texture is seen; repeated recaptures are
   // multi-megabyte guest memory copies per draw and dominated the live frame
   // time. Vertex payloads stay uncached because they change per frame.
-  {
-    static std::unordered_set<uint64_t> recaptured_textures;
-    const uint64_t key =
-        (uint64_t(target.base_address_bytes) << 32) ^
-        (uint64_t(target.format) << 24) ^ (uint64_t(target.width) << 12) ^
-        uint64_t(target.height) ^ (uint64_t(target.pitch) << 44) ^
-        (target.tiled ? 0x8000000000000000ull : 0ull);
-    if (!recaptured_textures.insert(key).second) {
-      return;
-    }
-    if (recaptured_textures.size() > 65536) {
-      recaptured_textures.clear();
-    }
-  }
-  uint32_t footprint = 0;
-  if (!target.payload_truncated ||
-      !TextureFormatFootprint(target, footprint) ||
-      target.base_address_bytes == 0 ||
-      target.payload_bytes.size() >= footprint) {
-    if (target.payload_truncated && footprint != 0 &&
-        target.payload_bytes.size() >= footprint) {
-      target.payload_byte_count = footprint;
-      target.payload_truncated = false;
-      target.payload_missing = false;
-    }
+  static std::unordered_set<uint64_t> recaptured_textures;
+  const uint64_t key =
+      (uint64_t(target.base_address_bytes) << 32) ^
+      (uint64_t(target.format) << 24) ^ (uint64_t(target.width) << 12) ^
+      uint64_t(target.height) ^ (uint64_t(target.pitch) << 44) ^
+      (target.tiled ? 0x8000000000000000ull : 0ull);
+  // Only gate a layout as "recaptured" once a full guest-memory payload has
+  // actually been delivered. Gating on first sighting alone left the renderer
+  // with truncated/missing textures forever (solid-block glyphs, cut-off logo,
+  // black background) because the capture hook's inline payload is gated/short.
+  if (recaptured_textures.count(key)) {
     return;
   }
 
-  target.payload_bytes.resize(footprint);
+  uint32_t footprint = 0;
+  const bool have_footprint = TextureFormatFootprint(target, footprint);
+  auto mark_delivered = [&]() {
+    recaptured_textures.insert(key);
+    if (recaptured_textures.size() > 65536) {
+      recaptured_textures.clear();
+    }
+  };
+
+  if (have_footprint && footprint != 0 &&
+      target.payload_bytes.size() >= footprint) {
+    target.payload_byte_count = footprint;
+    target.payload_truncated = false;
+    target.payload_missing = false;
+    mark_delivered();
+    return;
+  }
+
+  const bool incomplete =
+      target.payload_truncated || target.payload_missing ||
+      (have_footprint && target.payload_bytes.size() < footprint);
+  if (!incomplete || !have_footprint || target.base_address_bytes == 0) {
+    return;
+  }
+
   const uint8_t *source =
       REX_KERNEL_MEMORY()->TranslatePhysical<const uint8_t *>(
           target.base_address_bytes);
   if (!source) {
-    target.payload_bytes.clear();
     return;
   }
+  target.payload_bytes.resize(footprint);
   std::memcpy(target.payload_bytes.data(), source, footprint);
   target.payload_byte_count = footprint;
   target.payload_truncated = false;
   target.payload_missing = false;
+  mark_delivered();
 }
 
 void RecaptureVertexPayloadFromGuest(bo2::native::VertexFetchInfo &target) {

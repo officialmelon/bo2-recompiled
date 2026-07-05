@@ -106,8 +106,20 @@ bool TextureFormatFootprint(const bo2::native::TextureFetchInfo& fetch,
       bytes_per_block_log2 = 0;
       break;
     case 6:
+    case 7:
+    case 23:
+    case 28:
+    case 54:
       bytes_per_texel = 4;
       bytes_per_block_log2 = 2;
+      break;
+    case 26:
+      bytes_per_texel = 8;
+      bytes_per_block_log2 = 3;
+      break;
+    case 38:
+      bytes_per_texel = 16;
+      bytes_per_block_log2 = 4;
       break;
     case 18:
       block_compressed = true;
@@ -166,31 +178,55 @@ void RecaptureTexturePayloadFromGuest(bo2::native::TextureFetchInfo& target) {
   // time a (address, format, size) texture is seen; repeated recaptures are
   // multi-megabyte guest memory copies per draw and dominated the live frame
   // time. Vertex payloads stay uncached because they change per frame.
-  {
-    static std::unordered_set<uint64_t> recaptured_textures;
-    const uint64_t key =
-        (uint64_t(target.base_address_bytes) << 32) ^
-        (uint64_t(target.format) << 24) ^ (uint64_t(target.width) << 12) ^
-        uint64_t(target.height) ^ (uint64_t(target.pitch) << 44) ^
-        (target.tiled ? 0x8000000000000000ull : 0ull);
-    if (!recaptured_textures.insert(key).second) {
-      return;
-    }
+  static std::unordered_set<uint64_t> recaptured_textures;
+  const uint64_t key =
+      (uint64_t(target.base_address_bytes) << 32) ^
+      (uint64_t(target.format) << 24) ^ (uint64_t(target.width) << 12) ^
+      uint64_t(target.height) ^ (uint64_t(target.pitch) << 44) ^
+      (target.tiled ? 0x8000000000000000ull : 0ull);
+  // The gate is only set once we have actually delivered a full guest-memory
+  // payload for this exact (address, format, size, pitch, tiled) layout. After
+  // that, later sightings reuse the renderer's cached upload and skip the
+  // multi-MB per-draw copy that dominated live frame time. Crucially the gate
+  // is NOT set on first sighting alone: if the first sighting is truncated or
+  // missing (the capture hook's inline payload is gated/short), marking it done
+  // here would leave the renderer with an incomplete texture forever -- that is
+  // what rendered the menu glyph atlas as solid blocks, the logo cut off, and
+  // the background black while the emulated GPU (which reads guest memory every
+  // draw) showed them correctly.
+  if (recaptured_textures.count(key)) {
+    return;
+  }
+
+  uint32_t footprint = 0;
+  const bool have_footprint = TextureFormatFootprint(target, footprint);
+  auto mark_delivered = [&]() {
+    recaptured_textures.insert(key);
     if (recaptured_textures.size() > 65536) {
       recaptured_textures.clear();
     }
-  }
-  uint32_t footprint = 0;
-  if (!target.payload_truncated ||
-      !TextureFormatFootprint(target, footprint) ||
-      target.base_address_bytes == 0 ||
+  };
+
+  // The whole payload is already present inline: clear the incomplete flags and
+  // mark this layout delivered.
+  if (have_footprint && footprint != 0 &&
       target.payload_bytes.size() >= footprint) {
-    if (target.payload_truncated && footprint != 0 &&
-        target.payload_bytes.size() >= footprint) {
-      target.payload_byte_count = footprint;
-      target.payload_truncated = false;
-      target.payload_missing = false;
-    }
+    target.payload_byte_count = footprint;
+    target.payload_truncated = false;
+    target.payload_missing = false;
+    mark_delivered();
+    return;
+  }
+
+  // Payload is incomplete (truncated, missing, or short). Read the full texture
+  // directly from guest memory -- the same source the emulated GPU samples --
+  // so glyph atlases, logos and backgrounds decode completely.
+  const bool incomplete =
+      target.payload_truncated || target.payload_missing ||
+      (have_footprint && target.payload_bytes.size() < footprint);
+  if (!incomplete || !have_footprint || target.base_address_bytes == 0) {
+    // Nothing we can rehydrate (e.g. unknown format footprint). Leave the
+    // payload as captured and do NOT gate, so a later sighting can retry.
     return;
   }
 
@@ -198,6 +234,7 @@ void RecaptureTexturePayloadFromGuest(bo2::native::TextureFetchInfo& target) {
       REX_KERNEL_MEMORY()->TranslatePhysical<const uint8_t*>(
           target.base_address_bytes);
   if (!source) {
+    // Guest memory not mapped this sighting; retry on the next one.
     return;
   }
   target.payload_bytes.resize(footprint);
@@ -205,6 +242,7 @@ void RecaptureTexturePayloadFromGuest(bo2::native::TextureFetchInfo& target) {
   target.payload_byte_count = footprint;
   target.payload_truncated = false;
   target.payload_missing = false;
+  mark_delivered();
 }
 
 void RecaptureVertexPayloadFromGuest(bo2::native::VertexFetchInfo& target) {
