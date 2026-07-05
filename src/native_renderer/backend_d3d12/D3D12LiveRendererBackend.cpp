@@ -945,8 +945,12 @@ void D3D12LiveRendererBackend::NativeWindowThreadMain(uint32_t width,
     title += L" - ";
     title += WidenAscii(app_name_);
   }
+  // WS_EX_NOACTIVATE keeps this preview window from stealing foreground focus
+  // from the ReXGlue game window, which owns keyboard/mouse (mnk_mode) input;
+  // without it the game never receives menu navigation while the native window
+  // is up.
   HWND hwnd = CreateWindowExW(
-      0, kClassName, title.c_str(), WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+      WS_EX_NOACTIVATE, kClassName, title.c_str(), WS_OVERLAPPEDWINDOW,
       CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left,
       rect.bottom - rect.top, nullptr, nullptr, instance, nullptr);
   if (!hwnd) {
@@ -964,7 +968,7 @@ void D3D12LiveRendererBackend::NativeWindowThreadMain(uint32_t width,
     window_ready_ = true;
   }
   window_cv_.notify_all();
-  ShowWindow(hwnd, SW_SHOW);
+  ShowWindow(hwnd, SW_SHOWNOACTIVATE);
   UpdateWindow(hwnd);
 
   MSG msg{};
