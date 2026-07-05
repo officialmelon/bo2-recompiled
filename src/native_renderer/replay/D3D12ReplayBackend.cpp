@@ -2795,6 +2795,89 @@ bool DecodeTextureRgba8(const TextureFetchRecord &fetch,
   return true;
 }
 
+struct Rgba8MipLevel {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  std::vector<uint8_t> rgba;
+};
+
+uint32_t FullMipLevelCount(uint32_t width, uint32_t height) {
+  uint32_t levels = 1;
+  while (width > 1 || height > 1) {
+    width = std::max<uint32_t>(1, width >> 1);
+    height = std::max<uint32_t>(1, height >> 1);
+    ++levels;
+  }
+  return levels;
+}
+
+uint32_t DecodedMipLevelCountForFetch(const TextureFetchRecord *fetch,
+                                      uint32_t width, uint32_t height) {
+  const uint32_t full_levels = FullMipLevelCount(width, height);
+  if (!fetch || full_levels <= 1) {
+    return 1;
+  }
+  // Xenos mip filter 2 is base-map-only. Other filters may sample lower mips;
+  // synthesize a stable pyramid from the decoded base level until real packed
+  // mip payload capture is wired through.
+  if (fetch->mip_filter == 2) {
+    return 1;
+  }
+  const uint32_t max_level =
+      fetch->mip_max_level > fetch->mip_min_level ? fetch->mip_max_level
+                                                  : full_levels - 1;
+  return std::clamp<uint32_t>(max_level + 1, 1, full_levels);
+}
+
+std::vector<Rgba8MipLevel> BuildRgba8MipChain(const uint8_t *base_rgba,
+                                             uint32_t width, uint32_t height,
+                                             uint32_t level_count) {
+  std::vector<Rgba8MipLevel> levels;
+  if (!base_rgba || width == 0 || height == 0 || level_count == 0) {
+    return levels;
+  }
+  level_count = std::min<uint32_t>(level_count, FullMipLevelCount(width, height));
+  levels.reserve(level_count);
+  Rgba8MipLevel base;
+  base.width = width;
+  base.height = height;
+  base.rgba.assign(base_rgba, base_rgba + std::size_t(width) * height * 4);
+  levels.push_back(std::move(base));
+
+  for (uint32_t level = 1; level < level_count; ++level) {
+    const Rgba8MipLevel &src = levels.back();
+    Rgba8MipLevel dst;
+    dst.width = std::max<uint32_t>(1, src.width >> 1);
+    dst.height = std::max<uint32_t>(1, src.height >> 1);
+    dst.rgba.assign(std::size_t(dst.width) * dst.height * 4, 0);
+    for (uint32_t y = 0; y < dst.height; ++y) {
+      for (uint32_t x = 0; x < dst.width; ++x) {
+        uint32_t sum[4]{};
+        uint32_t count = 0;
+        for (uint32_t oy = 0; oy < 2; ++oy) {
+          const uint32_t sy = std::min<uint32_t>(src.height - 1, y * 2 + oy);
+          for (uint32_t ox = 0; ox < 2; ++ox) {
+            const uint32_t sx = std::min<uint32_t>(src.width - 1, x * 2 + ox);
+            const std::size_t src_pixel =
+                (std::size_t(sy) * src.width + sx) * 4;
+            for (uint32_t c = 0; c < 4; ++c) {
+              sum[c] += src.rgba[src_pixel + c];
+            }
+            ++count;
+          }
+        }
+        const std::size_t dst_pixel = (std::size_t(y) * dst.width + x) * 4;
+        for (uint32_t c = 0; c < 4; ++c) {
+          dst.rgba[dst_pixel + c] =
+              static_cast<uint8_t>((sum[c] + count / 2) / count);
+        }
+      }
+    }
+    levels.push_back(std::move(dst));
+  }
+  return levels;
+}
+
 bool CreateTexture2DRgba8(ID3D12Device *device, ID3D12GraphicsCommandList *list,
                           const uint8_t *rgba, uint32_t width,
                           uint32_t height,
@@ -7422,7 +7505,7 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   // the constants section below on first use; ensure it exists here since
   // shared-memory uploads run first).
   if (shared_upload_size != 0 && !xenia.upload_ring) {
-    xenia.upload_ring_capacity = 64ull << 20;
+    xenia.upload_ring_capacity = 256ull << 20;
     D3D12_RESOURCE_DESC ring_desc{};
     ring_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     ring_desc.Width = xenia.upload_ring_capacity;
@@ -7487,7 +7570,7 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
   const uint32_t draw_cb_stride =
       system_cb_size + 2 * float_cb_size + bool_loop_cb_size + fetch_cb_size;
   if (!xenia.upload_ring) {
-    xenia.upload_ring_capacity = 64ull << 20;
+    xenia.upload_ring_capacity = 256ull << 20;
     D3D12_RESOURCE_DESC ring_desc{};
     ring_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     ring_desc.Width = xenia.upload_ring_capacity;
@@ -8236,12 +8319,20 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
           ++fallback_srvs;
         }
 
+        const uint32_t mip_count =
+            DecodedMipLevelCountForFetch(fetch, tex_width, tex_height);
+        std::vector<Rgba8MipLevel> mip_chain =
+            BuildRgba8MipChain(rgba.data(), tex_width, tex_height, mip_count);
+        if (mip_chain.empty()) {
+          mip_chain = BuildRgba8MipChain(rgba.data(), tex_width, tex_height, 1);
+        }
+
         D3D12_RESOURCE_DESC tex_desc{};
         tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         tex_desc.Width = tex_width;
         tex_desc.Height = tex_height;
         tex_desc.DepthOrArraySize = 1;
-        tex_desc.MipLevels = 1;
+        tex_desc.MipLevels = static_cast<UINT16>(mip_chain.size());
         tex_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         tex_desc.SampleDesc.Count = 1;
         ComPtr<ID3D12Resource> texture;
@@ -8251,38 +8342,44 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
                 IID_PPV_ARGS(&texture)))) {
           return std::nullopt;
         }
-        // Upload through the persistent ring instead of a per-texture
-        // committed buffer.
-        const uint32_t row_pitch =
-            (tex_width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
-            ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
-        const uint64_t upload_bytes = uint64_t(row_pitch) * tex_height;
-        const uint64_t upload_offset = ring_alloc(
-            upload_bytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
-        uint8_t *tex_mapped = xenia.upload_ring_mapped + upload_offset;
-        for (uint32_t row = 0; row < tex_height; ++row) {
-          const std::size_t src_offset = std::size_t(row) * tex_width * 4;
-          if (src_offset + tex_width * 4 <= rgba.size()) {
-            std::memcpy(tex_mapped + std::size_t(row) * row_pitch,
-                        rgba.data() + src_offset, tex_width * 4);
-          } else {
-            std::memset(tex_mapped + std::size_t(row) * row_pitch, 0,
-                        tex_width * 4);
+        // Upload through the persistent ring instead of per-texture committed
+        // buffers. Generate and upload a full RGBA mip chain when the captured
+        // fetch state permits mip sampling; relying on mip 0 alone causes the
+        // BO2 UI/world textures to shimmer and stipple when minified.
+        for (uint32_t mip = 0; mip < mip_chain.size(); ++mip) {
+          const Rgba8MipLevel &level = mip_chain[mip];
+          const uint32_t row_pitch =
+              (level.width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
+              ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+          const uint64_t upload_bytes = uint64_t(row_pitch) * level.height;
+          const uint64_t upload_offset = ring_alloc(
+              upload_bytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+          uint8_t *tex_mapped = xenia.upload_ring_mapped + upload_offset;
+          for (uint32_t row = 0; row < level.height; ++row) {
+            const std::size_t src_offset = std::size_t(row) * level.width * 4;
+            if (src_offset + level.width * 4 <= level.rgba.size()) {
+              std::memcpy(tex_mapped + std::size_t(row) * row_pitch,
+                          level.rgba.data() + src_offset, level.width * 4);
+            } else {
+              std::memset(tex_mapped + std::size_t(row) * row_pitch, 0,
+                          level.width * 4);
+            }
           }
+          D3D12_TEXTURE_COPY_LOCATION dst{};
+          dst.pResource = texture.Get();
+          dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+          dst.SubresourceIndex = mip;
+          D3D12_TEXTURE_COPY_LOCATION src{};
+          src.pResource = xenia.upload_ring.Get();
+          src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+          src.PlacedFootprint.Offset = upload_offset;
+          src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+          src.PlacedFootprint.Footprint.Width = level.width;
+          src.PlacedFootprint.Footprint.Height = level.height;
+          src.PlacedFootprint.Footprint.Depth = 1;
+          src.PlacedFootprint.Footprint.RowPitch = row_pitch;
+          list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
         }
-        D3D12_TEXTURE_COPY_LOCATION dst{};
-        dst.pResource = texture.Get();
-        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        D3D12_TEXTURE_COPY_LOCATION src{};
-        src.pResource = xenia.upload_ring.Get();
-        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        src.PlacedFootprint.Offset = upload_offset;
-        src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        src.PlacedFootprint.Footprint.Width = tex_width;
-        src.PlacedFootprint.Footprint.Height = tex_height;
-        src.PlacedFootprint.Footprint.Depth = 1;
-        src.PlacedFootprint.Footprint.RowPitch = row_pitch;
-        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Transition.pResource = texture.Get();
@@ -8361,7 +8458,18 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         sampler.AddressW =
             XeniaClampToAddressMode(fetch != nullptr ? fetch->clamp_z : 2);
         sampler.MaxAnisotropy = anisotropic ? (1u << (aniso - 1)) : 1u;
-        sampler.MaxLOD = D3D12_FLOAT32_MAX;
+        if (fetch != nullptr) {
+          sampler.MipLODBias = float(fetch->lod_bias) / 32.0f;
+          sampler.MinLOD = float(fetch->mip_min_level);
+          sampler.MaxLOD =
+              fetch->mip_filter == 2
+                  ? 0.0f
+                  : (fetch->mip_max_level > fetch->mip_min_level
+                         ? float(fetch->mip_max_level)
+                         : D3D12_FLOAT32_MAX);
+        } else {
+          sampler.MaxLOD = D3D12_FLOAT32_MAX;
+        }
         D3D12_CPU_DESCRIPTOR_HANDLE handle = sampler_cpu_base;
         handle.ptr += std::size_t(next_sampler_descriptor) * sampler_stride;
         device->CreateSampler(&sampler, handle);
