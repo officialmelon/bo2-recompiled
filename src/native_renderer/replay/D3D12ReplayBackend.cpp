@@ -6643,6 +6643,7 @@ struct XeniaGuestColorTarget {
   ComPtr<ID3D12Resource> resource;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
   uint64_t draws = 0;
+  uint32_t last_draw_index = 0;
 };
 
 struct XeniaGuestDepthTarget {
@@ -8421,6 +8422,7 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
       continue;
     }
     ++guest_color->draws;
+    guest_color->last_draw_index = item.draw_index;
     list->OMSetRenderTargets(1, &guest_color->rtv, FALSE, &guest_depth->dsv);
 
     const D3D12_VIEWPORT viewport{
@@ -8466,28 +8468,42 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
                        draw_state.pixel_shader.hash}];
   }
 
-  // Select the guest color target that received the most draws this run
-  // (the composed scene/UI surface).
+  // Select the guest color target that is most likely to be the composed
+  // frame. BO2/Xenos often writes intermediate scene/depth/UI targets before
+  // a final composition pass, so in live mode the latest color target written
+  // is a better presentation signal than raw draw count. Draw count remains a
+  // tie-breaker for captures that write several targets at the same command
+  // index.
   ID3D12Resource *presented_target = nullptr;
   uint32_t presented_base = 0;
   uint64_t presented_base_draws = 0;
+  uint32_t presented_last_draw_index = 0;
   {
     uint64_t best_draws = 0;
+    uint32_t best_last_draw_index = 0;
     uint32_t best_base = 0;
     for (const auto &[base, target] : guest_color_targets) {
-      if (target.draws >= best_draws) {
+      if (target.draws == 0) {
+        continue;
+      }
+      if (best_base == 0 || target.last_draw_index > best_last_draw_index ||
+          (target.last_draw_index == best_last_draw_index &&
+           target.draws >= best_draws)) {
         best_draws = target.draws;
+        best_last_draw_index = target.last_draw_index;
         best_base = base;
         presented_target = target.resource.Get();
       }
     }
     presented_base = best_base;
     presented_base_draws = best_draws;
+    presented_last_draw_index = best_last_draw_index;
     if (log_backend) {
       std::cout << "D3D12 Xenia-translated replay guest color targets:";
       for (const auto &[base, target] : guest_color_targets) {
         std::cout << " base=0x" << std::hex << base << std::dec
                   << " draws=" << target.draws
+                  << " last_draw=" << target.last_draw_index
                   << (base == best_base ? " (presented)" : "");
       }
       std::cout << "\n";
@@ -8624,9 +8640,9 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     live_binding->submitted_draws = submitted;
     live_binding->shader_pair_count = submitted_pairs.size();
     live_binding->pso_entries = pipelines.size();
-    live_binding->candidate_presented_guest_color_base =
-        uint32_t(presented_base_draws);
+    live_binding->candidate_presented_guest_color_base = presented_base;
     live_binding->selected_presented_guest_color_base = presented_base;
+    live_binding->scene_candidate_draws = presented_base_draws;
     live_binding->diagnostic_pipelines = 0;
     live_binding->skipped_draws = 0;
     for (const auto &[reason, count] : unsupported_reasons) {
