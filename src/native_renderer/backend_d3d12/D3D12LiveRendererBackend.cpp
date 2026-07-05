@@ -13,6 +13,7 @@
 
 #include <rex/logging.h>
 
+#include "../../../common/windows_dpi_awareness.h"
 #include "../DebugRenderLog.h"
 #include "../NativeRendererStats.h"
 
@@ -90,6 +91,8 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
   last_error_ = "native_d3d12 live backend requires Windows";
   return false;
 #else
+  bo2::EnableProcessDpiAwareness();
+
   // BO2_XENIA_DEBUG_LAYER=1 turns on the D3D12 debug layer for the live
   // device; validation messages are drained into the game log per frame.
   {

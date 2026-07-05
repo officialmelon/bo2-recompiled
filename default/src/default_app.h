@@ -21,6 +21,7 @@
 #include "../../common/native_input.h"
 #include "../../common/project_paths.h"
 #include "../../common/android_launcher.h"
+#include "../../common/windows_dpi_awareness.h"
 #include "../../src/native_renderer/NativeRenderer.h"
 #include "../../src/native_renderer/ui/NativeRendererOverlayDialog.h"
 
@@ -45,6 +46,7 @@ class DefaultApp : public rex::ReXApp {
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    bo2::EnableProcessDpiAwareness();
     rex::cvar::SetFlagByName("vsync", "false");
     rex::cvar::SetFlagByName("video_mode_width", "1280");
     rex::cvar::SetFlagByName("video_mode_height", "720");
