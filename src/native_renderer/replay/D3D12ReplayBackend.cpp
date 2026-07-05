@@ -6783,6 +6783,8 @@ struct XeniaLiveState {
     // Slot in the persistent non-shader-visible SRV staging heap.
     uint32_t staging_slot = 0;
     uint64_t last_used_frame = 0;
+    std::size_t payload_size = 0;
+    uint64_t payload_hash = 0;
   };
   using TextureKey =
       std::tuple<uint32_t, uint32_t, uint32_t, uint64_t, uint32_t, uint64_t>;
@@ -8284,27 +8286,29 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
             continue;
           }
         }
-        // Cache key: guest base address + format + dimensions + layout only.
-        // A texture is identified by its guest memory location and layout, the
-        // way the real GPU addresses it -- NOT by payload content. This is
-        // required because the capture hooks recapture the full guest payload
-        // only on a texture's first sighting (a perf gate against multi-MB
-        // per-draw copies); later draws of the same texture carry a truncated
-        // inline payload. Keying on payload size/content would make those
-        // truncated recaptures miss the first-sight texture and upload garbage
-        // (the menu glyph atlas and background rendered as solid blocks).
-        // The first sighting supplies the full payload, so the cached texture
-        // is correct; dynamic textures that reuse an address need dirty
-        // tracking (a separate concern) rather than content keying here.
+        // Cache by guest address/layout, but use full payload recaptures as a
+        // dirty signal. Static textures reuse the cached upload; dynamic BO2
+        // UI/movie textures that rewrite the same guest address replace it.
         XeniaLiveState::TextureKey key{
             fetch ? fetch->base_address_bytes : 0u,
             fetch ? fetch->format : 0xFFFFFFFFu,
             fetch ? ((fetch->width << 16) | (fetch->height & 0xFFFFu)) : 1u,
             fetch ? HashTextureFetchLayout64(*fetch) : 0ull, 0u, 0ull};
+        const bool has_full_payload =
+            fetch != nullptr && !fetch->payload_missing &&
+            !fetch->payload_truncated && !fetch->payload_bytes.empty();
+        const std::size_t payload_size =
+            has_full_payload ? fetch->payload_bytes.size() : 0;
+        const uint64_t payload_hash =
+            has_full_payload ? HashBytesFnv1a64(fetch->payload_bytes) : 0;
         D3D12_CPU_DESCRIPTOR_HANDLE ring_handle = srv_cpu_base;
         ring_handle.ptr += std::size_t(ring_slot) * srv_stride;
         auto cache_it = xenia.texture_cache.find(key);
-        if (cache_it != xenia.texture_cache.end()) {
+        const bool cached_texture_dirty =
+            cache_it != xenia.texture_cache.end() && has_full_payload &&
+            (cache_it->second.payload_size != payload_size ||
+             cache_it->second.payload_hash != payload_hash);
+        if (cache_it != xenia.texture_cache.end() && !cached_texture_dirty) {
           cache_it->second.last_used_frame = xenia.frame_counter;
           D3D12_CPU_DESCRIPTOR_HANDLE staging_handle = staging_cpu_base;
           staging_handle.ptr +=
@@ -8408,6 +8412,8 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         cached.resource = texture;
         cached.staging_slot = xenia.srv_staging_next++ % 65536;
         cached.last_used_frame = xenia.frame_counter;
+        cached.payload_size = payload_size;
+        cached.payload_hash = payload_hash;
         D3D12_CPU_DESCRIPTOR_HANDLE staging_handle = staging_cpu_base;
         staging_handle.ptr += std::size_t(cached.staging_slot) * srv_stride;
         // The translated Xenos shaders declare 2D textures as Texture2DArray
