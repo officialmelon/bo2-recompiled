@@ -114,6 +114,7 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   void EndCommandFrame(uint64_t frame_index, bool execute);
   bool WaitForFenceValue(uint64_t fence_value);
   bool WaitForGpu();
+  void MarkGpuFault(uint64_t frame_index, std::string_view reason);
   bool EnsureSwapChain(uint32_t width, uint32_t height);
   bool EnsureNativeWindow(uint32_t width, uint32_t height);
   void NativeWindowThreadMain(uint32_t width, uint32_t height);
@@ -199,6 +200,8 @@ class D3D12LiveRendererBackend final : public RendererBackend {
   uint32_t swap_width_ = 0;
   uint32_t swap_height_ = 0;
   bool swapchain_ready_ = false;
+  bool gpu_faulted_ = false;
+  uint64_t gpu_fault_frame_ = 0;
 #endif
 };
 

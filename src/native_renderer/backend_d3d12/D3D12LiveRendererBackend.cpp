@@ -92,6 +92,8 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
   return false;
 #else
   bo2::EnableProcessDpiAwareness();
+  gpu_faulted_ = false;
+  gpu_fault_frame_ = 0;
 
   // BO2_XENIA_DEBUG_LAYER=1 turns on the D3D12 debug layer for the live
   // device; validation messages are drained into the game log per frame.
@@ -210,7 +212,13 @@ bool D3D12LiveRendererBackend::Initialize(const RendererConfig &config) {
 }
 
 void D3D12LiveRendererBackend::Shutdown() {
+#if defined(_WIN32)
+  if (!gpu_faulted_) {
+    WaitForGpu();
+  }
+#else
   WaitForGpu();
+#endif
   capture_.Shutdown();
 #if defined(_WIN32)
   if (replay_session_) {
@@ -264,7 +272,13 @@ void D3D12LiveRendererBackend::BeginFrame(uint64_t frame_index) {
   frame_pending_draws_ = pending_frame_builder_.draw_count();
   frame_builder_.AbsorbPending(pending_frame_builder_, frame_index);
   capture_.WriteBeginFrame(frame_index);
+#if defined(_WIN32)
+  if (!gpu_faulted_) {
+    BeginCommandFrame(frame_index);
+  }
+#else
   BeginCommandFrame(frame_index);
+#endif
   if (verbose_ && ShouldLogHighFrequencyEvent(frame_index)) {
     REXLOG_INFO("BO2 native D3D12 frame {} begin", frame_index);
   }
@@ -360,7 +374,11 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
     frame_draws = frame_builder_.draw_count();
   }
   last_submit_stats_ = {};
-  bool attempted_submit = frame_draws > 0;
+  bool native_backend_available = true;
+#if defined(_WIN32)
+  native_backend_available = !gpu_faulted_ && active_command_frame_ != nullptr;
+#endif
+  bool attempted_submit = frame_draws > 0 && native_backend_available;
   bool submit_success = false;
   if (attempted_submit) {
     last_error_.clear();
@@ -373,6 +391,19 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
     } else {
       ++submitted_frames_;
       submit_success = true;
+    }
+  } else if (frame_draws > 0 && !native_backend_available) {
+    ++failed_frames_;
+#if defined(_WIN32)
+    last_error_ = gpu_faulted_
+                      ? "native_d3d12 disabled after GPU fence timeout"
+                      : "native_d3d12 has no active command frame";
+#else
+    last_error_ = "native_d3d12 backend is unavailable";
+#endif
+    if (verbose_ || failed_frames_ <= 3 || ShouldLogHighFrequencyEvent(frame_index)) {
+      REXLOG_WARN("BO2 native D3D12 live frame {} skipped: {}",
+                  frame_index, last_error_);
     }
   }
   const bool execute_native_frame =
@@ -412,10 +443,16 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
   RecordLiveSubmitDiagnostics(frame_index, attempted_submit, submit_success,
                               present_native_frame);
 
+#if defined(_WIN32)
+  if (active_command_frame_) {
+    EndCommandFrame(frame_index, execute_native_frame);
+  }
+#else
   EndCommandFrame(frame_index, execute_native_frame);
+#endif
 
 #if defined(_WIN32)
-  if (swapchain_ready_ && swap_chain_) {
+  if (!gpu_faulted_ && swapchain_ready_ && swap_chain_) {
     PumpNativeWindowMessages();
     if (present_native_frame) {
       const HRESULT hr = swap_chain_->Present(0, 0);
@@ -426,15 +463,16 @@ void D3D12LiveRendererBackend::EndFrame(uint64_t frame_index) {
     }
     PumpNativeWindowMessages();
   }
-  if (device_) {
+  if (!gpu_faulted_ && device_) {
     const HRESULT removed_reason = device_->GetDeviceRemovedReason();
     if (FAILED(removed_reason)) {
       REXLOG_ERROR(
           "BO2 native D3D12 DEVICE REMOVED frame={} reason={:#010x}",
           frame_index, static_cast<uint32_t>(removed_reason));
+      MarkGpuFault(frame_index, "D3D12 device removed");
     }
   }
-  if (info_queue_) {
+  if (!gpu_faulted_ && info_queue_) {
     const UINT64 message_count = info_queue_->GetNumStoredMessages();
     std::vector<char> message_buffer;
     for (UINT64 i = 0; i < message_count && i < 32; ++i) {
@@ -648,6 +686,10 @@ bool D3D12LiveRendererBackend::SubmitLiveFrame(uint64_t frame_index) {
   (void)frame_index;
   return false;
 #else
+  if (gpu_faulted_) {
+    last_error_ = "native_d3d12 disabled after GPU fence timeout";
+    return false;
+  }
   const uint32_t width = std::max<uint32_t>(frame_width_, 64u);
   const uint32_t height = std::max<uint32_t>(frame_height_, 64u);
   if (!EnsureSwapChain(width, height)) {
@@ -837,7 +879,10 @@ bool D3D12LiveRendererBackend::EnsureSwapChain(uint32_t width,
   }
 
   if (swap_chain_) {
-    WaitForGpu();
+    if (!WaitForGpu()) {
+      MarkGpuFault(0, "timed out before swapchain resize/reset");
+      return false;
+    }
     swap_chain_.Reset();
     rtv_heap_.Reset();
     color_target_.Reset();
@@ -1064,6 +1109,7 @@ bool D3D12LiveRendererBackend::BeginCommandFrame(uint64_t frame_index) {
     return false;
   }
   if (!WaitForFenceValue(command_frame.fence_value)) {
+    MarkGpuFault(frame_index, "timed out waiting for reusable command frame");
     return false;
   }
 
@@ -1135,11 +1181,38 @@ void D3D12LiveRendererBackend::EndCommandFrame(uint64_t frame_index,
 #endif
 }
 
+void D3D12LiveRendererBackend::MarkGpuFault(uint64_t frame_index,
+                                            std::string_view reason) {
+#if defined(_WIN32)
+  if (gpu_faulted_) {
+    return;
+  }
+  gpu_faulted_ = true;
+  gpu_fault_frame_ = frame_index;
+  active_command_frame_ = nullptr;
+  for (CommandFrameContext& command_frame : command_frames_) {
+    command_frame.open = false;
+  }
+  last_error_ = "native_d3d12 disabled after GPU fault: ";
+  last_error_ += std::string(reason);
+  REXLOG_ERROR(
+      "BO2 native D3D12 disabled at frame {} after GPU fault: {}. "
+      "Native submits/presents are stopped to avoid desktop stalls.",
+      frame_index, std::string(reason));
+#else
+  (void)frame_index;
+  (void)reason;
+#endif
+}
+
 bool D3D12LiveRendererBackend::WaitForFenceValue(uint64_t signal_value) {
 #if !defined(_WIN32)
   (void)signal_value;
   return false;
 #else
+  if (gpu_faulted_) {
+    return false;
+  }
   if (signal_value == 0) {
     return true;
   }
@@ -1195,6 +1268,9 @@ bool D3D12LiveRendererBackend::WaitForGpu() {
 #if !defined(_WIN32)
   return false;
 #else
+  if (gpu_faulted_) {
+    return false;
+  }
   if (!command_queue_ || !fence_ || !fence_event_) {
     return false;
   }
