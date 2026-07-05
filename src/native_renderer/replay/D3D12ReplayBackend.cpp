@@ -6592,8 +6592,9 @@ D3D12_TEXTURE_ADDRESS_MODE XeniaClampToAddressMode(uint32_t clamp) {
     case 5:
       return D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE;
     case 6:
-    case 7:
       return D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    case 7:
+      return D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE;
     default:
       return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
   }
@@ -8459,14 +8460,18 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
             XeniaClampToAddressMode(fetch != nullptr ? fetch->clamp_z : 2);
         sampler.MaxAnisotropy = anisotropic ? (1u << (aniso - 1)) : 1u;
         if (fetch != nullptr) {
-          sampler.MipLODBias = float(fetch->lod_bias) / 32.0f;
+          // The Xenia-derived translator applies fetch LOD bias in shader code.
+          // Keep the fixed-function sampler unbiased to avoid double-biasing.
+          sampler.MipLODBias = 0.0f;
           sampler.MinLOD = float(fetch->mip_min_level);
-          sampler.MaxLOD =
-              fetch->mip_filter == 2
-                  ? 0.0f
-                  : (fetch->mip_max_level > fetch->mip_min_level
-                         ? float(fetch->mip_max_level)
-                         : D3D12_FLOAT32_MAX);
+          if (fetch->mip_filter == 2) {
+            sampler.MaxLOD = sampler.MinLOD;
+            if (!anisotropic) {
+              sampler.MaxLOD += 0.25f;
+            }
+          } else {
+            sampler.MaxLOD = D3D12_FLOAT32_MAX;
+          }
         } else {
           sampler.MaxLOD = D3D12_FLOAT32_MAX;
         }
