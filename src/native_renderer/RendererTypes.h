@@ -314,6 +314,7 @@ struct RenderStateInfo {
   std::array<uint32_t, kViewportRegisterCount> viewport_registers{};
   std::array<uint32_t, kColorTargetCount> rb_color_info{};
   std::array<uint32_t, kColorTargetCount> rb_blendcontrol{};
+  std::array<uint32_t, 4> rb_blend_factor{};
   uint32_t surface_pitch = 0;
   uint32_t msaa_samples = 0;
   uint32_t depth_base = 0;

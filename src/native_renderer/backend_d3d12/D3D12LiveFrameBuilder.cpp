@@ -139,6 +139,8 @@ replay::RenderStateRecord ConvertRenderState(const RenderStateInfo &state) {
                            state.rb_color_info.end());
   out.rb_blendcontrol.assign(state.rb_blendcontrol.begin(),
                              state.rb_blendcontrol.end());
+  out.rb_blend_factor.assign(state.rb_blend_factor.begin(),
+                             state.rb_blend_factor.end());
   out.surface_pitch = state.surface_pitch;
   out.msaa_samples = state.msaa_samples;
   out.depth_base = state.depth_base;

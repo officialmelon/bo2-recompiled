@@ -847,6 +847,7 @@ RenderStateRecord ParseRenderState(const JsonObject &object) {
       GetU32Array(state_object, "viewport_registers");
   state.rb_color_info = GetU32Array(state_object, "rb_color_info");
   state.rb_blendcontrol = GetU32Array(state_object, "rb_blendcontrol");
+  state.rb_blend_factor = GetU32Array(state_object, "rb_blend_factor");
   state.surface_pitch = GetU32(state_object, "surface_pitch");
   state.msaa_samples = GetU32(state_object, "msaa_samples");
   state.depth_base = GetU32(state_object, "depth_base");

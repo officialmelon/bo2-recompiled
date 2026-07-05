@@ -284,6 +284,18 @@ uint32_t StencilRefFromRenderState(const RenderStateRecord *state) {
   return state->rb_stencilrefmask & 0xFF;
 }
 
+bool BlendFactorFromRenderState(const RenderStateRecord *state,
+                                FLOAT out_blend_factor[4]) {
+  if (!state || state->rb_blend_factor.size() < 4) {
+    return false;
+  }
+  for (uint32_t i = 0; i < 4; ++i) {
+    const uint32_t raw = state->rb_blend_factor[i];
+    std::memcpy(&out_blend_factor[i], &raw, sizeof(float));
+  }
+  return true;
+}
+
 bool RenderStateUsesDepthTarget(const RenderStateRecord *state) {
   if (!state || !state->present) {
     return false;
@@ -5789,6 +5801,10 @@ bool RunD3D12RealReplayBackend(const ReplayCapture &capture,
         batch_uses_depth && RenderStateUsesDepthTarget(pipeline->render_state);
     list->OMSetRenderTargets(1, &draw_rtv, FALSE,
                              draw_uses_depth ? &dsv : nullptr);
+    FLOAT blend_factor[4]{};
+    if (BlendFactorFromRenderState(pipeline->render_state, blend_factor)) {
+      list->OMSetBlendFactor(blend_factor);
+    }
     list->OMSetStencilRef(StencilRefFromRenderState(pipeline->render_state));
     const D3D12_RECT draw_scissor =
         ScissorRectFromRenderState(pipeline->render_state, width, height);
@@ -8434,6 +8450,10 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         ScissorRectFromRenderState(&render_state, width, height);
     list->RSSetViewports(1, &viewport);
     list->RSSetScissorRects(1, &scissor);
+    FLOAT blend_factor[4]{};
+    if (BlendFactorFromRenderState(&render_state, blend_factor)) {
+      list->OMSetBlendFactor(blend_factor);
+    }
     list->OMSetStencilRef(StencilRefFromRenderState(&render_state));
     list->IASetPrimitiveTopology(item.topology);
 

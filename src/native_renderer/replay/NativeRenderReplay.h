@@ -217,6 +217,7 @@ struct RenderStateRecord {
   std::vector<uint32_t> viewport_registers;
   std::vector<uint32_t> rb_color_info;
   std::vector<uint32_t> rb_blendcontrol;
+  std::vector<uint32_t> rb_blend_factor;
   uint32_t surface_pitch = 0;
   uint32_t msaa_samples = 0;
   uint32_t depth_base = 0;

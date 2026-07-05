@@ -506,6 +506,11 @@ void CopyDrawRenderStateIfPresent(const DrawEvent* event,
       target.color_format[i] = source.color_format[i];
       target.color_exp_bias[i] = source.color_exp_bias[i];
     }
+    if constexpr (requires { source.rb_blend_factor[0]; }) {
+      for (uint32_t i = 0; i < target.rb_blend_factor.size(); ++i) {
+        target.rb_blend_factor[i] = source.rb_blend_factor[i];
+      }
+    }
     if constexpr (requires {
                     source.color_payload_requested_byte_count[0];
                     source.color_payload_offset_bytes[0];

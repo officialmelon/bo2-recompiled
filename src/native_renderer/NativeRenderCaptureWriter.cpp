@@ -830,6 +830,7 @@ void NativeRenderCaptureWriter::WritePM4Draw(const PM4DrawInfo &draw) {
   state_hex_array("viewport_registers", state.viewport_registers, 8);
   state_hex_array("rb_color_info", state.rb_color_info, 8);
   state_hex_array("rb_blendcontrol", state.rb_blendcontrol, 8);
+  state_hex_array("rb_blend_factor", state.rb_blend_factor, 8);
   state_u64("surface_pitch", state.surface_pitch);
   state_u64("msaa_samples", state.msaa_samples);
   state_u64("depth_base", state.depth_base);
