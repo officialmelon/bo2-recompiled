@@ -6852,6 +6852,16 @@ struct XeniaLiveState {
   std::vector<ComPtr<ID3D12Resource>> *retained_resources = nullptr;
   std::vector<ComPtr<ID3D12DescriptorHeap>> *retained_heaps = nullptr;
 
+  // FXAA post-process (matches the emulated renderer's swap-time FXAA that
+  // smooths hard UI/edge aliasing). Created lazily and reused across frames.
+  ComPtr<ID3D12RootSignature> fxaa_root_signature;
+  ComPtr<ID3D12PipelineState> fxaa_pso;
+  ComPtr<ID3D12DescriptorHeap> fxaa_srv_heap;  // shader-visible, 1 SRV
+  ComPtr<ID3D12DescriptorHeap> fxaa_rtv_heap;  // 1 RTV
+  ComPtr<ID3D12Resource> fxaa_output;
+  uint32_t fxaa_output_width = 0;
+  uint32_t fxaa_output_height = 0;
+
   void BeginRetainedFrame() {
     retained_ring_index = (retained_ring_index + 1) % kRetainedFrameRing;
     RetainedFrame &frame = retained_ring[retained_ring_index];
@@ -8400,7 +8410,18 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
         cached.last_used_frame = xenia.frame_counter;
         D3D12_CPU_DESCRIPTOR_HANDLE staging_handle = staging_cpu_base;
         staging_handle.ptr += std::size_t(cached.staging_slot) * srv_stride;
-        device->CreateShaderResourceView(texture.Get(), nullptr,
+        // The translated Xenos shaders declare 2D textures as Texture2DArray
+        // (a single array slice). Binding a plain Texture2D SRV where the
+        // shader samples a Texture2DArray is a view-dimension mismatch that
+        // corrupts sampling; create an explicit Texture2DArray view.
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+        srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        srv_desc.Shader4ComponentMapping =
+            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv_desc.Texture2DArray.MipLevels = tex_desc.MipLevels;
+        srv_desc.Texture2DArray.ArraySize = 1;
+        device->CreateShaderResourceView(texture.Get(), &srv_desc,
                                          staging_handle);
         device->CopyDescriptorsSimple(1, ring_handle, staging_handle,
                                       D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -8652,6 +8673,180 @@ bool RunD3D12XeniaReplayBackend(const ReplayCapture &capture,
     error = "no guest color target was rendered";
     return false;
   }
+
+  // FXAA post-process: the emulated renderer applies FXAA at swap time, which
+  // smooths the hard/aliased UI text and geometry edges. Without it the raw
+  // guest output looks beaded next to the emulated window. Run a fullscreen
+  // FXAA pass over the presented target into fxaa_output and present/read that.
+  bool fxaa_enabled = true;
+  {
+    char v[8]{};
+    if (GetEnvironmentVariableA("BO2_XENIA_FXAA", v, sizeof(v)) > 0 &&
+        v[0] == '0') {
+      fxaa_enabled = false;
+    }
+  }
+  if (fxaa_enabled) do {
+    if (!xenia.fxaa_pso) {
+      static const char kFxaaSource[] =
+          "Texture2D gTex : register(t0);\n"
+          "SamplerState gSmp : register(s0);\n"
+          "cbuffer Cb : register(b0) { float2 gRcpFrame; float2 gPad; };\n"
+          "struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };\n"
+          "VSOut VSMain(uint vid : SV_VertexID) {\n"
+          "  VSOut o; o.uv = float2((vid << 1) & 2, vid & 2);\n"
+          "  o.pos = float4(o.uv * float2(2.0,-2.0) + float2(-1.0,1.0),0.0,1.0);\n"
+          "  return o; }\n"
+          "float Luma(float3 c){ return dot(c, float3(0.299,0.587,0.114)); }\n"
+          "float4 PSMain(VSOut i) : SV_TARGET {\n"
+          "  float2 uv=i.uv; float2 rf=gRcpFrame;\n"
+          "  float3 m=gTex.Sample(gSmp,uv).rgb;\n"
+          "  float3 nw=gTex.Sample(gSmp,uv+float2(-1,-1)*rf).rgb;\n"
+          "  float3 ne=gTex.Sample(gSmp,uv+float2( 1,-1)*rf).rgb;\n"
+          "  float3 sw=gTex.Sample(gSmp,uv+float2(-1, 1)*rf).rgb;\n"
+          "  float3 se=gTex.Sample(gSmp,uv+float2( 1, 1)*rf).rgb;\n"
+          "  float lm=Luma(m),lnw=Luma(nw),lne=Luma(ne),lsw=Luma(sw),lse=Luma(se);\n"
+          "  float lmin=min(lm,min(min(lnw,lne),min(lsw,lse)));\n"
+          "  float lmax=max(lm,max(max(lnw,lne),max(lsw,lse)));\n"
+          "  if (lmax-lmin < 0.0625*lmax) return float4(m,1.0);\n"
+          "  float2 dir=float2(-((lnw+lne)-(lsw+lse)),((lnw+lsw)-(lne+lse)));\n"
+          "  float red=max((lnw+lne+lsw+lse)*0.03125, 0.0078125);\n"
+          "  float rcpMin=1.0/(min(abs(dir.x),abs(dir.y))+red);\n"
+          "  dir=clamp(dir*rcpMin,-8.0,8.0)*rf;\n"
+          "  float3 a=0.5*(gTex.Sample(gSmp,uv+dir*(-0.16667)).rgb+gTex.Sample(gSmp,uv+dir*(0.16667)).rgb);\n"
+          "  float3 b=a*0.5+0.25*(gTex.Sample(gSmp,uv+dir*(-0.5)).rgb+gTex.Sample(gSmp,uv+dir*(0.5)).rgb);\n"
+          "  float lb=Luma(b);\n"
+          "  return float4((lb<lmin||lb>lmax)?a:b,1.0); }\n";
+      ComPtr<ID3DBlob> vs, ps;
+      std::string cerr;
+      if (!CompileShader(kFxaaSource, "VSMain", "vs_5_0", "fxaa", vs, cerr) ||
+          !CompileShader(kFxaaSource, "PSMain", "ps_5_0", "fxaa", ps, cerr)) {
+        if (log_backend) std::cout << "FXAA compile failed: " << cerr << "\n";
+        break;
+      }
+      D3D12_DESCRIPTOR_RANGE srv_range{};
+      srv_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+      srv_range.NumDescriptors = 1;
+      D3D12_ROOT_PARAMETER rp[2]{};
+      rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+      rp[0].DescriptorTable.NumDescriptorRanges = 1;
+      rp[0].DescriptorTable.pDescriptorRanges = &srv_range;
+      rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+      rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+      rp[1].Constants.Num32BitValues = 4;
+      rp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+      D3D12_STATIC_SAMPLER_DESC ss{};
+      ss.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+      ss.AddressU = ss.AddressV = ss.AddressW =
+          D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+      ss.MaxLOD = D3D12_FLOAT32_MAX;
+      ss.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+      D3D12_ROOT_SIGNATURE_DESC rsd{};
+      rsd.NumParameters = 2;
+      rsd.pParameters = rp;
+      rsd.NumStaticSamplers = 1;
+      rsd.pStaticSamplers = &ss;
+      ComPtr<ID3DBlob> rsb, rse;
+      if (FAILED(D3D12SerializeRootSignature(
+              &rsd, D3D_ROOT_SIGNATURE_VERSION_1, &rsb, &rse)) ||
+          FAILED(device->CreateRootSignature(
+              0, rsb->GetBufferPointer(), rsb->GetBufferSize(),
+              IID_PPV_ARGS(&xenia.fxaa_root_signature)))) {
+        break;
+      }
+      D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
+      pd.pRootSignature = xenia.fxaa_root_signature.Get();
+      pd.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
+      pd.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
+      pd.BlendState.RenderTarget[0].RenderTargetWriteMask =
+          D3D12_COLOR_WRITE_ENABLE_ALL;
+      pd.SampleMask = UINT_MAX;
+      pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+      pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+      pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+      pd.NumRenderTargets = 1;
+      pd.RTVFormats[0] = color_format;
+      pd.SampleDesc.Count = 1;
+      if (FAILED(device->CreateGraphicsPipelineState(
+              &pd, IID_PPV_ARGS(&xenia.fxaa_pso)))) {
+        xenia.fxaa_root_signature.Reset();
+        break;
+      }
+      D3D12_DESCRIPTOR_HEAP_DESC shd{};
+      shd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+      shd.NumDescriptors = 1;
+      shd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+      device->CreateDescriptorHeap(&shd,
+                                   IID_PPV_ARGS(&xenia.fxaa_srv_heap));
+      D3D12_DESCRIPTOR_HEAP_DESC rhd{};
+      rhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+      rhd.NumDescriptors = 1;
+      device->CreateDescriptorHeap(&rhd,
+                                   IID_PPV_ARGS(&xenia.fxaa_rtv_heap));
+    }
+    if (!xenia.fxaa_pso || !xenia.fxaa_srv_heap || !xenia.fxaa_rtv_heap) {
+      break;
+    }
+    if (!xenia.fxaa_output || xenia.fxaa_output_width != width ||
+        xenia.fxaa_output_height != height) {
+      xenia.fxaa_output.Reset();
+      D3D12_RESOURCE_DESC od = color_desc;
+      od.Width = width;
+      od.Height = height;
+      od.MipLevels = 1;
+      D3D12_CLEAR_VALUE oc{};
+      oc.Format = color_format;
+      oc.Color[3] = 1.0f;
+      if (FAILED(device->CreateCommittedResource(
+              &default_heap, D3D12_HEAP_FLAG_NONE, &od,
+              D3D12_RESOURCE_STATE_RENDER_TARGET, &oc,
+              IID_PPV_ARGS(&xenia.fxaa_output)))) {
+        break;
+      }
+      xenia.fxaa_output_width = width;
+      xenia.fxaa_output_height = height;
+      device->CreateRenderTargetView(
+          xenia.fxaa_output.Get(), nullptr,
+          xenia.fxaa_rtv_heap->GetCPUDescriptorHandleForHeapStart());
+    }
+    device->CreateShaderResourceView(
+        presented_target, nullptr,
+        xenia.fxaa_srv_heap->GetCPUDescriptorHandleForHeapStart());
+    D3D12_RESOURCE_BARRIER to_srv{};
+    to_srv.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    to_srv.Transition.pResource = presented_target;
+    to_srv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    to_srv.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    to_srv.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    list->ResourceBarrier(1, &to_srv);
+    ID3D12DescriptorHeap *fxaa_heaps[] = {xenia.fxaa_srv_heap.Get()};
+    list->SetDescriptorHeaps(1, fxaa_heaps);
+    list->SetGraphicsRootSignature(xenia.fxaa_root_signature.Get());
+    list->SetPipelineState(xenia.fxaa_pso.Get());
+    list->SetGraphicsRootDescriptorTable(
+        0, xenia.fxaa_srv_heap->GetGPUDescriptorHandleForHeapStart());
+    const float rcp[4] = {1.0f / float(width), 1.0f / float(height), 0.0f,
+                          0.0f};
+    list->SetGraphicsRoot32BitConstants(1, 4, rcp, 0);
+    D3D12_CPU_DESCRIPTOR_HANDLE frtv =
+        xenia.fxaa_rtv_heap->GetCPUDescriptorHandleForHeapStart();
+    list->OMSetRenderTargets(1, &frtv, FALSE, nullptr);
+    const D3D12_VIEWPORT fvp{0.0f, 0.0f, float(width), float(height),
+                             0.0f, 1.0f};
+    const D3D12_RECT fsc{0, 0, LONG(width), LONG(height)};
+    list->RSSetViewports(1, &fvp);
+    list->RSSetScissorRects(1, &fsc);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->DrawInstanced(3, 1, 0, 0);
+    D3D12_RESOURCE_BARRIER to_rt{};
+    to_rt.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    to_rt.Transition.pResource = presented_target;
+    to_rt.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    to_rt.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    to_rt.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    list->ResourceBarrier(1, &to_rt);
+    presented_target = xenia.fxaa_output.Get();
+  } while (false);
 
   if (live_submit) {
     // Copy the presented guest target into the live backend's color target
